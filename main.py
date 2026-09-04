@@ -18,7 +18,6 @@ from database import db_get, db_set
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- ЗАГЛУШКА ДЛЯ RAILWAY ---
 def run_dummy_server():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -46,7 +45,6 @@ ME = bot.get_me()
 BOT_ID, BOT_USER = ME.id, (ME.username or "").lower()
 executor = ThreadPoolExecutor(max_workers=10)
 
-# --- ПОТОКОБЕЗОПАСНЫЕ СОСТОЯНИЯ (State Lock) ---
 state_lock = threading.RLock()
 active_safes = {}
 lucky_limits = {}
@@ -55,10 +53,8 @@ untrusted_warned = set()
 last_command_messages = {}
 messages_to_delete = []
 
-# Унифицированное FSM: uid -> {"action": str, "pid": str}
 active_fsm = {}
 
-# --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
 def get_v(cid, k, d=40):
     with state_lock:
         return db_get("settings", {}).get(str(cid), {}).get(k, d)
@@ -148,7 +144,6 @@ def cleanup_worker():
             logging.error(f"[CLEANUP WORKER] {e}", exc_info=True)
 threading.Thread(target=cleanup_worker, daemon=True).start()
 
-# --- AI ЛОГИКА ---
 def clean_ai_response(content):
     if not content: return "Та ну... мысль потерялась, спроси по-другому..."
     content = re.sub(r"(?si)^.*?thinking process.*?(?:output|option \d+:|final response:|answer:|draft generation:?)\s*", "", content)
@@ -165,8 +160,12 @@ def call_ai(messages, max_tokens=300, temp=0.5):
     try:
         r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {OPENROUTER_KEY}"}, json={"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temp}, timeout=20)
         data = r.json()
-        if "choices" in data and data["choices"]: return clean_ai_response(data["choices"][0].get("message", {}).get("content", ""))
-    except Exception as e: logging.error(f"[AI] {e}", exc_info=True)
+        if "choices" in data and data["choices"]: 
+            return clean_ai_response(data["choices"][0].get("message", {}).get("content", ""))
+        else:
+            logging.error(f"[AI API ERROR RESPONSE]: {data}")
+    except Exception as e: 
+        logging.error(f"[AI Exception]: {e}", exc_info=True)
     return "Сервис временно занят."
 
 def is_threat(txt):
@@ -177,7 +176,6 @@ def is_threat(txt):
         logging.error(f"[THREAT CHECK] {e}")
         return False
 
-# --- КЛАВИАТУРЫ ---
 def main_kb(cid, is_pv=False):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
@@ -236,7 +234,6 @@ def post_text_view(pid):
     rep_str = "Ежедневно" if dt else ("Выключено" if post.get("interval",3600)==0 else f"Каждые {post['interval']//60}м")
     return f"🕑 Пост\n💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}\n📢 Чат: {html.escape(str(cname))}\n🕑 Время: {time_str}\n🔁 Повтор: {rep_str}"
 
-# --- ФОНОВЫЕ ЗАДАЧИ С ТОЧЕЧНЫМ MERGE ПЕРЕД ФИНАЛЬНОЙ ЗАПИСЬЮ ---
 def send_specific_post(chat_id, post):
     try:
         mk = build_post_user_kb(post)
@@ -282,7 +279,6 @@ def autopost_worker():
             for chat_id, p in to_send:
                 send_specific_post(chat_id, p)
             
-            # Точечный merge, чтобы не затереть возможные изменения админа, сделанные во время сетевых запросов
             if to_send:
                 with state_lock:
                     fresh = db_get("autopost", {"posts": []})
@@ -298,7 +294,6 @@ def autopost_worker():
         except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
 threading.Thread(target=autopost_worker, daemon=True).start()
 
-# --- ИГРОВАЯ ЛОГИКА ---
 def lucky_game_result(cid, uid, fname, msg_id, win, left):
     try:
         time.sleep(7)
@@ -338,7 +333,7 @@ def play_lucky_game(cid, uid, fname):
             if lim["left"] <= 0:
                 if now < lim["reset_at"]:
                     rem = int(lim["reset_at"] - now)
-                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
+                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
                     track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True))
                     if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
                     return
@@ -421,7 +416,6 @@ def cmd_lsg(m):
     if not check_access(m): return
     track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_safe_game", bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML'))
 
-# --- КОЛБЕКИ ---
 @bot.callback_query_handler(func=lambda c: True)
 def cb_handler(c):
     try:
@@ -610,8 +604,12 @@ def cb_handler(c):
                     try:
                         send_specific_post(int(post.get("chat_id", -1004374303475)), post)
                         with state_lock:
-                            post["last_post"] = time.time()
-                            db_set("autopost", data)
+                            fresh = db_get("autopost", {"posts": []})
+                            for p in fresh.get("posts", []):
+                                if p["id"] == pid:
+                                    p["last_post"] = time.time()
+                                    p["last_msg_id"] = post.get("last_msg_id")
+                            db_set("autopost", fresh)
                         return bot.answer_callback_query(c.id, "🚀 Отправлено!", show_alert=True)
                     except Exception as e:
                         logging.error(f"[MANUAL SEND] {e}")
@@ -739,7 +737,6 @@ def text_handler(m):
                     auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML'), 180)
             return
 
-        # Безопасная модерация: мут + пинг боссов вместо мгновенного бана
         if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
             def threat_check():
                 try:
