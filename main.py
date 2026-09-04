@@ -18,7 +18,6 @@ from database import db_get, db_set
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- ЗАГЛУШКА ДЛЯ RAILWAY ---
 def run_dummy_server():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -48,9 +47,9 @@ if not TOKEN or not api_keys:
 bot = telebot.TeleBot(TOKEN)
 ME = bot.get_me()
 BOT_ID, BOT_USER = ME.id, (ME.username or "").lower()
+BOT_USERNAME = ME.username or ""
 executor = ThreadPoolExecutor(max_workers=10)
 
-# --- ПОТОКОБЕЗОПАСНЫЕ СОСТОЯНИЯ (State Lock) ---
 state_lock = threading.RLock()
 active_safes = {}
 lucky_limits = {}
@@ -58,47 +57,24 @@ active_lucky_players = set()
 untrusted_warned = set()
 last_command_messages = {}
 messages_to_delete = []
+
 active_fsm = {}
 
-# --- СОСТОЯНИЯ ИГРЫ «ГОРОДА» И КУБИКИ ---
-active_cities_games = {}
-CITIES_TIMEOUT = 180
+# --- ИГРА «СЛОВА»: РЕГИСТРАЦИЯ И АКТИВНЫЕ ИГРЫ ---
+pending_word_lobbies = {}   # chat_id -> lobby dict (регистрация ещё идёт)
+active_word_games = {}      # chat_id -> game dict (игра уже запущена)
+WORDS_TURN_TIMEOUT = 180    # тайм-аут одного хода в активной игре (сек)
+REGISTRATION_SECONDS = 1200 # 20 минут на регистрацию
+
 DICE_ANIMATION_SECONDS = {"🎯": 4.0, "🎳": 4.0, "🏀": 4.0}
 DELETE_ANIM_DELAY = 2.0
 
-CYRILLIC_CITY_RE = re.compile(r'^[а-яёА-ЯЁ][а-яёА-ЯЁ\- ]{1,38}[а-яёА-ЯЁ]$')
+CYRILLIC_WORD_RE = re.compile(r'^[а-яёА-ЯЁ][а-яёА-ЯЁ\- ]{1,38}[а-яёА-ЯЁ]$')
 
-_nominatim_lock = threading.Lock()
-_last_nominatim_call = [0.0]
-
-BASE_CITIES = {
-    "москва","санкт-петербург","новосибирск","екатеринбург","казань","нижний новгород",
-    "челябинск","самара","омск","ростов-на-дону","уфа","красноярск","воронеж","пермь",
-    "волгоград","краснодар","саратов","тюмень","тольятти","ижевск","барнаул","ульяновск",
-    "иркутск","хабаровск","ярославль","владивосток","махачкала","томск","оренбург",
-    "кемерово","новокузнецк","рязань","астрахань","пенза","липецк","киров","чебоксары",
-    "тула","калининград","курск","ставрополь","сочи","белгород","владимир","симферополь",
-    "севастополь","мурманск","архангельск","якутск","грозный","орел","смоленск","тверь",
-    "магнитогорск","сургут","подольск","псков","брянск","череповец","чита","вологда",
-    "калуга","саранск","абакан","южно-сахалинск","петропавловск-камчатский",
-    "киев","харьков","одесса","днепр","донецк","запорожье","львов","кривой рог",
-    "николаев","мариуполь","луганск","винница","херсон","полтава","чернигов","черкассы",
-    "житомир","сумы","хмельницкий","ровно","ужгород","луцк","тернополь","ивано-франковск",
-    "минск","гомель","могилев","витебск","гродно","брест","бобруйск","барановичи",
-    "алматы","астана","шымкент","караганда","актобе","тараз","павлодар","семей",
-    "ташкент","бишкек","душанбе","ашхабад","ереван","тбилиси","баку","кишинев",
-    "вильнюс","рига","таллин","хельсинки","стокгольм","осло","копенгаген",
-    "берлин","мюнхен","гамбург","кельн","франкфурт","дрезден","лейпциг",
-    "париж","марсель","лион","ницца","лондон","манчестер","ливерпуль","дублин",
-    "мадрид","барселона","валенсия","севилья","лиссабон","порту","рим","милан",
-    "неаполь","венеция","турин","вена","зальцбург","прага","брно","братислава",
-    "варшава","краков","гданьск","будапешт","бухарест","софия","белград","загреб",
-    "афины","стамбул","анкара","каир","тунис","алжир","касабланка","найроби",
-    "дели","мумбаи","пекин","шанхай","токио","осака","сеул","бангкок","ханой",
-    "джакарта","манила","сингапур","нью-йорк","вашингтон","чикаго","бостон",
-    "лос-анджелес","сан-франциско","майами","торонто","монреаль","оттава",
-    "мехико","буэнос-айрес","сантьяго","лима","богота","каракас","гавана",
-    "сидней","мельбурн","окленд",
+BASE_WORDS = {
+    "арбуз", "база", "весна", "гроза", "дорога", "ель", "жара", "зима", "игра", "йога",
+    "кот", "лес", "мама", "небо", "окно", "парк", "река", "снег", "топор", "ужин",
+    "фильм", "хлеб", "цветок", "чашка", "шар", "щенок", "эхо", "юмор", "яблоко",
 }
 
 # --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
@@ -122,8 +98,11 @@ def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
     with state_lock:
         key = (chat_id, user_id, cmd_name)
         if key in last_command_messages:
-            try: bot.delete_message(chat_id, last_command_messages[key])
-            except Exception as e: logging.error(f"[DEL OLD CMD] {e}")
+            try:
+                bot.delete_message(chat_id, last_command_messages[key])
+            except Exception as e:
+                if "message to delete not found" not in str(e):
+                    logging.error(f"[DEL OLD CMD] {e}")
         last_command_messages[key] = new_msg.message_id
 
 def auto_del(msg, ttl=180):
@@ -132,10 +111,12 @@ def auto_del(msg, ttl=180):
             messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
 
 def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
-    """Убирает мусор после обработки команды."""
     if delete_user_msg and not getattr(m, "is_callback", False):
-        try: bot.delete_message(m.chat.id, m.message_id)
-        except Exception as e: logging.error(f"[DEL CMD:{cmd_name}] {e}")
+        try:
+            bot.delete_message(m.chat.id, m.message_id)
+        except Exception as e:
+            if "message to delete not found" not in str(e):
+                logging.error(f"[DEL CMD:{cmd_name}] {e}")
     if sent_msg:
         track_and_replace_specific_cmd(m.chat.id, m.from_user.id, cmd_name, sent_msg)
         if ttl:
@@ -144,22 +125,22 @@ def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
 def format_safe_leaderboard():
     with state_lock:
         ldrs = db_get("safe_leaders", {})
-        if not ldrs: return "🏆 Рейтинг взломщиков сейфа пока пуст."
-        txt = "🏆 Рейтинг взломщиков сейфа VIBE\n\n"
+        if not ldrs: return "Рейтинг взломщиков сейфа пока пуст."
+        txt = "Рейтинг взломщиков сейфа VIBE\n\n"
         sorted_ldrs = sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)[:10]
         for i, (uid_str, uinfo) in enumerate(sorted_ldrs, 1):
-            m_icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "▫️"
+            m_icon = ["1", "2", "3"][i-1] if i <= 3 else ""
             txt += f"{m_icon} {i}. {get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))} — <b>{uinfo.get('wins', 0)}</b> побед\n"
         return txt.strip()
 
-def format_cities_leaderboard():
+def format_words_leaderboard():
     with state_lock:
-        ldrs = db_get("cities_leaders", {})
-        if not ldrs: return "🏆 Рейтинг игры «Города» пока пуст."
-        txt = "🏙 Рейтинг игры «Города»\n\n"
+        ldrs = db_get("words_leaders", {})
+        if not ldrs: return "Рейтинг игры «Слова» пока пуст."
+        txt = "Рейтинг игры «Слова»\n\n"
         for i, (uid_str, uinfo) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)[:10], 1):
-            m_icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "▫️"
-            txt += f"{m_icon} {i}. {get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))} — <b>{uinfo.get('wins', 0)}</b> городов\n"
+            m_icon = ["1", "2", "3"][i-1] if i <= 3 else ""
+            txt += f"{m_icon} {i}. {get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))} — <b>{uinfo.get('wins', 0)}</b> слов\n"
         return txt.strip()
 
 def parse_interval_input(text):
@@ -182,7 +163,7 @@ def check_access(m):
     uid = m.from_user.id if m.from_user else 0
     if m.chat.type == 'private':
         if uid not in BOSSES:
-            try: bot.reply_to(m, DENIED_MSG, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔗 Разработчик", url="https://t.me/VER_CIDE")), parse_mode='HTML')
+            try: bot.reply_to(m, DENIED_MSG, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Связь с разработчиком", url="https://t.me/VER_CIDE")), parse_mode='HTML')
             except Exception as e: logging.error(f"[ACCESS ERROR] {e}")
             return False
         return True
@@ -202,8 +183,11 @@ def cleanup_worker():
                 remaining = []
                 for item in messages_to_delete:
                     if now >= item["time"]:
-                        try: bot.delete_message(item["cid"], item["mid"])
-                        except Exception as e: logging.error(f"[CLEANUP DEL] {e}")
+                        try:
+                            bot.delete_message(item["cid"], item["mid"])
+                        except Exception as e:
+                            if "message to delete not found" not in str(e):
+                                logging.error(f"[CLEANUP DEL] {e}")
                     else:
                         remaining.append(item)
                 messages_to_delete[:] = remaining
@@ -211,96 +195,91 @@ def cleanup_worker():
             logging.error(f"[CLEANUP WORKER] {e}", exc_info=True)
 threading.Thread(target=cleanup_worker, daemon=True).start()
 
-def cities_timeout_worker():
+def words_turn_timeout_worker():
     while True:
         try:
             time.sleep(20)
             now, to_close = time.time(), []
             with state_lock:
-                for cid, game in list(active_cities_games.items()):
-                    if now - game["last_move_ts"] > CITIES_TIMEOUT:
+                for cid, game in list(active_word_games.items()):
+                    if now - game["last_move_ts"] > WORDS_TURN_TIMEOUT:
                         to_close.append((cid, game))
-                        del active_cities_games[cid]
+                        del active_word_games[cid]
             for cid, game in to_close:
                 try:
-                    bot.send_message(cid, f"⌛ Игра «Города» окончена по тайм-ауту.\nНазвано: {game['moves']}. /start_cities_game — начать заново\n🔊 Лиза снова на связи.")
-                except Exception as e: logging.error(f"[CITIES TIMEOUT] {e}")
-        except Exception as e: logging.error(f"[CITIES WORKER] {e}", exc_info=True)
-threading.Thread(target=cities_timeout_worker, daemon=True).start()
+                    bot.send_message(cid, f"⌛ Игра «Слова» окончена по тайм-ауту.\nНазвано: {game['moves']}. /start_words_game — начать заново\n🔊 Лиза снова на связи.")
+                except Exception as e:
+                    logging.error(f"[WORDS TIMEOUT] {e}")
+        except Exception as e:
+            logging.error(f"[WORDS TURN WORKER] {e}", exc_info=True)
+threading.Thread(target=words_turn_timeout_worker, daemon=True).start()
 
-# --- ХЕЛПЕРЫ ДЛЯ ГОРОДОВ ---
-def normalize_city(name):
+def word_lobby_worker():
+    while True:
+        try:
+            time.sleep(10)
+            now, to_start = time.time(), []
+            with state_lock:
+                for cid, lobby in list(pending_word_lobbies.items()):
+                    if not lobby.get("started") and now >= lobby["end_time"]:
+                        to_start.append(cid)
+            for cid in to_start:
+                start_word_game_now(cid)
+        except Exception as e:
+            logging.error(f"[WORD LOBBY WORKER] {e}", exc_info=True)
+threading.Thread(target=word_lobby_worker, daemon=True).start()
+
+# --- ХЕЛПЕРЫ ДЛЯ ИГРЫ «СЛОВА» ---
+def normalize_word(name):
     n = name.strip().lower().replace("ё", "е")
     n = re.sub(r'\s*-\s*', '-', n)
     return re.sub(r'\s+', ' ', n)
 
 def first_letter(name):
-    n = normalize_city(name)
+    n = normalize_word(name)
     return n[0] if n else None
 
 def effective_last_letter(name):
-    n = normalize_city(name)
+    n = normalize_word(name)
     idx = len(n) - 1
     while idx >= 0 and n[idx] in "ьъ":
         idx -= 1
     return n[idx] if idx >= 0 else None
 
-def is_known_city(norm_name):
-    if norm_name in BASE_CITIES:
+def is_known_word(norm_name):
+    if norm_name in BASE_WORDS:
         return True
     with state_lock:
-        return norm_name in db_get("known_cities_extra", [])
+        return norm_name in db_get("known_words_extra", [])
 
-def learn_city(norm_name):
+def learn_word(norm_name):
     with state_lock:
-        extra = db_get("known_cities_extra", [])
+        extra = db_get("known_words_extra", [])
         if norm_name not in extra:
             extra.append(norm_name)
-            db_set("known_cities_extra", extra)
+            db_set("known_words_extra", extra)
 
-def validate_city_via_nominatim(raw_name):
-    try:
-        with _nominatim_lock:
-            wait = 1.1 - (time.time() - _last_nominatim_call[0])
-            if wait > 0: time.sleep(wait)
-            r = requests.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"q": raw_name, "format": "json", "limit": 3, "accept-language": "ru"},
-                headers={"User-Agent": "VibeCitiesGameBot/1.0"},
-                timeout=8,
-            )
-            _last_nominatim_call[0] = time.time()
-        for item in r.json():
-            if item.get("class") in ("place", "boundary") and item.get("type") in \
-               ("city", "town", "village", "administrative", "hamlet"):
-                return True
-        return False
-    except Exception as e:
-        logging.error(f"[NOMINATIM] {e}")
-        return None
-
-def ai_check_is_city(raw_name):
-    ans = call_ai([{"role": "user", "content": f"Слово: '{raw_name}'. Это реально существующий населённый пункт в любой стране? Отвечай строго: ДА или НЕТ."}], 10, 0.0)
+def ai_check_is_word(raw_name):
+    ans = call_ai([{"role": "user", "content": f"Слово: '{raw_name}'. Это реально существующее слово русского языка (в любой форме — существительное, глагол, прилагательное и т.д.)? Отвечай строго: ДА или НЕТ."}], 10, 0.0)
     return "ДА" in ans.upper()
 
-def resolve_is_city(raw_name, norm_name):
-    if is_known_city(norm_name):
+def resolve_is_word(raw_name, norm_name):
+    if is_known_word(norm_name):
         return True
-    verdict = validate_city_via_nominatim(raw_name)
-    is_city = verdict if verdict is not None else ai_check_is_city(raw_name)
-    if is_city:
-        learn_city(norm_name)
-    return is_city
+    is_word = ai_check_is_word(raw_name)
+    if is_word:
+        learn_word(norm_name)
+    return is_word
 
 # --- AI ЛОГИКА ---
 def clean_ai_response(content):
-    if not content: return "Та ну... мысль потерялась, спроси по-другому..."
+    if not content: return "Мысль потерялась, спроси по-другому..."
     content = re.sub(r"(?si)^.*?thinking process.*?(?:output|option \d+:|final response:|answer:|draft generation:?)\s*", "", content)
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
     clean_str = re.sub(r"(?i)^option \d+:\s*", "", content.strip())
-    if re.fullmatch(r"[\d\.\-\sE]+", clean_str) and len(clean_str) > 3: return "Что-то цифры одни... давай о чём-то другом."
+    if re.fullmatch(r"[\d\.\-\sE]+", clean_str) and len(clean_str) > 3: return "Цифры одни... давай о чём-то другом."
     if re.search(r"(i cannot|i can't|as an ai|sorry|unable to fulfill|error|я искусственный интеллект)", clean_str, re.IGNORECASE): 
-        return "Не, об этом говорить не буду..."
+        return "Об этом говорить не буду..."
     clean_str = re.sub(r"^(Лиза|Lisa|Ліза):\s*", "", clean_str, flags=re.IGNORECASE).strip()
     res = clean_str + "." if clean_str and clean_str[-1].isalnum() else clean_str or "Мда..."
     return html.escape(res)
@@ -365,25 +344,25 @@ def is_threat(txt):
 def main_kb(cid, is_pv=False):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
-        types.InlineKeyboardButton(f"⚡ Вмешательство: {'Вкл' if get_v(cid, 'intervene', True) else 'Выкл'}", callback_data="m:toggle_intervene"),
-        types.InlineKeyboardButton(f"📊 Частота: {get_v(cid, 'freq')}%", callback_data="m:freq"),
-        types.InlineKeyboardButton(f"🔥 Строгость: {get_v(cid, 'anger')}%", callback_data="m:anger")
+        types.InlineKeyboardButton(f"Вмешательство: {'Вкл' if get_v(cid, 'intervene', True) else 'Выкл'}", callback_data="m:toggle_intervene"),
+        types.InlineKeyboardButton(f"Частота: {get_v(cid, 'freq')}%", callback_data="m:freq"),
+        types.InlineKeyboardButton(f"Строгость: {get_v(cid, 'anger')}%", callback_data="m:anger")
     )
-    kb.add(types.InlineKeyboardButton("📢 Автопостинг", callback_data="m:autopost_list") if is_pv else types.InlineKeyboardButton("⚙️ Настройки группы", callback_data="to_group_settings"))
-    if is_pv: kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_start"))
+    kb.add(types.InlineKeyboardButton("Автопостинг", callback_data="m:autopost_list") if is_pv else types.InlineKeyboardButton("Настройки группы", callback_data="to_group_settings"))
+    if is_pv: kb.add(types.InlineKeyboardButton("Назад", callback_data="back_to_start"))
     return kb
 
 def chats_selection_kb():
     kb = types.InlineKeyboardMarkup(row_width=1)
-    for cid, cname in db_get("chats_cache", {}).items(): kb.add(types.InlineKeyboardButton(f"📢 {cname}", callback_data=f"ap:chat:{cid}"))
-    return kb.add(types.InlineKeyboardButton("« Назад", callback_data="open_main_settings"))
+    for cid, cname in db_get("chats_cache", {}).items(): kb.add(types.InlineKeyboardButton(f"{cname}", callback_data=f"ap:chat:{cid}"))
+    return kb.add(types.InlineKeyboardButton("Назад", callback_data="open_main_settings"))
 
 def autopost_list_kb(cid):
     kb = types.InlineKeyboardMarkup(row_width=1)
     for p in [p for p in db_get("autopost", {"posts": []}).get("posts", []) if str(p.get("chat_id")) == str(cid)]:
-        kb.add(types.InlineKeyboardButton(f"{'✅' if p.get('enabled') else '❌'} {html.escape(p.get('name', 'Пост'))}", callback_data=f"ap:select:{p['id']}"))
-    kb.add(types.InlineKeyboardButton("➕ Создать", callback_data=f"ap:create:{cid}"), types.InlineKeyboardButton("🗑 Удалить", callback_data=f"ap:delmenu:{cid}"))
-    return kb.add(types.InlineKeyboardButton("« Назад", callback_data="m:autopost_list"))
+        kb.add(types.InlineKeyboardButton(f"{'Вкл' if p.get('enabled') else 'Выкл'} {html.escape(p.get('name', 'Пост'))}", callback_data=f"ap:select:{p['id']}"))
+    kb.add(types.InlineKeyboardButton("Создать", callback_data=f"ap:create:{cid}"), types.InlineKeyboardButton("Удалить", callback_data=f"ap:delmenu:{cid}"))
+    return kb.add(types.InlineKeyboardButton("Назад", callback_data="m:autopost_list"))
 
 def build_post_user_kb(post):
     rows = post.get("buttons", [])
@@ -404,23 +383,153 @@ def post_settings_kb(pid):
     if not post: return kb
     sec = post.get("interval", 3600)
     istr = "Выкл" if sec == 0 else (f"{sec//60}м" if sec<3600 else f"{sec//3600}ч")
-    kb.add(types.InlineKeyboardButton(f"💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}", callback_data=f"ap:toggle:{pid}"), types.InlineKeyboardButton(f"⏱ Интервал: {istr}", callback_data=f"ap:int_menu:{pid}"))
-    kb.add(types.InlineKeyboardButton(f"🕑 Время: {post.get('daily_time') or 'Выкл'}", callback_data=f"ap:time_menu:{pid}"), types.InlineKeyboardButton(f"📅 Дата: {post.get('start_date') or 'Сегодня'}", callback_data=f"ap:date_menu:{pid}"))
-    kb.add(types.InlineKeyboardButton(f"♻️ Удаление: {'Вкл' if post.get('auto_delete_prev') else 'Выкл'}", callback_data=f"ap:autodel:{pid}"), types.InlineKeyboardButton(f"🖼 Фото: {'Есть' if post.get('photo') else 'Нет'}", callback_data=f"ap:photo:{pid}"))
-    kb.add(types.InlineKeyboardButton("📝 Текст", callback_data=f"ap:text:{pid}"), types.InlineKeyboardButton(f"🔘 Кнопки ({sum(len(r) for r in post.get('buttons',[]))})", callback_data=f"ap:btns:{pid}"))
-    kb.add(types.InlineKeyboardButton("👁 Предпросмотр", callback_data=f"ap:preview:{pid}"), types.InlineKeyboardButton("🚀 Отправить", callback_data=f"ap:send:{pid}"))
-    return kb.add(types.InlineKeyboardButton("« К постам", callback_data=f"ap:chat:{post.get('chat_id', '')}"))
+    kb.add(types.InlineKeyboardButton(f"Статус: {'Вкл' if post.get('enabled') else 'Выкл'}", callback_data=f"ap:toggle:{pid}"), types.InlineKeyboardButton(f"Интервал: {istr}", callback_data=f"ap:int_menu:{pid}"))
+    kb.add(types.InlineKeyboardButton(f"Время: {post.get('daily_time') or 'Выкл'}", callback_data=f"ap:time_menu:{pid}"), types.InlineKeyboardButton(f"Дата: {post.get('start_date') or 'Сегодня'}", callback_data=f"ap:date_menu:{pid}"))
+    kb.add(types.InlineKeyboardButton(f"Удаление: {'Вкл' if post.get('auto_delete_prev') else 'Выкл'}", callback_data=f"ap:autodel:{pid}"), types.InlineKeyboardButton(f"Фото: {'Есть' if post.get('photo') else 'Нет'}", callback_data=f"ap:photo:{pid}"))
+    kb.add(types.InlineKeyboardButton("Текст", callback_data=f"ap:text:{pid}"), types.InlineKeyboardButton(f"Кнопки ({sum(len(r) for r in post.get('buttons',[]))})", callback_data=f"ap:btns:{pid}"))
+    kb.add(types.InlineKeyboardButton("Предпросмотр", callback_data=f"ap:preview:{pid}"), types.InlineKeyboardButton("Отправить", callback_data=f"ap:send:{pid}"))
+    return kb.add(types.InlineKeyboardButton("К постам", callback_data=f"ap:chat:{post.get('chat_id', '')}"))
 
 def post_text_view(pid):
     post = next((p for p in db_get("autopost", {"posts": []}).get("posts", []) if p["id"] == pid), None)
-    if not post: return "⚠️ Пост не найден."
+    if not post: return "Пост не найден."
     cname = db_get("chats_cache", {}).get(str(post.get("chat_id")), str(post.get("chat_id")))
     dt = post.get("daily_time")
     time_str = f"Ежедневно в {dt}" if dt else "По интервалу"
     rep_str = "Ежедневно" if dt else ("Выключено" if post.get("interval",3600)==0 else f"Каждые {post['interval']//60}м")
-    return f"🕑 Пост\n💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}\n📢 Чат: {html.escape(str(cname))}\n🕑 Время: {time_str}\n🔁 Повтор: {rep_str}"
+    return f"Пост\nСтатус: {'Вкл' if post.get('enabled') else 'Выкл'}\nЧат: {html.escape(str(cname))}\nВремя: {time_str}\nПовтор: {rep_str}"
 
-# --- ФОНОВЫЕ ЗАДАЧИ ---
+# --- ЛОББИ ИГРЫ «СЛОВА» ---
+def build_lobby_text(lobby):
+    remaining = max(0, int(lobby["end_time"] - time.time()))
+    mins, secs = remaining // 60, remaining % 60
+    players = lobby["players"]
+    plist = "\n".join(f"{i}. {get_user_mention(user_id=u, first_name=n)}" for i, (u, n) in enumerate(players.items(), 1)) or "Пока никто не записался."
+    seed_line = f"\nПервое слово задаст: <b>{html.escape(lobby['seed'])}</b>" if lobby.get("seed") else ""
+    return (
+        "🔤 <b>ИГРА «СЛОВА»</b>\n\n"
+        "Правила: по очереди называем слова на русском языке. Каждое следующее слово начинается "
+        "на ту букву, на которой закончилось предыдущее. Повторяться нельзя, слово должно существовать. "
+        "За каждое верное слово — +1 балл!"
+        f"{seed_line}\n\n"
+        f"📝 Регистрация открыта {mins}м {secs}с (или создатель начнёт раньше кнопкой ниже).\n\n"
+        f"👥 Записались ({len(players)}):\n{plist}"
+    )
+
+def lobby_kb(cid):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("📝 Записаться на игру", url=f"https://t.me/{BOT_USERNAME}?start=regword_{cid}"))
+    kb.add(types.InlineKeyboardButton("❌ Отменить регистрацию", url=f"https://t.me/{BOT_USERNAME}?start=unregword_{cid}"))
+    kb.add(types.InlineKeyboardButton("🚀 Начать сейчас", callback_data="wg:startnow"))
+    return kb
+
+def update_lobby_message(cid):
+    with state_lock:
+        lobby = pending_word_lobbies.get(cid)
+        if not lobby: return
+        text = build_lobby_text(lobby)
+        msg_id = lobby.get("reg_msg_id")
+    if msg_id:
+        try:
+            bot.edit_message_text(text, cid, msg_id, reply_markup=lobby_kb(cid), parse_mode='HTML')
+        except Exception as e:
+            logging.error(f"[LOBBY UPDATE] {e}")
+
+def handle_word_game_registration(m, payload):
+    uid, fname = m.from_user.id, m.from_user.first_name
+    try:
+        action, cid_str = payload.split("_", 1)
+        cid = int(cid_str)
+    except Exception:
+        return bot.send_message(m.chat.id, "⚠️ Некорректная ссылка регистрации.")
+
+    with state_lock:
+        lobby = pending_word_lobbies.get(cid)
+        if not lobby or lobby.get("started"):
+            outcome = "closed"
+        elif action == "regword":
+            outcome = "already" if uid in lobby["players"] else "registered"
+            if outcome == "registered":
+                lobby["players"][uid] = fname
+        elif action == "unregword":
+            outcome = "removed" if lobby["players"].pop(uid, None) is not None else "not_in"
+        else:
+            outcome = "unknown"
+
+    if outcome == "closed":
+        bot.send_message(m.chat.id, "⏳ Регистрация на эту игру уже закрыта или не найдена.")
+    elif outcome == "already":
+        bot.send_message(m.chat.id, f"Ты уже записан(а) на игру, {fname}! Жди начала и удачи! 🍀")
+    elif outcome == "registered":
+        bot.send_message(m.chat.id, f"✅ Готово, {fname}! Записала тебя на игру «Слова». Жди начала — и удачи! 🍀")
+        update_lobby_message(cid)
+    elif outcome == "removed":
+        bot.send_message(m.chat.id, "❌ Вычеркнула тебя из списка участников игры «Слова».")
+        update_lobby_message(cid)
+    elif outcome == "not_in":
+        bot.send_message(m.chat.id, "Ты и не был(а) записан(а) на эту игру.")
+    else:
+        bot.send_message(m.chat.id, "⚠️ Неизвестное действие регистрации.")
+
+def start_word_game_now(cid):
+    with state_lock:
+        lobby = pending_word_lobbies.pop(cid, None)
+        if not lobby or lobby.get("started"):
+            return
+        lobby["started"] = True
+        players = dict(lobby["players"])
+        reg_msg_id = lobby.get("reg_msg_id")
+        seed = lobby.get("seed")
+
+    if reg_msg_id:
+        try:
+            bot.edit_message_text("✅ Регистрация закрыта — игра начинается!", cid, reg_msg_id)
+        except Exception as e:
+            logging.error(f"[LOBBY CLOSE] {e}")
+
+    if not players:
+        try:
+            bot.send_message(cid, "😔 Никто не успел записаться на игру «Слова». Игра отменена.")
+        except Exception as e:
+            logging.error(f"[WORDS LOBBY EMPTY] {e}")
+        return
+
+    if seed:
+        norm_seed = normalize_word(seed)
+        if not resolve_is_word(seed, norm_seed):
+            seed = random.choice(list(BASE_WORDS)).title()
+    else:
+        seed = random.choice(list(BASE_WORDS)).title()
+
+    eff = effective_last_letter(seed)
+    with state_lock:
+        active_word_games[cid] = {
+            "last_word": seed,
+            "next_letter": eff,
+            "used": {normalize_word(seed)},
+            "last_move_ts": time.time(),
+            "moves": 0,
+            "players": players,
+            "scores": {uid: 0 for uid in players},
+        }
+
+    plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for u, n in players.items())
+    try:
+        bot.send_message(
+            cid,
+            f"🔤 <b>ИГРА «СЛОВА» НАЧАЛАСЬ!</b>\n\n"
+            f"👥 Участники:\n{plist}\n\n"
+            f"Первое слово: <b>{html.escape(seed)}</b>\n"
+            f"Следующее слово на букву «{eff.upper()}»\n"
+            f"⏱ Тайм-аут хода: 3 мин\n"
+            f"🔇 Пока идёт игра — Лиза не встревает в чат.\n"
+            f"/stop_words_game · /leaders_words_game",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logging.error(f"[WORDS START] {e}", exc_info=True)
+
+# --- ФОНОВЫЕ ЗАДАЧИ АВТОПОСТИНГА ---
 def send_specific_post(chat_id, post):
     try:
         mk = build_post_user_kb(post)
@@ -437,9 +546,13 @@ def send_specific_post(chat_id, post):
             post["last_msg_id"] = msg.message_id
             
         if old_msg_id:
-            try: bot.delete_message(chat_id, old_msg_id)
-            except Exception as e: logging.error(f"[AUTOPOST DEL PREV] {e}")
-    except Exception as e: logging.error(f"[AUTOPOST SEND] {e}", exc_info=True)
+            try:
+                bot.delete_message(chat_id, old_msg_id)
+            except Exception as e:
+                if "message to delete not found" not in str(e):
+                    logging.error(f"[AUTOPOST DEL PREV] {e}")
+    except Exception as e:
+        logging.error(f"[AUTOPOST SEND] {e}", exc_info=True)
 
 def autopost_worker():
     while True:
@@ -478,57 +591,77 @@ def autopost_worker():
                             if "last_sent_date" in sent_post:
                                 target["last_sent_date"] = sent_post["last_sent_date"]
                     db_set("autopost", fresh)
-        except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
+        except Exception as e:
+            logging.error(f"[WORKER] {e}", exc_info=True)
 threading.Thread(target=autopost_worker, daemon=True).start()
 
-# --- ИГРОВАЯ ЛОГИКА ---
-def process_city_guess(cid, uid, fname, raw_text):
+# --- ИГРОВАЯ ЛОГИКА: «СЛОВА» ---
+def build_active_scoreboard(game):
+    scores = game.get("scores", {})
+    players = game.get("players", {})
+    if not scores:
+        return "Пока нет очков."
+    ordered = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    lines = [f"{i}. {get_user_mention(user_id=uid, first_name=players.get(uid, 'Игрок'))} — {pts} б." for i, (uid, pts) in enumerate(ordered, 1)]
+    return "\n".join(lines)
+
+def process_word_guess(cid, uid, fname, raw_text):
     try:
         raw = raw_text.strip()
-        norm = normalize_city(raw)
+        norm = normalize_word(raw)
         with state_lock:
-            game = active_cities_games.get(cid)
-        if not game: return
+            game = active_word_games.get(cid)
+        if not game or uid not in game["players"]:
+            return
 
         f_letter, req_letter = first_letter(raw), game["next_letter"]
-        known_locally = is_known_city(norm)
+        known_locally = is_known_word(norm)
 
         if req_letter and f_letter != req_letter:
             if not known_locally: return
-            return bot.send_message(cid, f"❌ Нужна буква «{req_letter.upper()}», а не «{f_letter.upper()}».")
+            bot.send_message(cid, f"Нужна буква «{req_letter.upper()}», а не «{f_letter.upper()}».")
+            return
 
         with state_lock:
             if norm in game["used"]:
-                return bot.send_message(cid, f"♻️ «{html.escape(raw)}» уже называли.")
+                bot.send_message(cid, f"«{html.escape(raw)}» уже называли.")
+                return
 
-        if not resolve_is_city(raw, norm):
+        if not resolve_is_word(raw, norm):
             if req_letter:
-                return bot.send_message(cid, f"🤔 Не нахожу такой город. Ещё раз на букву «{req_letter.upper()}».")
+                bot.send_message(cid, f"Не нахожу такого слова. Ещё раз на букву «{req_letter.upper()}».")
             return
 
         eff_letter = effective_last_letter(raw)
         with state_lock:
-            game = active_cities_games.get(cid)
-            if not game or (game["next_letter"] and f_letter != game["next_letter"]) or norm in game["used"]:
-                return 
+            game = active_word_games.get(cid)
+            if not game or uid not in game["players"] or (game["next_letter"] and f_letter != game["next_letter"]) or norm in game["used"]:
+                return
             game["used"].add(norm)
-            game["last_city"], game["next_letter"] = raw, eff_letter
+            game["last_word"], game["next_letter"] = raw, eff_letter
             game["last_move_ts"], game["moves"] = time.time(), game["moves"] + 1
-            ldrs = db_get("cities_leaders", {})
+            game["scores"][uid] = game["scores"].get(uid, 0) + 1
+            scoreboard = build_active_scoreboard(game)
+            ldrs = db_get("words_leaders", {})
             ldrs.setdefault(str(uid), {"name": fname, "wins": 0})["wins"] += 1
-            db_set("cities_leaders", ldrs)
+            db_set("words_leaders", ldrs)
 
         mention = get_user_mention(user_id=uid, first_name=fname)
-        bot.send_message(cid, f"✅ {mention}: <b>{html.escape(raw)}</b>\nСледующий город на букву «{eff_letter.upper()}»", parse_mode='HTML')
+        bot.send_message(cid, f"🥳 {mention} отгадывает слово и получает +1 бал🔥\nСледующее слово на букву «{eff_letter.upper()}»", parse_mode='HTML')
+        bot.send_message(cid, f"📊 Счёт игры:\n{scoreboard}", parse_mode='HTML')
     except Exception as e:
-        logging.error(f"[CITIES MOVE] {e}", exc_info=True)
+        logging.error(f"[WORDS MOVE] {e}", exc_info=True)
 
 def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
     try:
         wait_s = DICE_ANIMATION_SECONDS.get(emoji, 4.0) + DELETE_ANIM_DELAY
         time.sleep(wait_s)
-        try: bot.delete_message(cid, msg_id)
-        except Exception as e: logging.error(f"[LUCKY DEL] {e}")
+        try:
+            bot.delete_message(cid, msg_id)
+        except Exception as e:
+            if "message to delete not found" not in str(e):
+                logging.error(f"[LUCKY DEL] {e}")
+                
         mention = get_user_mention(user_id=uid, first_name=fname)
         if win:
             with state_lock:
@@ -537,18 +670,18 @@ def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
                 u["wins"] += 1
                 db_set("lucky_leaders", ldrs)
                 rank = sum(1 for v in ldrs.values() if v.get("wins",0) > u["wins"]) + 1
-            txt = f"🎉 {mention}, невероятно! Ты выиграл +1 балл!\nТвое место: #{rank}\n"
+            txt = f"{mention}, невероятно! Ты выиграл +1 балл!\nТвое место: #{rank}\n"
         else:
-            txt = f"😔 {mention}, не повезло.\n"
+            txt = f"{mention}, не повезло.\n"
         
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🎲 Снова", callback_data=f"lucky:again:{uid}")) if left > 0 else None
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Снова", callback_data=f"lucky:again:{uid}")) if left > 0 else None
         if left == 0:
             with state_lock:
                 rem = int(lucky_limits[uid]["reset_at"] - time.time())
-            txt += f"\nПопыток больше нет😔\nНовые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
+            txt += f"\nПопыток больше нет\nНовые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\nЗато в боте играй без ограничений\n@vibe_247top_bot"
         else:
             txt += f"Осталось попыток: {left}\nСыграем еще?"
-        
+            
         msg = bot.send_message(cid, txt, reply_markup=kb, parse_mode='HTML')
         track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
     except Exception as e:
@@ -565,7 +698,7 @@ def play_lucky_game(cid, uid, fname):
             if lim["left"] <= 0:
                 if now < lim["reset_at"]:
                     rem = int(lim["reset_at"] - now)
-                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
+                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений\n@vibe_247top_bot"
                     msg = bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True)
                     track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
                     if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
@@ -577,7 +710,7 @@ def play_lucky_game(cid, uid, fname):
         emoji = random.choice(["🎯", "🎳", "🏀"])
         try: dice = bot.send_dice(cid, emoji=emoji)
         except Exception as e:
-            bot.send_message(cid, "⚠️ Нет прав на кубики.")
+            bot.send_message(cid, "Нет прав на кубики.")
             with state_lock:
                 if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
             return
@@ -591,13 +724,22 @@ def play_lucky_game(cid, uid, fname):
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
+    payload = None
+    if m.text:
+        text_parts = m.text.split(maxsplit=1)
+        if len(text_parts) > 1:
+            payload = text_parts[1].strip()
+
+    if payload and (payload.startswith("regword_") or payload.startswith("unregword_")):
+        return handle_word_game_registration(m, payload)
+
     if not check_access(m): return
     if m.chat.type == 'private' and m.from_user.id in BOSSES and m.text and "settings" in m.text:
-        msg = bot.reply_to(m, "📢 Выберите группу:", reply_markup=chats_selection_kb())
+        msg = bot.reply_to(m, "Выберите группу:", reply_markup=chats_selection_kb())
         return finish_command(m, "start", msg)
     kb = types.InlineKeyboardMarkup(row_width=1).add(types.InlineKeyboardButton("Что ты умеешь?", callback_data="what_can_i_do"))
-    if m.chat.type == 'private' and m.from_user.id in BOSSES: kb.add(types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_main_settings"))
-    txt = f"Привет, {get_user_mention(m.from_user)}... Я Лиза...\n💭 Чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n🛒 Наш бот: @vibe_247top_bot\n🎁 События: /events"
+    if m.chat.type == 'private' and m.from_user.id in BOSSES: kb.add(types.InlineKeyboardButton("Настройки", callback_data="open_main_settings"))
+    txt = f"Привет, {get_user_mention(m.from_user)}... Я Лиза...\nЧат: https://t.me/+8WZ4kwpAaZ0yZTRi\nНаш бот: @vibe_247top_bot\nСобытия: /events"
     msg = bot.send_message(m.chat.id, txt, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
     finish_command(m, "start", msg, ttl=180 if m.chat.type != 'private' else None)
 
@@ -605,9 +747,9 @@ def cmd_start(m):
 def cmd_settings(m):
     if not check_access(m): return
     if m.from_user.id not in BOSSES:
-        msg = bot.send_message(m.chat.id, "⛔ Только для руководства.", parse_mode='HTML')
+        msg = bot.send_message(m.chat.id, "Только для руководства.", parse_mode='HTML')
         return finish_command(m, "settings", msg, ttl=15)
-    msg = bot.send_message(m.chat.id, "🎛 Панель управления:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
+    msg = bot.send_message(m.chat.id, "Панель управления:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
     finish_command(m, "settings", msg) 
 
 @bot.message_handler(commands=['lucky_game'])
@@ -626,7 +768,7 @@ def cmd_llg(m):
     if not check_access(m): return
     with state_lock:
         ldrs = db_get("lucky_leaders", {})
-    txt = "🏆 Рейтинг пуст." if not ldrs else "🏆 Рейтинг везунчиков\n\n" + "\n".join(f"{i}. {get_user_mention(user_id=int(u), first_name=info.get('name'))} — <b>{info.get('wins',0)}</b>" for i, (u, info) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins",0), reverse=True)[:10], 1))
+    txt = "Рейтинг пуст." if not ldrs else "Рейтинг везунчиков\n\n" + "\n".join(f"{i}. {get_user_mention(user_id=int(u), first_name=info.get('name'))} — <b>{info.get('wins',0)}</b>" for i, (u, info) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins",0), reverse=True)[:10], 1))
     msg = bot.send_message(m.chat.id, txt, parse_mode='HTML')
     finish_command(m, "leaders_lucky_game", msg, ttl=120)
 
@@ -644,10 +786,10 @@ def cmd_sgs(m):
     if not check_access(m) or m.from_user.id not in BOSSES: return
     with state_lock:
         if m.chat.id in active_safes:
-            msg = bot.send_message(m.chat.id, "⚠️ Сейф уже активирован.")
+            msg = bot.send_message(m.chat.id, "Сейф уже активирован.")
             return finish_command(m, "start_game_safe", msg, ttl=30)
         active_safes[m.chat.id] = {"code": f"{random.randint(0,999):03d}", "hint_given": False, "gid": time.time()}
-    msg = bot.send_message(m.chat.id, "🔐 ИГРА НАЧАЛАСЬ\nБронированный сейф заблокирован на ХХХ.\nПишите код в чат.\nТоп: /leaders_safe_game")
+    msg = bot.send_message(m.chat.id, "ИГРА НАЧАЛАСЬ\nБронированный сейф заблокирован на ХХХ.\nПишите код в чат.\nТоп: /leaders_safe_game")
     finish_command(m, "start_game_safe", msg)
 
 @bot.message_handler(commands=['leaders_safe_game'])
@@ -656,58 +798,87 @@ def cmd_lsg(m):
     msg = bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML')
     finish_command(m, "leaders_safe_game", msg, ttl=120)
 
-@bot.message_handler(commands=['start_cities_game'])
-def cmd_start_cities(m):
+@bot.message_handler(commands=['start_words_game'])
+def cmd_start_words(m):
     if not check_access(m) or m.from_user.id not in BOSSES: return
     cid = m.chat.id
     with state_lock:
-        if cid in active_cities_games:
-            msg = bot.send_message(cid, "⚠️ Игра «Города» уже идёт.")
-            return finish_command(m, "start_cities_game", msg, ttl=20)
+        if cid in active_word_games:
+            msg = bot.send_message(cid, "⚠️ Игра «Слова» уже идёт.")
+            return finish_command(m, "start_words_game", msg, ttl=20)
+        if cid in pending_word_lobbies:
+            msg = bot.send_message(cid, "⚠️ Регистрация на игру уже открыта.")
+            return finish_command(m, "start_words_game", msg, ttl=20)
+
     parts = m.text.split(maxsplit=1)
     seed = parts[1].strip() if len(parts) > 1 else None
-    if seed:
-        if not CYRILLIC_CITY_RE.match(seed):
-            msg = bot.send_message(cid, "⚠️ Пример: /start_cities_game Москва")
-            return finish_command(m, "start_cities_game", msg, ttl=20)
-        if not resolve_is_city(seed, normalize_city(seed)):
-            msg = bot.send_message(cid, f"⚠️ «{html.escape(seed)}» не похож на существующий город.")
-            return finish_command(m, "start_cities_game", msg, ttl=20)
-    else:
-        seed = random.choice(list(BASE_CITIES)).title()
-    eff = effective_last_letter(seed)
-    with state_lock:
-        active_cities_games[cid] = {"last_city": seed, "next_letter": eff, "used": {normalize_city(seed)}, "last_move_ts": time.time(), "moves": 0}
-    msg = bot.send_message(cid, f"🏙 ИГРА «ГОРОДА»!\nПервый город: <b>{html.escape(seed)}</b>\nСледующий на букву «{eff.upper()}»\n⏱ Тайм-аут хода: 3 мин\n🔇 Пока идёт игра — Лиза не встревает в чат.\n/stop_cities_game · /leaders_cities_game", parse_mode='HTML')
-    finish_command(m, "start_cities_game", msg) 
+    if seed and not CYRILLIC_WORD_RE.match(seed):
+        msg = bot.send_message(cid, "⚠️ Пример: /start_words_game слово")
+        return finish_command(m, "start_words_game", msg, ttl=20)
 
-@bot.message_handler(commands=['stop_cities_game'])
-def cmd_stop_cities(m):
+    with state_lock:
+        pending_word_lobbies[cid] = {
+            "creator_id": m.from_user.id,
+            "seed": seed,
+            "players": {},
+            "reg_msg_id": None,
+            "end_time": time.time() + REGISTRATION_SECONDS,
+            "started": False,
+        }
+        lobby_snapshot = dict(pending_word_lobbies[cid])
+
+    sent = bot.send_message(cid, build_lobby_text(lobby_snapshot), reply_markup=lobby_kb(cid), parse_mode='HTML')
+    with state_lock:
+        if cid in pending_word_lobbies:
+            pending_word_lobbies[cid]["reg_msg_id"] = sent.message_id
+
+    finish_command(m, "start_words_game")
+
+@bot.message_handler(commands=['stop_words_game'])
+def cmd_stop_words(m):
     if not check_access(m) or m.from_user.id not in BOSSES: return
+    cid = m.chat.id
     with state_lock:
-        game = active_cities_games.pop(m.chat.id, None)
-    if not game:
-        msg = bot.send_message(m.chat.id, "Игра сейчас не идёт.")
-        return finish_command(m, "stop_cities_game", msg, ttl=20)
-    msg = bot.send_message(m.chat.id, f"🛑 Остановлено. Названо городов: {game['moves']}. Последний: {html.escape(game['last_city'] or '—')}\n🔊 Лиза снова на связи.")
-    finish_command(m, "stop_cities_game", msg, ttl=60)
+        game = active_word_games.pop(cid, None)
+        lobby = pending_word_lobbies.pop(cid, None)
 
-@bot.message_handler(commands=['leaders_cities_game'])
-def cmd_leaders_cities(m):
+    if lobby and lobby.get("reg_msg_id"):
+        try:
+            bot.edit_message_text("🛑 Регистрация на игру отменена.", cid, lobby["reg_msg_id"])
+        except Exception as e:
+            logging.error(f"[LOBBY CANCEL] {e}")
+
+    if not game and not lobby:
+        msg = bot.send_message(cid, "Игра сейчас не идёт.")
+        return finish_command(m, "stop_words_game", msg, ttl=20)
+
+    if lobby and not game:
+        msg = bot.send_message(cid, "🛑 Регистрация на игру отменена.")
+        return finish_command(m, "stop_words_game", msg, ttl=60)
+
+    msg = bot.send_message(cid, f"🛑 Остановлено. Названо слов: {game['moves']}. Последнее: {html.escape(game['last_word'] or '—')}\n🔊 Лиза снова на связи.")
+    finish_command(m, "stop_words_game", msg, ttl=60)
+
+@bot.message_handler(commands=['leaders_words_game'])
+def cmd_leaders_words(m):
     if not check_access(m): return
-    msg = bot.send_message(m.chat.id, format_cities_leaderboard(), parse_mode='HTML')
-    finish_command(m, "leaders_cities_game", msg, ttl=120)
+    msg = bot.send_message(m.chat.id, format_words_leaderboard(), parse_mode='HTML')
+    finish_command(m, "leaders_words_game", msg, ttl=120)
 
-@bot.message_handler(commands=['cities_status'])
-def cmd_cities_status(m):
+@bot.message_handler(commands=['words_status'])
+def cmd_words_status(m):
     if not check_access(m): return
     with state_lock:
-        game = active_cities_games.get(m.chat.id)
-    if not game:
-        msg = bot.send_message(m.chat.id, "Игра не идёт. /start_cities_game")
-        return finish_command(m, "cities_status", msg, ttl=20)
-    msg = bot.send_message(m.chat.id, f"🏙 Названо: {game['moves']}. Нужна буква «{game['next_letter'].upper()}».")
-    finish_command(m, "cities_status", msg, ttl=30)
+        game = active_word_games.get(m.chat.id)
+        lobby = pending_word_lobbies.get(m.chat.id)
+    if game:
+        msg = bot.send_message(m.chat.id, f"Названо слов: {game['moves']}. Нужна буква «{game['next_letter'].upper()}».")
+    elif lobby:
+        remaining = max(0, int(lobby["end_time"] - time.time()))
+        msg = bot.send_message(m.chat.id, f"📝 Идёт регистрация: {len(lobby['players'])} участник(ов). До старта ~{remaining//60}м {remaining%60}с.")
+    else:
+        msg = bot.send_message(m.chat.id, "Игра не идёт. /start_words_game")
+    finish_command(m, "words_status", msg, ttl=30)
 
 # --- КОЛБЕКИ ---
 @bot.callback_query_handler(func=lambda c: True)
@@ -728,30 +899,44 @@ def cb_handler(c):
             return bot.answer_callback_query(c.id)
 
         if not is_pv and str(cid).replace("-100", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
-            return bot.answer_callback_query(c.id, "⛔ Неразрешенный чат.", show_alert=True)
+            return bot.answer_callback_query(c.id, "Неразрешенный чат.", show_alert=True)
 
         if action == "lucky" and parts[1] == "again":
             target_uid = int(parts[2])
-            if uid != target_uid: return bot.answer_callback_query(c.id, "⛔ Не твоя игра!", show_alert=True)
-            try: bot.delete_message(cid, c.message.message_id)
-            except Exception as e: logging.error(f"[LUCKY AGAIN DEL] {e}")
+            if uid != target_uid: return bot.answer_callback_query(c.id, "Не твоя игра!", show_alert=True)
+            try:
+                bot.delete_message(cid, c.message.message_id)
+            except Exception as e:
+                if "message to delete not found" not in str(e):
+                    logging.error(f"[LUCKY AGAIN DEL] {e}")
             bot.answer_callback_query(c.id)
             return play_lucky_game(cid, uid, c.from_user.first_name)
 
+        if action == "wg" and len(parts) >= 2 and parts[1] == "startnow":
+            with state_lock:
+                lobby = pending_word_lobbies.get(cid)
+            if not lobby:
+                return bot.answer_callback_query(c.id, "Лобби не найдено.", show_alert=True)
+            if uid != lobby["creator_id"] and uid not in BOSSES:
+                return bot.answer_callback_query(c.id, "⛔ Только создатель может начать игру раньше времени.", show_alert=True)
+            bot.answer_callback_query(c.id, "🚀 Запускаю игру!")
+            executor.submit(start_word_game_now, cid)
+            return
+
         if d == "what_can_i_do":
             bot.answer_callback_query(c.id)
-            return bot.edit_message_text("🔹 Общаюсь\n🔹 Слежу за матом\n🔹 Автопостинг\n🔹 Игры (/lucky_game, сейф, /start_cities_game)", cid, c.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
+            return bot.edit_message_text("Общаюсь\nСлежу за матом\nАвтопостинг\nИгры (/lucky_game, сейф, /start_words_game)", cid, c.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data="back_to_start")))
             
         if d == "back_to_start":
             bot.answer_callback_query(c.id)
             kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Что ты умеешь?", callback_data="what_can_i_do"))
-            if uid in BOSSES: kb.add(types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_main_settings"))
-            return bot.edit_message_text(f"Привет, {get_user_mention(c.from_user)}... Я Лиза.\n💭Чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n🛒Бот: @vibe_247top_bot", cid, c.message.message_id, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
+            if uid in BOSSES: kb.add(types.InlineKeyboardButton("Настройки", callback_data="open_main_settings"))
+            return bot.edit_message_text(f"Привет, {get_user_mention(c.from_user)}... Я Лиза.\nЧат: https://t.me/+8WZ4kwpAaZ0yZTRi\nБот: @vibe_247top_bot", cid, c.message.message_id, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
 
         if d == "open_main_settings":
-            if uid not in BOSSES: return bot.answer_callback_query(c.id, "⛔", show_alert=True)
+            if uid not in BOSSES: return bot.answer_callback_query(c.id, "Запрещено", show_alert=True)
             bot.answer_callback_query(c.id)
-            return bot.edit_message_text("🎛 Панель:", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
+            return bot.edit_message_text("Панель:", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
 
         if d == "m:toggle_intervene":
             set_v(cid, "intervene", not get_v(cid, "intervene", True))
@@ -763,32 +948,32 @@ def cb_handler(c):
             t = "freq" if d == "m:freq" else "anger"
             kb = types.InlineKeyboardMarkup(row_width=4)
             kb.add(*[types.InlineKeyboardButton(f"{v}%", callback_data=f"s:{t}:{v}") for v in [10, 20, 30, 40, 50, 70, 100]])
-            kb.add(types.InlineKeyboardButton("« Назад", callback_data="open_main_settings"))
-            return bot.edit_message_text("📊 Выберите значение:", cid, c.message.message_id, reply_markup=kb)
+            kb.add(types.InlineKeyboardButton("Назад", callback_data="open_main_settings"))
+            return bot.edit_message_text("Выберите значение:", cid, c.message.message_id, reply_markup=kb)
 
         if action == "s":
             t, v = parts[1], parts[2]
             bot.answer_callback_query(c.id)
             set_v(cid, t, int(v))
-            return bot.edit_message_text("✅ Параметр зафиксирован.", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
+            return bot.edit_message_text("Параметр зафиксирован.", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
 
         if d == "to_group_settings" and uid in BOSSES:
-            try: bot.send_message(uid, "📢 Выберите группу:", reply_markup=chats_selection_kb())
+            try: bot.send_message(uid, "Выберите группу:", reply_markup=chats_selection_kb())
             except Exception as e:
                 logging.error(f"[GROUP SETTINGS] {e}")
-                return bot.answer_callback_query(c.id, "⚠️ Нажми Start в ЛС с ботом.", show_alert=True)
+                return bot.answer_callback_query(c.id, "Нажми Start в ЛС с ботом.", show_alert=True)
             return bot.answer_callback_query(c.id, "Отправлено в ЛС")
 
         if d == "m:autopost_list":
             bot.answer_callback_query(c.id)
-            return bot.edit_message_text("📢 Группа для автопостинга:", cid, c.message.message_id, reply_markup=chats_selection_kb())
+            return bot.edit_message_text("Группа для автопостинга:", cid, c.message.message_id, reply_markup=chats_selection_kb())
 
         if action == "ap":
             sub = parts[1]
             if sub == "chat":
                 target_cid = parts[2]
                 bot.answer_callback_query(c.id)
-                return bot.edit_message_text("📋 Посты:", cid, c.message.message_id, reply_markup=autopost_list_kb(target_cid))
+                return bot.edit_message_text("Посты:", cid, c.message.message_id, reply_markup=autopost_list_kb(target_cid))
             elif sub == "select":
                 pid = parts[2]
                 with state_lock:
@@ -809,15 +994,15 @@ def cb_handler(c):
                         "chat_id": int(c_str) if c_str.lstrip('-').isdigit() else c_str
                     })
                     db_set("autopost", data)
-                bot.answer_callback_query(c.id, "✅ Создан")
-                return bot.edit_message_text("📋 Посты", cid, c.message.message_id, reply_markup=autopost_list_kb(c_str))
+                bot.answer_callback_query(c.id, "Создан")
+                return bot.edit_message_text("Посты", cid, c.message.message_id, reply_markup=autopost_list_kb(c_str))
             elif sub == "delmenu":
                 bot.answer_callback_query(c.id)
                 kb = types.InlineKeyboardMarkup(row_width=1)
                 target_chat = parts[2]
                 for p in [p for p in db_get("autopost", {"posts": []}).get("posts", []) if str(p.get("chat_id")) == target_chat]:
-                    kb.add(types.InlineKeyboardButton(f"🗑 Удалить: {html.escape(p.get('name', 'Пост'))}", callback_data=f"ap:delfinal:{p['id']}"))
-                return bot.edit_message_text("🗑 Выберите пост:", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:chat:{target_chat}")))
+                    kb.add(types.InlineKeyboardButton(f"Удалить: {html.escape(p.get('name', 'Пост'))}", callback_data=f"ap:delfinal:{p['id']}"))
+                return bot.edit_message_text("Выберите пост:", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("Назад", callback_data=f"ap:chat:{target_chat}")))
             elif sub == "delfinal":
                 pid = parts[2]
                 with state_lock:
@@ -825,8 +1010,8 @@ def cb_handler(c):
                     c_str = next((str(p.get("chat_id")) for p in data["posts"] if p["id"] == pid), "-1004374303475")
                     data["posts"] = [p for p in data["posts"] if p["id"] != pid]
                     db_set("autopost", data)
-                bot.answer_callback_query(c.id, "🗑 Удален")
-                return bot.edit_message_text("📋 Посты", cid, c.message.message_id, reply_markup=autopost_list_kb(c_str))
+                bot.answer_callback_query(c.id, "Удален")
+                return bot.edit_message_text("Посты", cid, c.message.message_id, reply_markup=autopost_list_kb(c_str))
             elif sub in ["toggle", "autodel"]:
                 pid = parts[2]
                 with state_lock:
@@ -836,15 +1021,15 @@ def cb_handler(c):
                             if sub == "toggle": p["enabled"] = not p.get("enabled", False)
                             else: p["auto_delete_prev"] = not p.get("auto_delete_prev", False)
                     db_set("autopost", data)
-                bot.answer_callback_query(c.id, "✅")
+                bot.answer_callback_query(c.id, "Сохранено")
                 return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid))
             elif sub == "int_menu":
                 pid = parts[2]
                 bot.answer_callback_query(c.id)
                 kb = types.InlineKeyboardMarkup(row_width=3)
                 kb.add(types.InlineKeyboardButton("15м", callback_data=f"ap:setint:{pid}:900"), types.InlineKeyboardButton("1ч", callback_data=f"ap:setint:{pid}:3600"), types.InlineKeyboardButton("6ч", callback_data=f"ap:setint:{pid}:21600"))
-                kb.add(types.InlineKeyboardButton("Выкл", callback_data=f"ap:setint:{pid}:0"), types.InlineKeyboardButton("✏ Свое", callback_data=f"ap:custom_int:{pid}"))
-                return bot.edit_message_text("⏱ Выберите интервал:", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                kb.add(types.InlineKeyboardButton("Выкл", callback_data=f"ap:setint:{pid}:0"), types.InlineKeyboardButton("Свое", callback_data=f"ap:custom_int:{pid}"))
+                return bot.edit_message_text("Выберите интервал:", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
             elif sub in ["setint", "settime", "setdate", "clrbtns", "delph"]:
                 pid = parts[2]
                 with state_lock:
@@ -857,7 +1042,7 @@ def cb_handler(c):
                             elif sub == "clrbtns": p["buttons"] = []
                             elif sub == "delph": p["photo"] = None
                     db_set("autopost", data)
-                bot.answer_callback_query(c.id, "✅ Сохранено")
+                bot.answer_callback_query(c.id, "Сохранено")
                 return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid))
             elif sub.startswith("custom_") or sub in ["text", "btns", "photo"]:
                 pid = parts[2]
@@ -875,20 +1060,20 @@ def cb_handler(c):
                     "interval": "Отправьте интервал (например: 45м, 3ч):",
                     "time": "Отправьте время (например: 14:30):",
                     "date": "Отправьте дату (например: 2026-10-01):",
-                    "text": "📝 Отправьте новый текст поста.",
+                    "text": "Отправьте новый текст поста.",
                     "buttons": "Отправь кнопки:\nТекст - https://ссылка.com\nИли: Текст - cmd:/lucky_game",
-                    "photo": "🖼 Отправьте фото в этот чат."
+                    "photo": "Отправьте фото в этот чат."
                 }
                 return bot.send_message(cid, msgs.get(act, "Отправьте значение:"))
             elif sub in ["photo_menu", "btns_menu", "time_menu", "date_menu"]:
                 pid = parts[2]
                 bot.answer_callback_query(c.id)
                 kb = types.InlineKeyboardMarkup(row_width=1)
-                if sub == "photo_menu": kb.add(types.InlineKeyboardButton("🖼 Загрузить", callback_data=f"ap:photo:{pid}"), types.InlineKeyboardButton("🗑 Удалить", callback_data=f"ap:delph:{pid}"))
-                elif sub == "btns_menu": kb.add(types.InlineKeyboardButton("➕ Настроить", callback_data=f"ap:btns:{pid}"), types.InlineKeyboardButton("🗑 Удалить все", callback_data=f"ap:clrbtns:{pid}"))
+                if sub == "photo_menu": kb.add(types.InlineKeyboardButton("Загрузить", callback_data=f"ap:photo:{pid}"), types.InlineKeyboardButton("Удалить", callback_data=f"ap:delph:{pid}"))
+                elif sub == "btns_menu": kb.add(types.InlineKeyboardButton("Настроить", callback_data=f"ap:btns:{pid}"), types.InlineKeyboardButton("Удалить все", callback_data=f"ap:clrbtns:{pid}"))
                 elif sub == "time_menu": kb.add(types.InlineKeyboardButton("12:00", callback_data=f"ap:settime:{pid}:12:00"), types.InlineKeyboardButton("Выкл", callback_data=f"ap:settime:{pid}:OFF"), types.InlineKeyboardButton("Свое", callback_data=f"ap:custom_time:{pid}"))
                 elif sub == "date_menu": kb.add(types.InlineKeyboardButton("Сразу", callback_data=f"ap:setdate:{pid}:OFF"), types.InlineKeyboardButton("Ввести", callback_data=f"ap:custom_date:{pid}"))
-                return bot.edit_message_text("Настройка:", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                return bot.edit_message_text("Настройка:", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
             elif sub == "send":
                 pid = parts[2]
                 with state_lock:
@@ -904,10 +1089,10 @@ def cb_handler(c):
                                     p["last_post"] = time.time()
                                     p["last_msg_id"] = post.get("last_msg_id")
                             db_set("autopost", fresh)
-                        return bot.answer_callback_query(c.id, "🚀 Отправлено!", show_alert=True)
+                        return bot.answer_callback_query(c.id, "Отправлено!", show_alert=True)
                     except Exception as e:
                         logging.error(f"[MANUAL SEND] {e}")
-                        return bot.answer_callback_query(c.id, f"⚠️ Ошибка", show_alert=True)
+                        return bot.answer_callback_query(c.id, "Ошибка", show_alert=True)
             elif sub == "preview":
                 pid = parts[2]
                 bot.answer_callback_query(c.id)
@@ -915,10 +1100,10 @@ def cb_handler(c):
                     post = next((p for p in db_get("autopost", {"posts": []}).get("posts", []) if p["id"] == pid), None)
                 if post:
                     mk = build_post_user_kb(post)
-                    bot.send_message(cid, "👁 <b>Предпросмотр:</b>", parse_mode='HTML')
+                    bot.send_message(cid, "<b>Предпросмотр:</b>", parse_mode='HTML')
                     if post.get("photo"): bot.send_photo(cid, post.get("photo"), caption=post.get("text", ""), reply_markup=mk, parse_mode='HTML')
                     else: bot.send_message(cid, post.get("text", ""), reply_markup=mk, parse_mode='HTML')
-                    return bot.send_message(cid, "Вот так выглядит пост.", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.send_message(cid, "Вот так выглядит пост.", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
 
         bot.answer_callback_query(c.id)
     except Exception as e:
@@ -939,7 +1124,7 @@ def on_photo(m):
                     for p in data["posts"]:
                         if p["id"] == pid: p["photo"] = m.photo[-1].file_id
                     db_set("autopost", data)
-                    bot.reply_to(m, "🖼 Фото сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    bot.reply_to(m, "Фото сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
     except Exception as e:
         logging.error(f"[ON PHOTO] {e}", exc_info=True)
 
@@ -977,7 +1162,7 @@ def text_handler(m):
                         for p in data["posts"]:
                             if p["id"] == pid: p["buttons"] = new_btns
                         db_set("autopost", data)
-                    return bot.reply_to(m, "✅ Кнопки сохранены", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "Кнопки сохранены", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
 
                 elif action == "text":
                     with state_lock:
@@ -985,7 +1170,7 @@ def text_handler(m):
                         for p in data["posts"]:
                             if p["id"] == pid: p["text"] = t
                         db_set("autopost", data)
-                    return bot.reply_to(m, "📝 Текст сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "Текст сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
 
                 elif action == "interval":
                     sec = parse_interval_input(t)
@@ -995,8 +1180,8 @@ def text_handler(m):
                             for p in data["posts"]:
                                 if p["id"] == pid: p["interval"], p["daily_time"] = sec, None
                             db_set("autopost", data)
-                        return bot.reply_to(m, "⏱ Интервал сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Ошибка формата. Пример: 30м, 2ч")
+                        return bot.reply_to(m, "Интервал сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "Ошибка формата. Пример: 30м, 2ч")
 
                 elif action == "time":
                     if re.match(r'^\d{2}:\d{2}$', t):
@@ -1005,8 +1190,8 @@ def text_handler(m):
                             for p in data["posts"]:
                                 if p["id"] == pid: p["daily_time"] = t
                             db_set("autopost", data)
-                        return bot.reply_to(m, "🕑 Время сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Формат: ЧЧ:ММ (12:00)")
+                        return bot.reply_to(m, "Время сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "Формат: ЧЧ:ММ (12:00)")
 
                 elif action == "date":
                     if re.match(r'^\d{4}-\d{2}-\d{2}$', t):
@@ -1015,8 +1200,8 @@ def text_handler(m):
                             for p in data["posts"]:
                                 if p["id"] == pid: p["start_date"] = t
                             db_set("autopost", data)
-                        return bot.reply_to(m, "📅 Дата сохранена", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Формат: ГГГГ-ММ-ДД (2026-10-01)")
+                        return bot.reply_to(m, "Дата сохранена", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "Формат: ГГГГ-ММ-ДД (2026-10-01)")
 
         t_lower = t.lower()
         with state_lock:
@@ -1028,13 +1213,14 @@ def text_handler(m):
                     ldrs = db_get("safe_leaders", {})
                     ldrs.setdefault(str(uid), {"name": m.from_user.first_name, "wins": 0})["wins"] += 1
                     db_set("safe_leaders", ldrs)
-                    auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML'), 180)
+                    msg = bot.send_message(cid, f"СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML')
+                    auto_del(msg, 180)
             return
 
         with state_lock:
-            is_cities_active = cid in active_cities_games
-        if is_cities_active and CYRILLIC_CITY_RE.match(t):
-            executor.submit(process_city_guess, cid, uid, m.from_user.first_name, t)
+            is_words_active = cid in active_word_games
+        if is_words_active and CYRILLIC_WORD_RE.match(t):
+            executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t)
 
         if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
             def threat_check():
@@ -1043,8 +1229,8 @@ def text_handler(m):
                         until = int(time.time()) + 300
                         bot.restrict_chat_member(cid, uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
                         mention = get_user_mention(m.from_user)
-                        bosses_ping = " ".join([f"<a href='tg://user?id={b}'>⚠️</a>" for b in BOSSES])
-                        alert_msg = f"{bosses_ping} 🛡 Обнаружена угроза от {mention}. Пользователь автоматически заглушен на 5 минут для проверки."
+                        bosses_ping = " ".join([f"<a href='tg://user?id={b}'>Внимание</a>" for b in BOSSES])
+                        alert_msg = f"{bosses_ping} Обнаружена угроза от {mention}. Пользователь автоматически заглушен на 5 минут для проверки."
                         bot.send_message(cid, alert_msg, parse_mode='HTML')
                 except Exception as e:
                     logging.error(f"[THREAT ACTION] {e}", exc_info=True)
@@ -1053,8 +1239,8 @@ def text_handler(m):
         direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t_lower or f"@{BOT_USER}" in t_lower
         if direct or any(w in t_lower for w in CONFL):
             with state_lock:
-                cities_running = cid in active_cities_games
-            if cities_running:
+                words_running = cid in active_word_games
+            if words_running:
                 return  
             if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
             prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t_lower for w in CONFL) and m.reply_to_message) else m.text
