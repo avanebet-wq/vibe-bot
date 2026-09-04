@@ -6,8 +6,6 @@ import requests
 import html
 import threading
 import logging
-import sqlite3
-import json
 from datetime import datetime
 import telebot
 from telebot import types
@@ -16,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from config import TOKEN, OPENROUTER_KEY, BOSSES, AI_MODEL, ALLOWED_GROUPS, ALLOWED_GROUPS_RAW, DENIED_MSG, KYIV_TZ, SYS_PROMPT, SUSP, MUTES, CONFL
-from database import db_get, db_set, db_lock
+from database import db_get, db_set
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -150,16 +148,17 @@ def cleanup_worker():
             logging.error(f"[CLEANUP WORKER] {e}", exc_info=True)
 threading.Thread(target=cleanup_worker, daemon=True).start()
 
-# --- AI ЛОГИКА С ЭКРАНИРОВАНИЕМ ---
+# --- AI ЛОГИКА ---
 def clean_ai_response(content):
-    if not content: return "С радостью помогу, но фильтры ограничивают..."
+    if not content: return "Та ну... мысль потерялась, спроси по-другому..."
     content = re.sub(r"(?si)^.*?thinking process.*?(?:output|option \d+:|final response:|answer:|draft generation:?)\s*", "", content)
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
     clean_str = re.sub(r"(?i)^option \d+:\s*", "", content.strip())
-    if re.fullmatch(r"[\d\.\-\sE]+", clean_str) and len(clean_str) > 3: return "Фильтры ограничивают ответ..."
-    if re.search(r"(i cannot|i can't|as an ai|sorry|unable to fulfill|error|я искусственный интеллект)", clean_str, re.IGNORECASE): return "Фильтры ограничивают ответ..."
+    if re.fullmatch(r"[\d\.\-\sE]+", clean_str) and len(clean_str) > 3: return "Что-то цифры одни... давай о чём-то другом."
+    if re.search(r"(i cannot|i can't|as an ai|sorry|unable to fulfill|error|я искусственный интеллект)", clean_str, re.IGNORECASE): 
+        return "Не, об этом говорить не буду..."
     clean_str = re.sub(r"^(Лиза|Lisa|Ліза):\s*", "", clean_str, flags=re.IGNORECASE).strip()
-    res = clean_str + "." if clean_str and clean_str[-1].isalnum() else clean_str or "Не могу ответить."
+    res = clean_str + "." if clean_str and clean_str[-1].isalnum() else clean_str or "Мда..."
     return html.escape(res)
 
 def call_ai(messages, max_tokens=300, temp=0.5):
@@ -237,7 +236,7 @@ def post_text_view(pid):
     rep_str = "Ежедневно" if dt else ("Выключено" if post.get("interval",3600)==0 else f"Каждые {post['interval']//60}м")
     return f"🕑 Пост\n💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}\n📢 Чат: {html.escape(str(cname))}\n🕑 Время: {time_str}\n🔁 Повтор: {rep_str}"
 
-# --- ФОНОВЫЕ ЗАДАЧИ ---
+# --- ФОНОВЫЕ ЗАДАЧИ С ТОЧЕЧНЫМ MERGE ПЕРЕД ФИНАЛЬНОЙ ЗАПИСЬЮ ---
 def send_specific_post(chat_id, post):
     try:
         mk = build_post_user_kb(post)
@@ -246,10 +245,16 @@ def send_specific_post(chat_id, post):
             msg = bot.send_photo(chat_id, post["photo"], caption=txt, reply_markup=mk, parse_mode='HTML')
         else:
             msg = bot.send_message(chat_id, txt, reply_markup=mk, parse_mode='HTML')
-        if post.get("auto_delete_prev") and post.get("last_msg_id"):
-            try: bot.delete_message(chat_id, post["last_msg_id"])
+        
+        old_msg_id = None
+        with state_lock:
+            if post.get("auto_delete_prev") and post.get("last_msg_id"):
+                old_msg_id = post["last_msg_id"]
+            post["last_msg_id"] = msg.message_id
+            
+        if old_msg_id:
+            try: bot.delete_message(chat_id, old_msg_id)
             except Exception as e: logging.error(f"[AUTOPOST DEL PREV] {e}")
-        post["last_msg_id"] = msg.message_id
     except Exception as e: logging.error(f"[AUTOPOST SEND] {e}", exc_info=True)
 
 def autopost_worker():
@@ -258,19 +263,38 @@ def autopost_worker():
             time.sleep(15)
             now_ts = datetime.now(KYIV_TZ).timestamp()
             td_str, curr_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d"), datetime.now(KYIV_TZ).strftime("%H:%M")
-            data = db_get("autopost", {"posts": []})
-            updated = False
-            for p in data.get("posts", []):
-                if not p.get("enabled") or (p.get("start_date") and td_str < p["start_date"]): continue
-                dt = p.get("daily_time")
-                if dt:
-                    if curr_str >= dt and p.get("last_sent_date") != td_str:
-                        send_specific_post(p.get("chat_id"), p)
-                        p["last_post"], p["last_sent_date"], updated = now_ts, td_str, True
-                elif p.get("interval", 0) > 0 and now_ts - p.get("last_post", 0) >= p["interval"]:
-                    send_specific_post(p.get("chat_id"), p)
-                    p["last_post"], updated = now_ts, True
-            if updated: db_set("autopost", data)
+            to_send = []
+            with state_lock:
+                data = db_get("autopost", {"posts": []})
+                updated = False
+                for p in data.get("posts", []):
+                    if not p.get("enabled") or (p.get("start_date") and td_str < p["start_date"]): continue
+                    dt = p.get("daily_time")
+                    if dt:
+                        if curr_str >= dt and p.get("last_sent_date") != td_str:
+                            p["last_post"], p["last_sent_date"], updated = now_ts, td_str, True
+                            to_send.append((p.get("chat_id"), p))
+                    elif p.get("interval", 0) > 0 and now_ts - p.get("last_post", 0) >= p["interval"]:
+                        p["last_post"], updated = now_ts, True
+                        to_send.append((p.get("chat_id"), p))
+                if updated: db_set("autopost", data)
+            
+            for chat_id, p in to_send:
+                send_specific_post(chat_id, p)
+            
+            # Точечный merge, чтобы не затереть возможные изменения админа, сделанные во время сетевых запросов
+            if to_send:
+                with state_lock:
+                    fresh = db_get("autopost", {"posts": []})
+                    by_id = {item["id"]: item for item in fresh.get("posts", [])}
+                    for _, sent_post in to_send:
+                        target = by_id.get(sent_post["id"])
+                        if target:
+                            target["last_msg_id"] = sent_post.get("last_msg_id")
+                            target["last_post"] = sent_post.get("last_post")
+                            if "last_sent_date" in sent_post:
+                                target["last_sent_date"] = sent_post["last_sent_date"]
+                    db_set("autopost", fresh)
         except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
 threading.Thread(target=autopost_worker, daemon=True).start()
 
@@ -314,7 +338,7 @@ def play_lucky_game(cid, uid, fname):
             if lim["left"] <= 0:
                 if now < lim["reset_at"]:
                     rem = int(lim["reset_at"] - now)
-                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
+                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
                     track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True))
                     if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
                     return
@@ -397,7 +421,7 @@ def cmd_lsg(m):
     if not check_access(m): return
     track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_safe_game", bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML'))
 
-# --- КОЛБЕКИ С РАЗДЕЛИТЕЛЕМ `:` ---
+# --- КОЛБЕКИ ---
 @bot.callback_query_handler(func=lambda c: True)
 def cb_handler(c):
     try:
@@ -548,7 +572,6 @@ def cb_handler(c):
                 bot.answer_callback_query(c.id, "✅ Сохранено")
                 return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid))
             elif sub.startswith("custom_") or sub in ["text", "btns", "photo"]:
-                # sub может быть custom_int, custom_time, custom_date, text, btns, photo
                 pid = parts[2]
                 with state_lock:
                     if "custom_int" in d: act = "interval"
@@ -650,7 +673,7 @@ def text_handler(m):
                         for part in line.split('|'):
                             if '-' in part:
                                 try:
-                                    t_btn, val = part.split('-', 1)
+                                    t_btn, val = part.rsplit('-', 1)
                                     t_btn, val = t_btn.strip(), val.strip()
                                     if val.startswith("cmd:"): row.append({"text": t_btn, "command": val[4:].strip()})
                                     elif val.startswith("cb:"): row.append({"text": t_btn, "callback_data": val[3:].strip()})
@@ -716,7 +739,7 @@ def text_handler(m):
                     auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML'), 180)
             return
 
-        # Безопасная модерация: мут + алерт боссам вместо мгновенного бана
+        # Безопасная модерация: мут + пинг боссов вместо мгновенного бана
         if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
             def threat_check():
                 try:
