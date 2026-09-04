@@ -4,12 +4,27 @@ import telebot
 from telebot import types
 from telebot.types import ChatPermissions
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Импорт наших собственных модулей
 from config import TOKEN, OPENROUTER_KEY, BOSSES, AI_MODEL, ALLOWED_GROUPS, ALLOWED_GROUPS_RAW, DENIED_MSG, KYIV_TZ, SYS_PROMPT, SUSP, MUTES, CONFL
 from database import db_get, db_set
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# --- ЗАГЛУШКА ДЛЯ RAILWAY (ФЕЙКОВЫЙ ВЕБ-СЕРВЕР) ---
+def run_dummy_server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot is alive and running!")
+        def log_message(self, format, *args): pass # Отключаем лишний спам в логи
+    port = int(os.environ.get("PORT", 8080))
+    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+threading.Thread(target=run_dummy_server, daemon=True).start()
+# --------------------------------------------------
 
 if not TOKEN or not OPENROUTER_KEY:
     logging.critical("СЕКРЕТЫ НЕ НАЙДЕНЫ! Добавьте BOT_TOKEN и OPENROUTER_KEY в Railway Variables.")
@@ -374,16 +389,4 @@ def cb_handler(c):
     if c.message.chat.type != 'private' and str(cid).replace("-100", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
         return bot.answer_callback_query(c.id, "⛔ Неразрешенный чат.", show_alert=True)
 
-    if d.startswith("lucky_again_"):
-        if uid != int(d.split("_")[2]): return bot.answer_callback_query(c.id, "⛔ Не твоя игра!", show_alert=True)
-        try: bot.delete_message(cid, c.message.message_id)
-        except: pass
-        bot.answer_callback_query(c.id)
-        play_lucky_game(cid, uid, c.from_user.first_name)
-        return
-
-    if d == "what_can_i_do":
-        bot.answer_callback_query(c.id)
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start"))
-        txt = "🔹 Общаюсь\n🔹 Слежу за матом\n🔹 Автопостинг\n🔹 Игры (/lucky_game, сейф)"
-        return bot.edit_message_
+    if d.startswith
