@@ -19,7 +19,7 @@ def run_dummy_server():
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"Bot is alive and running!")
-        def log_message(self, format, *args): pass
+        def log_message(self, format, *args): pass # Отключаем лишний спам в логи
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
@@ -31,6 +31,8 @@ if not TOKEN or not OPENROUTER_KEY:
     exit(1)
 
 bot = telebot.TeleBot(TOKEN)
+ME = bot.get_me()
+BOT_ID, BOT_USER = ME.id, (ME.username or "").lower()
 executor = ThreadPoolExecutor(max_workers=10) # Пул для тяжелых AI задач
 
 # --- In-memory состояния (очищаются при рестарте, это нормально) ---
@@ -63,6 +65,18 @@ def get_user_mention(user_obj=None, user_id=None, first_name=None):
     safe_name = html.escape(str(first_name or "Пользователь"))
     if user_id: return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
     return safe_name
+
+def format_safe_leaderboard():
+    ldrs = db_get("safe_leaders", {})
+    if not ldrs: return "🏆 Рейтинг взломщиков сейфа VIBE пока пуст."
+    sorted_l = sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)
+    txt = "🏆 Рейтинг взломщиков сейфа VIBE\n\n"
+    for i, (uid_str, uinfo) in enumerate(sorted_l[:10], 1):
+        m_icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "▫️"
+        link = get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))
+        u_wins = uinfo.get('wins', 0)
+        txt += f"{m_icon} {i}. {link} — <b>{u_wins}</b> побед\n"
+    return txt.strip()
 
 def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
     if not new_msg: return
