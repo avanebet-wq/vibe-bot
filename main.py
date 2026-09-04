@@ -58,13 +58,13 @@ active_lucky_players = set()
 untrusted_warned = set()
 last_command_messages = {}
 messages_to_delete = []
-
-# Унифицированное FSM: uid -> {"action": str, "pid": str}
 active_fsm = {}
 
-# --- СОСТОЯНИЯ ИГРЫ «ГОРОДА» ---
-active_cities_games = {}  # cid -> {"last_city","next_letter","used","last_move_ts","moves"}
+# --- СОСТОЯНИЯ ИГРЫ «ГОРОДА» И КУБИКИ ---
+active_cities_games = {}
 CITIES_TIMEOUT = 180
+DICE_ANIMATION_SECONDS = {"🎯": 4.0, "🎳": 4.0, "🏀": 4.0}
+DELETE_ANIM_DELAY = 2.0
 
 CYRILLIC_CITY_RE = re.compile(r'^[а-яёА-ЯЁ][а-яёА-ЯЁ\- ]{1,38}[а-яёА-ЯЁ]$')
 
@@ -117,6 +117,30 @@ def get_user_mention(user_obj=None, user_id=None, first_name=None):
     safe_name = html.escape(str(first_name or "User"))
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>' if user_id else safe_name
 
+def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
+    if not new_msg: return
+    with state_lock:
+        key = (chat_id, user_id, cmd_name)
+        if key in last_command_messages:
+            try: bot.delete_message(chat_id, last_command_messages[key])
+            except Exception as e: logging.error(f"[DEL OLD CMD] {e}")
+        last_command_messages[key] = new_msg.message_id
+
+def auto_del(msg, ttl=180):
+    if msg:
+        with state_lock:
+            messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
+
+def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
+    """Убирает мусор после обработки команды."""
+    if delete_user_msg and not getattr(m, "is_callback", False):
+        try: bot.delete_message(m.chat.id, m.message_id)
+        except Exception as e: logging.error(f"[DEL CMD:{cmd_name}] {e}")
+    if sent_msg:
+        track_and_replace_specific_cmd(m.chat.id, m.from_user.id, cmd_name, sent_msg)
+        if ttl:
+            auto_del(sent_msg, ttl)
+
 def format_safe_leaderboard():
     with state_lock:
         ldrs = db_get("safe_leaders", {})
@@ -144,15 +168,6 @@ def parse_interval_input(text):
     val, unit = int(match.group(1)), match.group(2)
     return val * 60 if unit == 'м' else (val * 3600 if unit == 'ч' else val * 86400)
 
-def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
-    if not new_msg: return
-    with state_lock:
-        key = (chat_id, user_id, cmd_name)
-        if key in last_command_messages:
-            try: bot.delete_message(chat_id, last_command_messages[key])
-            except Exception as e: logging.error(f"[DEL OLD CMD] {e}")
-        last_command_messages[key] = new_msg.message_id
-
 def register_chat(chat):
     if chat.type in ['group', 'supergroup', 'channel']:
         with state_lock:
@@ -177,11 +192,6 @@ def check_access(m):
         except Exception as e: logging.error(f"[ACCESS ERROR] {e}")
         return False
     return True
-
-def auto_del(msg, ttl=180):
-    if msg:
-        with state_lock:
-            messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
 
 def cleanup_worker():
     while True:
@@ -213,7 +223,7 @@ def cities_timeout_worker():
                         del active_cities_games[cid]
             for cid, game in to_close:
                 try:
-                    bot.send_message(cid, f"⌛ Игра «Города» окончена по тайм-ауту.\nНазвано: {game['moves']}. /start_cities_game — начать заново")
+                    bot.send_message(cid, f"⌛ Игра «Города» окончена по тайм-ауту.\nНазвано: {game['moves']}. /start_cities_game — начать заново\n🔊 Лиза снова на связи.")
                 except Exception as e: logging.error(f"[CITIES TIMEOUT] {e}")
         except Exception as e: logging.error(f"[CITIES WORKER] {e}", exc_info=True)
 threading.Thread(target=cities_timeout_worker, daemon=True).start()
@@ -410,6 +420,7 @@ def post_text_view(pid):
     rep_str = "Ежедневно" if dt else ("Выключено" if post.get("interval",3600)==0 else f"Каждые {post['interval']//60}м")
     return f"🕑 Пост\n💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}\n📢 Чат: {html.escape(str(cname))}\n🕑 Время: {time_str}\n🔁 Повтор: {rep_str}"
 
+# --- ФОНОВЫЕ ЗАДАЧИ ---
 def send_specific_post(chat_id, post):
     try:
         mk = build_post_user_kb(post)
@@ -470,6 +481,7 @@ def autopost_worker():
         except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
 threading.Thread(target=autopost_worker, daemon=True).start()
 
+# --- ИГРОВАЯ ЛОГИКА ---
 def process_city_guess(cid, uid, fname, raw_text):
     try:
         raw = raw_text.strip()
@@ -511,9 +523,10 @@ def process_city_guess(cid, uid, fname, raw_text):
     except Exception as e:
         logging.error(f"[CITIES MOVE] {e}", exc_info=True)
 
-def lucky_game_result(cid, uid, fname, msg_id, win, left):
+def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
     try:
-        time.sleep(7)
+        wait_s = DICE_ANIMATION_SECONDS.get(emoji, 4.0) + DELETE_ANIM_DELAY
+        time.sleep(wait_s)
         try: bot.delete_message(cid, msg_id)
         except Exception as e: logging.error(f"[LUCKY DEL] {e}")
         mention = get_user_mention(user_id=uid, first_name=fname)
@@ -535,7 +548,9 @@ def lucky_game_result(cid, uid, fname, msg_id, win, left):
             txt += f"\nПопыток больше нет😔\nНовые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
         else:
             txt += f"Осталось попыток: {left}\nСыграем еще?"
-        track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, txt, reply_markup=kb, parse_mode='HTML'))
+        
+        msg = bot.send_message(cid, txt, reply_markup=kb, parse_mode='HTML')
+        track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
     except Exception as e:
         logging.error(f"[LUCKY RESULT] {e}", exc_info=True)
     finally:
@@ -551,7 +566,8 @@ def play_lucky_game(cid, uid, fname):
                 if now < lim["reset_at"]:
                     rem = int(lim["reset_at"] - now)
                     txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
-                    track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True))
+                    msg = bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True)
+                    track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
                     if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
                     return
                 else: lim["left"] = 5
@@ -566,36 +582,39 @@ def play_lucky_game(cid, uid, fname):
                 if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
             return
         win = (emoji in ["🎯", "🎳"] and dice.dice.value == 6) or (emoji == "🏀" and dice.dice.value in [4, 5])
-        executor.submit(lucky_game_result, cid, uid, fname, dice.message_id, win, lim["left"])
+        executor.submit(lucky_game_result, cid, uid, fname, dice.message_id, win, lim["left"], emoji)
     except Exception as e:
         logging.error(f"[PLAY LUCKY] {e}", exc_info=True)
         with state_lock:
             if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
 
+# --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
     if not check_access(m): return
     if m.chat.type == 'private' and m.from_user.id in BOSSES and m.text and "settings" in m.text:
-        return bot.reply_to(m, "📢 Выберите группу:", reply_markup=chats_selection_kb())
+        msg = bot.reply_to(m, "📢 Выберите группу:", reply_markup=chats_selection_kb())
+        return finish_command(m, "start", msg)
     kb = types.InlineKeyboardMarkup(row_width=1).add(types.InlineKeyboardButton("Что ты умеешь?", callback_data="what_can_i_do"))
     if m.chat.type == 'private' and m.from_user.id in BOSSES: kb.add(types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_main_settings"))
-    
     txt = f"Привет, {get_user_mention(m.from_user)}... Я Лиза...\n💭 Чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n🛒 Наш бот: @vibe_247top_bot\n🎁 События: /events"
     msg = bot.send_message(m.chat.id, txt, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
-    if m.chat.type != 'private': auto_del(msg, 180)
+    finish_command(m, "start", msg, ttl=180 if m.chat.type != 'private' else None)
 
 @bot.message_handler(commands=['setting', 'settings'])
 def cmd_settings(m):
     if not check_access(m): return
-    if m.from_user.id not in BOSSES: return auto_del(bot.send_message(m.chat.id, "⛔ Только для руководства.", parse_mode='HTML'))
-    track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "settings", bot.send_message(m.chat.id, "🎛 Панель управления:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML'))
+    if m.from_user.id not in BOSSES:
+        msg = bot.send_message(m.chat.id, "⛔ Только для руководства.", parse_mode='HTML')
+        return finish_command(m, "settings", msg, ttl=15)
+    msg = bot.send_message(m.chat.id, "🎛 Панель управления:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
+    finish_command(m, "settings", msg) 
 
 @bot.message_handler(commands=['lucky_game'])
 def cmd_lg(m):
     if not check_access(m): return
     uid, cid = m.from_user.id, m.chat.id
-    try: bot.delete_message(cid, m.message_id)
-    except Exception as e: logging.error(f"[LG DEL] {e}")
+    finish_command(m, "lucky_game_cmd")
     with state_lock:
         if (cid, uid) in active_lucky_players:
             return track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, "Дождись конца игры!"))
@@ -605,33 +624,37 @@ def cmd_lg(m):
 @bot.message_handler(commands=['leaders_lucky_game'])
 def cmd_llg(m):
     if not check_access(m): return
-    try: bot.delete_message(m.chat.id, m.message_id)
-    except Exception as e: logging.error(f"[LLG DEL] {e}")
     with state_lock:
         ldrs = db_get("lucky_leaders", {})
-    if not ldrs: txt = "🏆 Рейтинг пуст."
-    else: txt = "🏆 Рейтинг везунчиков\n\n" + "\n".join(f"{i}. {get_user_mention(user_id=int(u), first_name=info.get('name'))} — <b>{info.get('wins',0)}</b>" for i, (u, info) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins",0), reverse=True)[:10], 1))
-    track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_lucky_game", bot.send_message(m.chat.id, txt, parse_mode='HTML'))
+    txt = "🏆 Рейтинг пуст." if not ldrs else "🏆 Рейтинг везунчиков\n\n" + "\n".join(f"{i}. {get_user_mention(user_id=int(u), first_name=info.get('name'))} — <b>{info.get('wins',0)}</b>" for i, (u, info) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins",0), reverse=True)[:10], 1))
+    msg = bot.send_message(m.chat.id, txt, parse_mode='HTML')
+    finish_command(m, "leaders_lucky_game", msg, ttl=120)
 
 @bot.message_handler(commands=['events'])
 def cmd_events(m):
     if not check_access(m): return
     evs = db_get("events", [])
     evs = evs["events"] if isinstance(evs, dict) and "events" in evs else evs
-    auto_del(bot.send_message(m.chat.id, "Пока пусто!" if not evs else "Планируется:\n" + "\n".join(f"🔸 {html.escape(str(e.get('date')))} — {html.escape(str(e.get('info')))}" for e in evs), parse_mode='HTML'), 180)
+    txt = "Пока пусто!" if not evs else "Планируется:\n" + "\n".join(f"🔸 {html.escape(str(e.get('date')))} — {html.escape(str(e.get('info')))}" for e in evs)
+    msg = bot.send_message(m.chat.id, txt, parse_mode='HTML')
+    finish_command(m, "events", msg, ttl=180)
 
 @bot.message_handler(commands=['start_game_safe'])
 def cmd_sgs(m):
     if not check_access(m) or m.from_user.id not in BOSSES: return
     with state_lock:
-        if m.chat.id in active_safes: return bot.send_message(m.chat.id, "⚠️ Сейф уже активирован.")
+        if m.chat.id in active_safes:
+            msg = bot.send_message(m.chat.id, "⚠️ Сейф уже активирован.")
+            return finish_command(m, "start_game_safe", msg, ttl=30)
         active_safes[m.chat.id] = {"code": f"{random.randint(0,999):03d}", "hint_given": False, "gid": time.time()}
-    track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "start_game_safe", bot.send_message(m.chat.id, "🔐 ИГРА НАЧАЛАСЬ\nБронированный сейф заблокирован на ХХХ.\nПишите код в чат.\nТоп: /leaders_safe_game"))
+    msg = bot.send_message(m.chat.id, "🔐 ИГРА НАЧАЛАСЬ\nБронированный сейф заблокирован на ХХХ.\nПишите код в чат.\nТоп: /leaders_safe_game")
+    finish_command(m, "start_game_safe", msg)
 
 @bot.message_handler(commands=['leaders_safe_game'])
 def cmd_lsg(m):
     if not check_access(m): return
-    track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_safe_game", bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML'))
+    msg = bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML')
+    finish_command(m, "leaders_safe_game", msg, ttl=120)
 
 @bot.message_handler(commands=['start_cities_game'])
 def cmd_start_cities(m):
@@ -639,42 +662,54 @@ def cmd_start_cities(m):
     cid = m.chat.id
     with state_lock:
         if cid in active_cities_games:
-            return bot.reply_to(m, "⚠️ Игра «Города» уже идёт.")
+            msg = bot.send_message(cid, "⚠️ Игра «Города» уже идёт.")
+            return finish_command(m, "start_cities_game", msg, ttl=20)
     parts = m.text.split(maxsplit=1)
     seed = parts[1].strip() if len(parts) > 1 else None
     if seed:
         if not CYRILLIC_CITY_RE.match(seed):
-            return bot.reply_to(m, "⚠️ Пример: /start_cities_game Москва")
+            msg = bot.send_message(cid, "⚠️ Пример: /start_cities_game Москва")
+            return finish_command(m, "start_cities_game", msg, ttl=20)
         if not resolve_is_city(seed, normalize_city(seed)):
-            return bot.reply_to(m, f"⚠️ «{html.escape(seed)}» не похож на существующий город.")
+            msg = bot.send_message(cid, f"⚠️ «{html.escape(seed)}» не похож на существующий город.")
+            return finish_command(m, "start_cities_game", msg, ttl=20)
     else:
         seed = random.choice(list(BASE_CITIES)).title()
     eff = effective_last_letter(seed)
     with state_lock:
         active_cities_games[cid] = {"last_city": seed, "next_letter": eff, "used": {normalize_city(seed)}, "last_move_ts": time.time(), "moves": 0}
-    bot.send_message(cid, f"🏙 ИГРА «ГОРОДА»!\nПервый город: <b>{html.escape(seed)}</b>\nСледующий на букву «{eff.upper()}»\n⏱ Тайм-аут хода: 3 мин\n/stop_cities_game · /leaders_cities_game", parse_mode='HTML')
+    msg = bot.send_message(cid, f"🏙 ИГРА «ГОРОДА»!\nПервый город: <b>{html.escape(seed)}</b>\nСледующий на букву «{eff.upper()}»\n⏱ Тайм-аут хода: 3 мин\n🔇 Пока идёт игра — Лиза не встревает в чат.\n/stop_cities_game · /leaders_cities_game", parse_mode='HTML')
+    finish_command(m, "start_cities_game", msg) 
 
 @bot.message_handler(commands=['stop_cities_game'])
 def cmd_stop_cities(m):
     if not check_access(m) or m.from_user.id not in BOSSES: return
     with state_lock:
         game = active_cities_games.pop(m.chat.id, None)
-    if not game: return bot.reply_to(m, "Игра сейчас не идёт.")
-    bot.send_message(m.chat.id, f"🛑 Остановлено. Названо городов: {game['moves']}. Последний: {html.escape(game['last_city'] or '—')}")
+    if not game:
+        msg = bot.send_message(m.chat.id, "Игра сейчас не идёт.")
+        return finish_command(m, "stop_cities_game", msg, ttl=20)
+    msg = bot.send_message(m.chat.id, f"🛑 Остановлено. Названо городов: {game['moves']}. Последний: {html.escape(game['last_city'] or '—')}\n🔊 Лиза снова на связи.")
+    finish_command(m, "stop_cities_game", msg, ttl=60)
 
 @bot.message_handler(commands=['leaders_cities_game'])
 def cmd_leaders_cities(m):
     if not check_access(m): return
-    track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_cities_game", bot.send_message(m.chat.id, format_cities_leaderboard(), parse_mode='HTML'))
+    msg = bot.send_message(m.chat.id, format_cities_leaderboard(), parse_mode='HTML')
+    finish_command(m, "leaders_cities_game", msg, ttl=120)
 
 @bot.message_handler(commands=['cities_status'])
 def cmd_cities_status(m):
     if not check_access(m): return
     with state_lock:
         game = active_cities_games.get(m.chat.id)
-    if not game: return bot.reply_to(m, "Игра не идёт. /start_cities_game")
-    bot.reply_to(m, f"🏙 Названо: {game['moves']}. Нужна буква «{game['next_letter'].upper()}».")
+    if not game:
+        msg = bot.send_message(m.chat.id, "Игра не идёт. /start_cities_game")
+        return finish_command(m, "cities_status", msg, ttl=20)
+    msg = bot.send_message(m.chat.id, f"🏙 Названо: {game['moves']}. Нужна буква «{game['next_letter'].upper()}».")
+    finish_command(m, "cities_status", msg, ttl=30)
 
+# --- КОЛБЕКИ ---
 @bot.callback_query_handler(func=lambda c: True)
 def cb_handler(c):
     try:
@@ -1017,6 +1052,10 @@ def text_handler(m):
 
         direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t_lower or f"@{BOT_USER}" in t_lower
         if direct or any(w in t_lower for w in CONFL):
+            with state_lock:
+                cities_running = cid in active_cities_games
+            if cities_running:
+                return  
             if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
             prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t_lower for w in CONFL) and m.reply_to_message) else m.text
             def ai_task():
