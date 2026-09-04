@@ -1,3 +1,2 @@
 pyTelegramBotAPI==4.14.0
 requests
-python-dotenv
