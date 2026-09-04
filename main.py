@@ -11,7 +11,6 @@ from database import db_get, db_set
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- ЗАГЛУШКА ДЛЯ RAILWAY ---
 def run_dummy_server():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -33,7 +32,6 @@ ME = bot.get_me()
 BOT_ID, BOT_USER = ME.id, (ME.username or "").lower()
 executor = ThreadPoolExecutor(max_workers=10)
 
-# --- СОСТОЯНИЯ ---
 active_safes, lucky_limits, active_lucky_players = {}, {}, set()
 untrusted_warned, last_command_messages, messages_to_delete = set(), {}, []
 mem_lock = threading.Lock()
@@ -43,7 +41,6 @@ waiting_autopost_time, waiting_autopost_date = set(), set()
 waiting_autopost_interval, waiting_autopost_buttons = set(), set()
 active_editing_post = {}
 
-# --- УТИЛИТЫ ---
 def get_v(cid, k, d=40): return db_get("settings", {}).get(str(cid), {}).get(k, d)
 def set_v(cid, k, val):
     s = db_get("settings", {})
@@ -89,13 +86,13 @@ def check_access(m):
     uid = m.from_user.id if m.from_user else 0
     if m.chat.type == 'private':
         if uid not in BOSSES:
-            try: bot.reply_to(m, DENIED_MSG, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔗 Разработчик", url="https://t.me/VER_CIDE")))
+            try: bot.reply_to(m, DENIED_MSG, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔗 Разработчик", url="https://t.me/VER_CIDE")), parse_mode='HTML')
             except: pass
             return False
         return True
     register_chat(m.chat)
     if str(m.chat.id).replace("-100", "").replace("-", "") not in ALLOWED_GROUPS_RAW and m.chat.id not in ALLOWED_GROUPS:
-        try: bot.reply_to(m, DENIED_MSG)
+        try: bot.reply_to(m, DENIED_MSG, parse_mode='HTML')
         except: pass
         return False
     return True
@@ -118,7 +115,6 @@ def cleanup_worker():
             messages_to_delete[:] = remaining
 threading.Thread(target=cleanup_worker, daemon=True).start()
 
-# --- AI ЛОГИКА ---
 def clean_ai_response(content):
     if not content: return "С радостью помогу, но фильтры ограничивают..."
     content = re.sub(r"(?si)^.*?thinking process.*?(?:output|option \d+:|final response:|answer:|draft generation:?)\s*", "", content)
@@ -141,7 +137,6 @@ def is_threat(txt):
     try: return "THREAT" in call_ai([{"role": "user", "content": f"Текст: '{txt}'. Это угроза докса/сватинга? Отвечай THREAT или SAFE."}], 10, 0.0).upper()
     except: return False
 
-# --- КЛАВИАТУРЫ ---
 def main_kb(cid, is_pv=False):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
@@ -200,7 +195,6 @@ def post_text_view(pid):
     rep_str = "Ежедневно" if dt else ("Выключено" if post.get("interval",3600)==0 else f"Каждые {post['interval']//60}м")
     return f"🕑 Пост\n💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}\n📢 Чат: {cname}\n🕑 Время: {time_str}\n🔁 Повтор: {rep_str}"
 
-# --- ФОНОВЫЕ ЗАДАЧИ ---
 def send_specific_post(chat_id, post):
     try:
         mk = build_post_user_kb(post)
@@ -233,7 +227,6 @@ def autopost_worker():
         except Exception as e: logging.error(f"[WORKER] {e}")
 threading.Thread(target=autopost_worker, daemon=True).start()
 
-# --- ИГРОВАЯ ЛОГИКА ---
 def lucky_game_result(cid, uid, fname, msg_id, win, left):
     try:
         time.sleep(7)
@@ -266,7 +259,7 @@ def play_lucky_game(cid, uid, fname):
             if now < lim["reset_at"]:
                 rem = int(lim["reset_at"] - now)
                 txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
-                track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, txt, parse_mode='HTML'))
+                track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True))
                 if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
                 return
             else: lim["left"] = 5
@@ -284,7 +277,6 @@ def play_lucky_game(cid, uid, fname):
     except Exception as e:
         if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
 
-# --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
     if not check_access(m): return
@@ -339,7 +331,6 @@ def cmd_lsg(m):
     if not check_access(m): return
     track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_safe_game", bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML'))
 
-# --- КОЛБЕКИ ---
 @bot.callback_query_handler(func=lambda c: True)
 def cb_handler(c):
     cid, uid, d = c.message.chat.id, c.from_user.id, c.data
@@ -372,7 +363,7 @@ def cb_handler(c):
         bot.answer_callback_query(c.id)
         kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Что ты умеешь?", callback_data="what_can_i_do"))
         if uid in BOSSES: kb.add(types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_main_settings"))
-        return bot.edit_message_text(f"Привет, {get_user_mention(c.from_user)}... Я Лиза.\n💭Чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n🛒Бот: @vibe_247top_bot", cid, c.message.message_id, reply_markup=kb, disable_web_page_preview=True)
+        return bot.edit_message_text(f"Привет, {get_user_mention(c.from_user)}... Я Лиза.\n💭Чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n🛒Бот: @vibe_247top_bot", cid, c.message.message_id, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
 
     if d == "open_main_settings":
         if uid not in BOSSES: return bot.answer_callback_query(c.id, "⛔", show_alert=True)
@@ -526,7 +517,6 @@ def cb_handler(c):
 
     bot.answer_callback_query(c.id)
 
-# --- ОБРАБОТЧИКИ ВВОДА ---
 @bot.message_handler(content_types=['photo'])
 def on_photo(m):
     if not check_access(m): return
@@ -615,7 +605,7 @@ def text_handler(m):
             ldrs = db_get("safe_leaders", {})
             ldrs.setdefault(str(uid), {"name": m.from_user.first_name, "wins": 0})["wins"] += 1
             db_set("safe_leaders", ldrs)
-            auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}"), 180)
+            auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML'), 180)
         return
 
     if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
@@ -623,7 +613,7 @@ def text_handler(m):
             if is_threat(m.text):
                 try:
                     bot.ban_chat_member(cid, uid)
-                    auto_del(bot.send_message(cid, f"{get_user_mention(m.from_user)}, 🛡 Зафиксирована угроза. Бан."), 180)
+                    auto_del(bot.send_message(cid, f"{get_user_mention(m.from_user)}, 🛡 Зафиксирована угроза. Бан.", parse_mode='HTML'), 180)
                 except: pass
         executor.submit(threat_check)
 
@@ -634,7 +624,7 @@ def text_handler(m):
         def ai_task():
             bot.send_chat_action(cid, 'typing')
             ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
-            if m.chat.type == 'private': bot.send_message(cid, ans)
+            if m.chat.type == 'private': bot.send_message(cid, ans, parse_mode='HTML')
             else: bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
         executor.submit(ai_task)
 
