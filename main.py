@@ -18,6 +18,7 @@ from database import db_get, db_set
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# --- ЗАГЛУШКА ДЛЯ RAILWAY ---
 def run_dummy_server():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -49,6 +50,7 @@ ME = bot.get_me()
 BOT_ID, BOT_USER = ME.id, (ME.username or "").lower()
 executor = ThreadPoolExecutor(max_workers=10)
 
+# --- ПОТОКОБЕЗОПАСНЫЕ СОСТОЯНИЯ (State Lock) ---
 state_lock = threading.RLock()
 active_safes = {}
 lucky_limits = {}
@@ -57,8 +59,49 @@ untrusted_warned = set()
 last_command_messages = {}
 messages_to_delete = []
 
+# Унифицированное FSM: uid -> {"action": str, "pid": str}
 active_fsm = {}
 
+# --- СОСТОЯНИЯ ИГРЫ «ГОРОДА» ---
+active_cities_games = {}  # cid -> {"last_city","next_letter","used","last_move_ts","moves"}
+CITIES_TIMEOUT = 180
+
+CYRILLIC_CITY_RE = re.compile(r'^[а-яёА-ЯЁ][а-яёА-ЯЁ\- ]{1,38}[а-яёА-ЯЁ]$')
+
+_nominatim_lock = threading.Lock()
+_last_nominatim_call = [0.0]
+
+BASE_CITIES = {
+    "москва","санкт-петербург","новосибирск","екатеринбург","казань","нижний новгород",
+    "челябинск","самара","омск","ростов-на-дону","уфа","красноярск","воронеж","пермь",
+    "волгоград","краснодар","саратов","тюмень","тольятти","ижевск","барнаул","ульяновск",
+    "иркутск","хабаровск","ярославль","владивосток","махачкала","томск","оренбург",
+    "кемерово","новокузнецк","рязань","астрахань","пенза","липецк","киров","чебоксары",
+    "тула","калининград","курск","ставрополь","сочи","белгород","владимир","симферополь",
+    "севастополь","мурманск","архангельск","якутск","грозный","орел","смоленск","тверь",
+    "магнитогорск","сургут","подольск","псков","брянск","череповец","чита","вологда",
+    "калуга","саранск","абакан","южно-сахалинск","петропавловск-камчатский",
+    "киев","харьков","одесса","днепр","донецк","запорожье","львов","кривой рог",
+    "николаев","мариуполь","луганск","винница","херсон","полтава","чернигов","черкассы",
+    "житомир","сумы","хмельницкий","ровно","ужгород","луцк","тернополь","ивано-франковск",
+    "минск","гомель","могилев","витебск","гродно","брест","бобруйск","барановичи",
+    "алматы","астана","шымкент","караганда","актобе","тараз","павлодар","семей",
+    "ташкент","бишкек","душанбе","ашхабад","ереван","тбилиси","баку","кишинев",
+    "вильнюс","рига","таллин","хельсинки","стокгольм","осло","копенгаген",
+    "берлин","мюнхен","гамбург","кельн","франкфурт","дрезден","лейпциг",
+    "париж","марсель","лион","ницца","лондон","манчестер","ливерпуль","дублин",
+    "мадрид","барселона","валенсия","севилья","лиссабон","порту","рим","милан",
+    "неаполь","венеция","турин","вена","зальцбург","прага","брно","братислава",
+    "варшава","краков","гданьск","будапешт","бухарест","софия","белград","загреб",
+    "афины","стамбул","анкара","каир","тунис","алжир","касабланка","найроби",
+    "дели","мумбаи","пекин","шанхай","токио","осака","сеул","бангкок","ханой",
+    "джакарта","манила","сингапур","нью-йорк","вашингтон","чикаго","бостон",
+    "лос-анджелес","сан-франциско","майами","торонто","монреаль","оттава",
+    "мехико","буэнос-айрес","сантьяго","лима","богота","каракас","гавана",
+    "сидней","мельбурн","окленд",
+}
+
+# --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
 def get_v(cid, k, d=40):
     with state_lock:
         return db_get("settings", {}).get(str(cid), {}).get(k, d)
@@ -83,6 +126,16 @@ def format_safe_leaderboard():
         for i, (uid_str, uinfo) in enumerate(sorted_ldrs, 1):
             m_icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "▫️"
             txt += f"{m_icon} {i}. {get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))} — <b>{uinfo.get('wins', 0)}</b> побед\n"
+        return txt.strip()
+
+def format_cities_leaderboard():
+    with state_lock:
+        ldrs = db_get("cities_leaders", {})
+        if not ldrs: return "🏆 Рейтинг игры «Города» пока пуст."
+        txt = "🏙 Рейтинг игры «Города»\n\n"
+        for i, (uid_str, uinfo) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)[:10], 1):
+            m_icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "▫️"
+            txt += f"{m_icon} {i}. {get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))} — <b>{uinfo.get('wins', 0)}</b> городов\n"
         return txt.strip()
 
 def parse_interval_input(text):
@@ -148,6 +201,88 @@ def cleanup_worker():
             logging.error(f"[CLEANUP WORKER] {e}", exc_info=True)
 threading.Thread(target=cleanup_worker, daemon=True).start()
 
+def cities_timeout_worker():
+    while True:
+        try:
+            time.sleep(20)
+            now, to_close = time.time(), []
+            with state_lock:
+                for cid, game in list(active_cities_games.items()):
+                    if now - game["last_move_ts"] > CITIES_TIMEOUT:
+                        to_close.append((cid, game))
+                        del active_cities_games[cid]
+            for cid, game in to_close:
+                try:
+                    bot.send_message(cid, f"⌛ Игра «Города» окончена по тайм-ауту.\nНазвано: {game['moves']}. /start_cities_game — начать заново")
+                except Exception as e: logging.error(f"[CITIES TIMEOUT] {e}")
+        except Exception as e: logging.error(f"[CITIES WORKER] {e}", exc_info=True)
+threading.Thread(target=cities_timeout_worker, daemon=True).start()
+
+# --- ХЕЛПЕРЫ ДЛЯ ГОРОДОВ ---
+def normalize_city(name):
+    n = name.strip().lower().replace("ё", "е")
+    n = re.sub(r'\s*-\s*', '-', n)
+    return re.sub(r'\s+', ' ', n)
+
+def first_letter(name):
+    n = normalize_city(name)
+    return n[0] if n else None
+
+def effective_last_letter(name):
+    n = normalize_city(name)
+    idx = len(n) - 1
+    while idx >= 0 and n[idx] in "ьъ":
+        idx -= 1
+    return n[idx] if idx >= 0 else None
+
+def is_known_city(norm_name):
+    if norm_name in BASE_CITIES:
+        return True
+    with state_lock:
+        return norm_name in db_get("known_cities_extra", [])
+
+def learn_city(norm_name):
+    with state_lock:
+        extra = db_get("known_cities_extra", [])
+        if norm_name not in extra:
+            extra.append(norm_name)
+            db_set("known_cities_extra", extra)
+
+def validate_city_via_nominatim(raw_name):
+    try:
+        with _nominatim_lock:
+            wait = 1.1 - (time.time() - _last_nominatim_call[0])
+            if wait > 0: time.sleep(wait)
+            r = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": raw_name, "format": "json", "limit": 3, "accept-language": "ru"},
+                headers={"User-Agent": "VibeCitiesGameBot/1.0"},
+                timeout=8,
+            )
+            _last_nominatim_call[0] = time.time()
+        for item in r.json():
+            if item.get("class") in ("place", "boundary") and item.get("type") in \
+               ("city", "town", "village", "administrative", "hamlet"):
+                return True
+        return False
+    except Exception as e:
+        logging.error(f"[NOMINATIM] {e}")
+        return None
+
+def ai_check_is_city(raw_name):
+    ans = call_ai([{"role": "user", "content": f"Слово: '{raw_name}'. Это реально существующий населённый пункт в любой стране? Отвечай строго: ДА или НЕТ."}], 10, 0.0)
+    return "ДА" in ans.upper()
+
+def resolve_is_city(raw_name, norm_name):
+    if is_known_city(norm_name):
+        return True
+    verdict = validate_city_via_nominatim(raw_name)
+    is_city = verdict if verdict is not None else ai_check_is_city(raw_name)
+    if is_city:
+        learn_city(norm_name)
+    return is_city
+
+# --- AI ЛОГИКА ---
 def clean_ai_response(content):
     if not content: return "Та ну... мысль потерялась, спроси по-другому..."
     content = re.sub(r"(?si)^.*?thinking process.*?(?:output|option \d+:|final response:|answer:|draft generation:?)\s*", "", content)
@@ -178,10 +313,19 @@ def call_ai(messages, max_tokens=300, temp=0.5):
         current_key = get_current_key()
         try:
             r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {current_key}"}, json={"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temp}, timeout=20)
-            data = r.json()
             
-            if "error" in data and data["error"].get("code") == 429:
-                logging.warning("Лимит ключа исчерпан. Переключаю на следующий...")
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+
+            key_is_bad = (
+                r.status_code in (401, 402, 429)
+                or (isinstance(data.get("error"), dict) and data["error"].get("code") in (401, 402, 429))
+            )
+
+            if key_is_bad:
+                logging.warning(f"Лимит ключа исчерпан или невалиден (status={r.status_code}). Переключаю на следующий...")
                 switch_key()
                 attempts += 1
                 continue
@@ -189,11 +333,14 @@ def call_ai(messages, max_tokens=300, temp=0.5):
             if "choices" in data and data["choices"]: 
                 return clean_ai_response(data["choices"][0].get("message", {}).get("content", ""))
             else:
-                logging.error(f"[AI API ERROR RESPONSE]: {data}")
+                logging.error(f"[AI API ERROR RESPONSE]: {data} | Status: {r.status_code}")
                 break
         except Exception as e: 
             logging.error(f"[AI Exception]: {e}", exc_info=True)
-            break
+            switch_key()
+            attempts += 1
+            continue
+            
     return "Сервис временно занят."
 
 def is_threat(txt):
@@ -204,6 +351,7 @@ def is_threat(txt):
         logging.error(f"[THREAT CHECK] {e}")
         return False
 
+# --- КЛАВИАТУРЫ ---
 def main_kb(cid, is_pv=False):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
@@ -321,6 +469,47 @@ def autopost_worker():
                     db_set("autopost", fresh)
         except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
 threading.Thread(target=autopost_worker, daemon=True).start()
+
+def process_city_guess(cid, uid, fname, raw_text):
+    try:
+        raw = raw_text.strip()
+        norm = normalize_city(raw)
+        with state_lock:
+            game = active_cities_games.get(cid)
+        if not game: return
+
+        f_letter, req_letter = first_letter(raw), game["next_letter"]
+        known_locally = is_known_city(norm)
+
+        if req_letter and f_letter != req_letter:
+            if not known_locally: return
+            return bot.send_message(cid, f"❌ Нужна буква «{req_letter.upper()}», а не «{f_letter.upper()}».")
+
+        with state_lock:
+            if norm in game["used"]:
+                return bot.send_message(cid, f"♻️ «{html.escape(raw)}» уже называли.")
+
+        if not resolve_is_city(raw, norm):
+            if req_letter:
+                return bot.send_message(cid, f"🤔 Не нахожу такой город. Ещё раз на букву «{req_letter.upper()}».")
+            return
+
+        eff_letter = effective_last_letter(raw)
+        with state_lock:
+            game = active_cities_games.get(cid)
+            if not game or (game["next_letter"] and f_letter != game["next_letter"]) or norm in game["used"]:
+                return 
+            game["used"].add(norm)
+            game["last_city"], game["next_letter"] = raw, eff_letter
+            game["last_move_ts"], game["moves"] = time.time(), game["moves"] + 1
+            ldrs = db_get("cities_leaders", {})
+            ldrs.setdefault(str(uid), {"name": fname, "wins": 0})["wins"] += 1
+            db_set("cities_leaders", ldrs)
+
+        mention = get_user_mention(user_id=uid, first_name=fname)
+        bot.send_message(cid, f"✅ {mention}: <b>{html.escape(raw)}</b>\nСледующий город на букву «{eff_letter.upper()}»", parse_mode='HTML')
+    except Exception as e:
+        logging.error(f"[CITIES MOVE] {e}", exc_info=True)
 
 def lucky_game_result(cid, uid, fname, msg_id, win, left):
     try:
@@ -444,6 +633,48 @@ def cmd_lsg(m):
     if not check_access(m): return
     track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_safe_game", bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML'))
 
+@bot.message_handler(commands=['start_cities_game'])
+def cmd_start_cities(m):
+    if not check_access(m) or m.from_user.id not in BOSSES: return
+    cid = m.chat.id
+    with state_lock:
+        if cid in active_cities_games:
+            return bot.reply_to(m, "⚠️ Игра «Города» уже идёт.")
+    parts = m.text.split(maxsplit=1)
+    seed = parts[1].strip() if len(parts) > 1 else None
+    if seed:
+        if not CYRILLIC_CITY_RE.match(seed):
+            return bot.reply_to(m, "⚠️ Пример: /start_cities_game Москва")
+        if not resolve_is_city(seed, normalize_city(seed)):
+            return bot.reply_to(m, f"⚠️ «{html.escape(seed)}» не похож на существующий город.")
+    else:
+        seed = random.choice(list(BASE_CITIES)).title()
+    eff = effective_last_letter(seed)
+    with state_lock:
+        active_cities_games[cid] = {"last_city": seed, "next_letter": eff, "used": {normalize_city(seed)}, "last_move_ts": time.time(), "moves": 0}
+    bot.send_message(cid, f"🏙 ИГРА «ГОРОДА»!\nПервый город: <b>{html.escape(seed)}</b>\nСледующий на букву «{eff.upper()}»\n⏱ Тайм-аут хода: 3 мин\n/stop_cities_game · /leaders_cities_game", parse_mode='HTML')
+
+@bot.message_handler(commands=['stop_cities_game'])
+def cmd_stop_cities(m):
+    if not check_access(m) or m.from_user.id not in BOSSES: return
+    with state_lock:
+        game = active_cities_games.pop(m.chat.id, None)
+    if not game: return bot.reply_to(m, "Игра сейчас не идёт.")
+    bot.send_message(m.chat.id, f"🛑 Остановлено. Названо городов: {game['moves']}. Последний: {html.escape(game['last_city'] or '—')}")
+
+@bot.message_handler(commands=['leaders_cities_game'])
+def cmd_leaders_cities(m):
+    if not check_access(m): return
+    track_and_replace_specific_cmd(m.chat.id, m.from_user.id, "leaders_cities_game", bot.send_message(m.chat.id, format_cities_leaderboard(), parse_mode='HTML'))
+
+@bot.message_handler(commands=['cities_status'])
+def cmd_cities_status(m):
+    if not check_access(m): return
+    with state_lock:
+        game = active_cities_games.get(m.chat.id)
+    if not game: return bot.reply_to(m, "Игра не идёт. /start_cities_game")
+    bot.reply_to(m, f"🏙 Названо: {game['moves']}. Нужна буква «{game['next_letter'].upper()}».")
+
 @bot.callback_query_handler(func=lambda c: True)
 def cb_handler(c):
     try:
@@ -474,7 +705,7 @@ def cb_handler(c):
 
         if d == "what_can_i_do":
             bot.answer_callback_query(c.id)
-            return bot.edit_message_text("🔹 Общаюсь\n🔹 Слежу за матом\n🔹 Автопостинг\n🔹 Игры (/lucky_game, сейф)", cid, c.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
+            return bot.edit_message_text("🔹 Общаюсь\n🔹 Слежу за матом\n🔹 Автопостинг\n🔹 Игры (/lucky_game, сейф, /start_cities_game)", cid, c.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
             
         if d == "back_to_start":
             bot.answer_callback_query(c.id)
@@ -764,6 +995,11 @@ def text_handler(m):
                     db_set("safe_leaders", ldrs)
                     auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML'), 180)
             return
+
+        with state_lock:
+            is_cities_active = cid in active_cities_games
+        if is_cities_active and CYRILLIC_CITY_RE.match(t):
+            executor.submit(process_city_guess, cid, uid, m.from_user.first_name, t)
 
         if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
             def threat_check():
