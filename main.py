@@ -654,154 +654,154 @@ def cb_handler(c):
                     else: bot.send_message(cid, post.get("text", ""), reply_markup=mk, parse_mode='HTML')
                     return bot.send_message(cid, "Вот так выглядит пост.", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
 
-            bot.answer_callback_query(c.id)
-        except Exception as e:
-            logging.error(f"[CALLBACK ERROR] {e}", exc_info=True)
+        bot.answer_callback_query(c.id)
+    except Exception as e:
+        logging.error(f"[CALLBACK ERROR] {e}", exc_info=True)
 
-    @bot.message_handler(content_types=['photo'])
-    def on_photo(m):
-        try:
-            if not check_access(m): return
-            uid = m.from_user.id
-            if m.chat.type == 'private' and uid in BOSSES:
+@bot.message_handler(content_types=['photo'])
+def on_photo(m):
+    try:
+        if not check_access(m): return
+        uid = m.from_user.id
+        if m.chat.type == 'private' and uid in BOSSES:
+            with state_lock:
+                fsm = active_fsm.get(uid)
+                if fsm and fsm.get("action") == "photo":
+                    pid = fsm["pid"]
+                    active_fsm.pop(uid, None)
+                    data = db_get("autopost", {"posts": []})
+                    for p in data["posts"]:
+                        if p["id"] == pid: p["photo"] = m.photo[-1].file_id
+                    db_set("autopost", data)
+                    bot.reply_to(m, "🖼 Фото сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+    except Exception as e:
+        logging.error(f"[ON PHOTO] {e}", exc_info=True)
+
+@bot.message_handler(func=lambda m: True)
+def text_handler(m):
+    try:
+        if not check_access(m): return
+        uid, cid, t = m.from_user.id, m.chat.id, m.text.strip()
+        boss = uid in BOSSES
+
+        if m.chat.type == 'private' and boss:
+            with state_lock:
+                fsm = active_fsm.get(uid)
+            if fsm:
+                action, pid = fsm.get("action"), fsm.get("pid")
                 with state_lock:
-                    fsm = active_fsm.get(uid)
-                    if fsm and fsm.get("action") == "photo":
-                        pid = fsm["pid"]
-                        active_fsm.pop(uid, None)
+                    active_fsm.pop(uid, None)
+                
+                if action == "buttons":
+                    new_btns = []
+                    for line in t.split('\n'):
+                        row = []
+                        for part in line.split('|'):
+                            if '-' in part:
+                                try:
+                                    t_btn, val = part.rsplit('-', 1)
+                                    t_btn, val = t_btn.strip(), val.strip()
+                                    if val.startswith("cmd:"): row.append({"text": t_btn, "command": val[4:].strip()})
+                                    elif val.startswith("cb:"): row.append({"text": t_btn, "callback_data": val[3:].strip()})
+                                    else: row.append({"text": t_btn, "url": val if val.startswith("http") else "https://"+val})
+                                except Exception as e: logging.error(f"[BTN PARSE] {e}")
+                        if row: new_btns.append(row)
+                    with state_lock:
                         data = db_get("autopost", {"posts": []})
                         for p in data["posts"]:
-                            if p["id"] == pid: p["photo"] = m.photo[-1].file_id
+                            if p["id"] == pid: p["buttons"] = new_btns
                         db_set("autopost", data)
-                        bot.reply_to(m, "🖼 Фото сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-        except Exception as e:
-            logging.error(f"[ON PHOTO] {e}", exc_info=True)
+                    return bot.reply_to(m, "✅ Кнопки сохранены", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
 
-    @bot.message_handler(func=lambda m: True)
-    def text_handler(m):
-        try:
-            if not check_access(m): return
-            uid, cid, t = m.from_user.id, m.chat.id, m.text.strip()
-            boss = uid in BOSSES
-
-            if m.chat.type == 'private' and boss:
-                with state_lock:
-                    fsm = active_fsm.get(uid)
-                if fsm:
-                    action, pid = fsm.get("action"), fsm.get("pid")
+                elif action == "text":
                     with state_lock:
-                        active_fsm.pop(uid, None)
-                    
-                    if action == "buttons":
-                        new_btns = []
-                        for line in t.split('\n'):
-                            row = []
-                            for part in line.split('|'):
-                                if '-' in part:
-                                    try:
-                                        t_btn, val = part.rsplit('-', 1)
-                                        t_btn, val = t_btn.strip(), val.strip()
-                                        if val.startswith("cmd:"): row.append({"text": t_btn, "command": val[4:].strip()})
-                                        elif val.startswith("cb:"): row.append({"text": t_btn, "callback_data": val[3:].strip()})
-                                        else: row.append({"text": t_btn, "url": val if val.startswith("http") else "https://"+val})
-                                    except Exception as e: logging.error(f"[BTN PARSE] {e}")
-                            if row: new_btns.append(row)
+                        data = db_get("autopost", {"posts": []})
+                        for p in data["posts"]:
+                            if p["id"] == pid: p["text"] = t
+                        db_set("autopost", data)
+                    return bot.reply_to(m, "📝 Текст сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+
+                elif action == "interval":
+                    sec = parse_interval_input(t)
+                    if sec is not None:
                         with state_lock:
                             data = db_get("autopost", {"posts": []})
                             for p in data["posts"]:
-                                if p["id"] == pid: p["buttons"] = new_btns
+                                if p["id"] == pid: p["interval"], p["daily_time"] = sec, None
                             db_set("autopost", data)
-                        return bot.reply_to(m, "✅ Кнопки сохранены", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                        return bot.reply_to(m, "⏱ Интервал сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "⚠️ Ошибка формата. Пример: 30м, 2ч")
 
-                    elif action == "text":
+                elif action == "time":
+                    if re.match(r'^\d{2}:\d{2}$', t):
                         with state_lock:
                             data = db_get("autopost", {"posts": []})
                             for p in data["posts"]:
-                                if p["id"] == pid: p["text"] = t
+                                if p["id"] == pid: p["daily_time"] = t
                             db_set("autopost", data)
-                        return bot.reply_to(m, "📝 Текст сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                        return bot.reply_to(m, "🕑 Время сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "⚠️ Формат: ЧЧ:ММ (12:00)")
 
-                    elif action == "interval":
-                        sec = parse_interval_input(t)
-                        if sec is not None:
-                            with state_lock:
-                                data = db_get("autopost", {"posts": []})
-                                for p in data["posts"]:
-                                    if p["id"] == pid: p["interval"], p["daily_time"] = sec, None
-                                db_set("autopost", data)
-                            return bot.reply_to(m, "⏱ Интервал сохранен", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                        return bot.reply_to(m, "⚠️ Ошибка формата. Пример: 30м, 2ч")
+                elif action == "date":
+                    if re.match(r'^\d{4}-\d{2}-\d{2}$', t):
+                        with state_lock:
+                            data = db_get("autopost", {"posts": []})
+                            for p in data["posts"]:
+                                if p["id"] == pid: p["start_date"] = t
+                            db_set("autopost", data)
+                        return bot.reply_to(m, "📅 Дата сохранена", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "⚠️ Формат: ГГГГ-ММ-ДД (2026-10-01)")
 
-                    elif action == "time":
-                        if re.match(r'^\d{2}:\d{2}$', t):
-                            with state_lock:
-                                data = db_get("autopost", {"posts": []})
-                                for p in data["posts"]:
-                                    if p["id"] == pid: p["daily_time"] = t
-                                db_set("autopost", data)
-                            return bot.reply_to(m, "🕑 Время сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                        return bot.reply_to(m, "⚠️ Формат: ЧЧ:ММ (12:00)")
-
-                    elif action == "date":
-                        if re.match(r'^\d{4}-\d{2}-\d{2}$', t):
-                            with state_lock:
-                                data = db_get("autopost", {"posts": []})
-                                for p in data["posts"]:
-                                    if p["id"] == pid: p["start_date"] = t
-                                db_set("autopost", data)
-                            return bot.reply_to(m, "📅 Дата сохранена", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                        return bot.reply_to(m, "⚠️ Формат: ГГГГ-ММ-ДД (2026-10-01)")
-
-            t_lower = t.lower()
+        t_lower = t.lower()
+        with state_lock:
+            is_safe_active = cid in active_safes
+        if is_safe_active and re.fullmatch(r'\d{3}', t):
             with state_lock:
-                is_safe_active = cid in active_safes
-            if is_safe_active and re.fullmatch(r'\d{3}', t):
-                with state_lock:
-                    if cid in active_safes and t == active_safes[cid]["code"]:
-                        del active_safes[cid]
-                        ldrs = db_get("safe_leaders", {})
-                        ldrs.setdefault(str(uid), {"name": m.from_user.first_name, "wins": 0})["wins"] += 1
-                        db_set("safe_leaders", ldrs)
-                        auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML'), 180)
-                return
+                if cid in active_safes and t == active_safes[cid]["code"]:
+                    del active_safes[cid]
+                    ldrs = db_get("safe_leaders", {})
+                    ldrs.setdefault(str(uid), {"name": m.from_user.first_name, "wins": 0})["wins"] += 1
+                    db_set("safe_leaders", ldrs)
+                    auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML'), 180)
+            return
 
-            if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
-                def threat_check():
-                    try:
-                        if is_threat(m.text):
-                            until = int(time.time()) + 300
-                            bot.restrict_chat_member(cid, uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
-                            mention = get_user_mention(m.from_user)
-                            bosses_ping = " ".join([f"<a href='tg://user?id={b}'>⚠️</a>" for b in BOSSES])
-                            alert_msg = f"{bosses_ping} 🛡 Обнаружена угроза от {mention}. Пользователь автоматически заглушен на 5 минут для проверки."
-                            bot.send_message(cid, alert_msg, parse_mode='HTML')
-                    except Exception as e:
-                        logging.error(f"[THREAT ACTION] {e}", exc_info=True)
-                executor.submit(threat_check)
+        if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
+            def threat_check():
+                try:
+                    if is_threat(m.text):
+                        until = int(time.time()) + 300
+                        bot.restrict_chat_member(cid, uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
+                        mention = get_user_mention(m.from_user)
+                        bosses_ping = " ".join([f"<a href='tg://user?id={b}'>⚠️</a>" for b in BOSSES])
+                        alert_msg = f"{bosses_ping} 🛡 Обнаружена угроза от {mention}. Пользователь автоматически заглушен на 5 минут для проверки."
+                        bot.send_message(cid, alert_msg, parse_mode='HTML')
+                except Exception as e:
+                    logging.error(f"[THREAT ACTION] {e}", exc_info=True)
+            executor.submit(threat_check)
 
-            direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t_lower or f"@{BOT_USER}" in t_lower
-            if direct or any(w in t_lower for w in CONFL):
-                if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
-                prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t_lower for w in CONFL) and m.reply_to_message) else m.text
-                def ai_task():
-                    try:
-                        bot.send_chat_action(cid, 'typing')
-                        ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
-                        if m.chat.type == 'private': bot.send_message(cid, ans, parse_mode='HTML')
-                        else: bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
-                    except Exception as e:
-                        logging.error(f"[AI TASK] {e}", exc_info=True)
-                executor.submit(ai_task)
+        direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t_lower or f"@{BOT_USER}" in t_lower
+        if direct or any(w in t_lower for w in CONFL):
+            if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
+            prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t_lower for w in CONFL) and m.reply_to_message) else m.text
+            def ai_task():
+                try:
+                    bot.send_chat_action(cid, 'typing')
+                    ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
+                    if m.chat.type == 'private': bot.send_message(cid, ans, parse_mode='HTML')
+                    else: bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
+                except Exception as e:
+                    logging.error(f"[AI TASK] {e}", exc_info=True)
+            executor.submit(ai_task)
+    except Exception as e:
+        logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
+
+if __name__ == "__main__":
+    logging.info("Бот запущен и готов к работе!")
+    while True:
+        try:
+            bot.infinity_polling(timeout=20, long_polling_timeout=10)
+        except KeyboardInterrupt:
+            break
         except Exception as e:
-            logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
-
-    if __name__ == "__main__":
-        logging.info("Бот запущен и готов к работе!")
-        while True:
-            try:
-                bot.infinity_polling(timeout=20, long_polling_timeout=10)
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                logging.error(f"Сбой связи: {e}", exc_info=True)
-                time.sleep(5)
+            logging.error(f"Сбой связи: {e}", exc_info=True)
+            time.sleep(5)
