@@ -19,7 +19,7 @@ def run_dummy_server():
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"Bot is alive and running!")
-        def log_message(self, format, *args): pass # Отключаем лишний спам в логи
+        def log_message(self, format, *args): pass
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
@@ -389,4 +389,116 @@ def cb_handler(c):
     if c.message.chat.type != 'private' and str(cid).replace("-100", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
         return bot.answer_callback_query(c.id, "⛔ Неразрешенный чат.", show_alert=True)
 
-    if d.startswith
+    if d.startswith("lucky_again_"):
+        if uid != int(d.split("_")[2]): return bot.answer_callback_query(c.id, "⛔ Не твоя игра!", show_alert=True)
+        try: bot.delete_message(cid, c.message.message_id)
+        except: pass
+        bot.answer_callback_query(c.id)
+        play_lucky_game(cid, uid, c.from_user.first_name)
+        return
+
+    if d == "what_can_i_do":
+        bot.answer_callback_query(c.id)
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start"))
+        txt = "🔹 Общаюсь\n🔹 Слежу за матом\n🔹 Автопостинг\n🔹 Игры (/lucky_game, сейф)"
+        return bot.edit_message_text(txt, cid, c.message.message_id, reply_markup=kb)
+        
+    if d == "back_to_start":
+        bot.answer_callback_query(c.id)
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Что ты умеешь?", callback_data="what_can_i_do"))
+        if uid in BOSSES: kb.add(types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_main_settings"))
+        txt = f"Привет, {mention}... Я Лиза.\n💭Чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n🛒Бот: @vibe_247top_bot"
+        return bot.edit_message_text(txt, cid, c.message.message_id, reply_markup=kb, disable_web_page_preview=True)
+
+    if d == "open_main_settings":
+        if uid not in BOSSES: return bot.answer_callback_query(c.id, "⛔", show_alert=True)
+        bot.answer_callback_query(c.id)
+        return bot.edit_message_text("🎛 Панель:", cid, c.message.message_id, reply_markup=main_kb(cid, c.message.chat.type=='private'))
+
+    if d == "to_group_settings" and uid in BOSSES:
+        try: bot.send_message(uid, "📢 Выберите группу:", reply_markup=chats_selection_kb())
+        except: return bot.answer_callback_query(c.id, "⚠️ Нажми Start в ЛС с ботом.", show_alert=True)
+        return bot.answer_callback_query(c.id, "Отправлено в ЛС")
+
+    if d == "m_autopost_list":
+        bot.answer_callback_query(c.id)
+        return bot.edit_message_text("📢 Группа для автопостинга:", cid, c.message.message_id, reply_markup=chats_selection_kb())
+
+    if d.startswith("ap_chat_"):
+        target_cid = d.split("_")[2]
+        bot.answer_callback_query(c.id)
+        return bot.edit_message_text("📋 Посты:", cid, c.message.message_id, reply_markup=autopost_list_kb(target_cid))
+
+    if d.startswith("ap_select_"):
+        pid = d.split("_")[2]
+        active_editing_post[uid] = pid
+        bot.answer_callback_query(c.id)
+        return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid))
+
+    if d.startswith("ap_toggle_"):
+        pid = d.split("_")[2]
+        data = db_get("autopost", {"posts": []})
+        for p in data["posts"]:
+            if p["id"] == pid: p["enabled"] = not p.get("enabled", False)
+        db_set("autopost", data)
+        bot.answer_callback_query(c.id, "✅")
+        return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid))
+
+    if d.startswith("m_toggle_intervene"):
+        set_v(cid, "intervene", not get_v(cid, "intervene", True))
+        bot.answer_callback_query(c.id)
+        return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, c.message.chat.type=='private'))
+
+    bot.answer_callback_query(c.id)
+
+# --- ОБРАБОТЧИК ТЕКСТА ---
+@bot.message_handler(func=lambda m: True)
+def text_handler(m):
+    if not check_access(m): return
+    uid, cid, t = m.from_user.id, m.chat.id, m.text.strip().lower()
+    boss = uid in BOSSES
+
+    # Проверка сейфа
+    if cid in active_safes and re.fullmatch(r'\d{3}', t):
+        if t == active_safes[cid]["code"]:
+            del active_safes[cid]
+            ldrs = db_get("safe_leaders", {})
+            ldrs.setdefault(str(uid), {"name": m.from_user.first_name, "wins": 0})["wins"] += 1
+            db_set("safe_leaders", ldrs)
+            auto_del(bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}"), 180)
+        return
+
+    # Муты и угрозы
+    if m.chat.type in ['group', 'supergroup'] and not boss:
+        if any(s in t for s in SUSP):
+            def threat_check():
+                if is_threat(m.text):
+                    try:
+                        bot.ban_chat_member(cid, uid)
+                        auto_del(bot.send_message(cid, f"{get_user_mention(m.from_user)}, 🛡 Зафиксирована угроза. Бан."), 180)
+                    except: pass
+            executor.submit(threat_check)
+
+    # ИИ общение
+    direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t or f"@{BOT_USER}" in t
+    if direct or any(w in t for w in CONFL):
+        if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
+        
+        prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t for w in CONFL) and m.reply_to_message) else m.text
+        
+        def ai_task():
+            bot.send_chat_action(cid, 'typing')
+            ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
+            if m.chat.type == 'private': bot.send_message(cid, ans)
+            else: bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
+            
+        executor.submit(ai_task)
+
+if __name__ == "__main__":
+    logging.info("Бот запущен и готов к работе!")
+    while True:
+        try: bot.infinity_polling(timeout=20, long_polling_timeout=10)
+        except KeyboardInterrupt: break
+        except Exception as e:
+            logging.error(f"Сбой: {e}")
+            time.sleep(5)
