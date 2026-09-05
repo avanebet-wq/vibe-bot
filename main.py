@@ -96,7 +96,7 @@ SMOKE_WEED_COOLDOWN_PHRASES = [
 # --- ИГРА «СЛОВА» ---
 pending_word_lobbies = {}
 active_word_games = {}
-WORDS_TURN_TIMEOUT = 180
+WORDS_TURN_TIMEOUT = 600  # 10 минут (было 180 сек / 3 мин)
 REGISTRATION_SECONDS = 1200 
 
 DICE_ANIMATION_SECONDS = {"🎯": 4.0, "🎳": 4.0, "🏀": 4.0}
