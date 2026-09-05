@@ -1903,4 +1903,79 @@ def text_handler(m):
                         with state_lock:
                             data = db_get("autopost", {"posts": []})
                             for p in data["posts"]:
-           
+                                if p["id"] == pid: p["daily_time"] = t
+                            db_set("autopost", data)
+                        return bot.reply_to(m, "🕑 Время сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "⚠️ Формат: ЧЧ:ММ (12:00)")
+
+                elif action == "date":
+                    if re.match(r'^\d{4}-\d{2}-\d{2}$', t):
+                        with state_lock:
+                            data = db_get("autopost", {"posts": []})
+                            for p in data["posts"]:
+                                if p["id"] == pid: p["start_date"] = t
+                            db_set("autopost", data)
+                        return bot.reply_to(m, "📅 Дата сохранена", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
+                    return bot.reply_to(m, "⚠️ Формат: ГГГГ-ММ-ДД (2026-10-01)")
+
+        with state_lock: is_safe_active = cid in active_safes
+        if is_safe_active and re.fullmatch(r'\d{3}', t):
+            with state_lock:
+                if cid in active_safes and t == active_safes[cid]["code"]:
+                    del active_safes[cid]
+                    ldrs = db_get("safe_leaders", {})
+                    ldrs.setdefault(str(uid), {"name": m.from_user.first_name, "wins": 0})["wins"] += 1
+                    db_set("safe_leaders", ldrs)
+                    msg = bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML')
+                    auto_del(msg, 180)
+            return
+
+        with state_lock: is_words_active = cid in active_word_games
+        if is_words_active and CYRILLIC_WORD_RE.match(t):
+            executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t)
+
+        if m.chat.type in ['group', 'supergroup'] and not boss:
+            if any(bad_word in t_lower for bad_word in MUTES):
+                try: bot.delete_message(cid, m.message_id)
+                except: pass
+                issue_warn(cid, m.chat.title, uid, fname, BOT_ID, "Автомодератор", "Автомодерация: нецензурная лексика", None)
+                return
+
+            def threat_check():
+                try:
+                    if is_threat(m.text):
+                        until = int(time.time()) + 300
+                        bot.restrict_chat_member(cid, uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
+                        mention = get_user_mention(m.from_user)
+                        bosses_ping = " ".join([f"<a href='tg://user?id={b}'>⚠️</a>" for b in BOSSES])
+                        alert_msg = f"{bosses_ping} 🛡 Обнаружена угроза от {mention}. Пользователь автоматически заглушен на 5 минут для проверки."
+                        bot.send_message(cid, alert_msg, parse_mode='HTML')
+                except Exception as e: logging.error(f"[THREAT ACTION] {e}", exc_info=True)
+            executor.submit(threat_check)
+
+        direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t_lower or f"@{BOT_USER}" in t_lower
+        if direct or any(w in t_lower for w in CONFL):
+            with state_lock: cities_running = cid in active_word_games
+            if cities_running: return  
+            if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
+            prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t_lower for w in CONFL) and m.reply_to_message) else m.text
+            def ai_task():
+                try:
+                    bot.send_chat_action(cid, 'typing')
+                    ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
+                    if m.chat.type == 'private': bot.send_message(cid, ans, parse_mode='HTML')
+                    else: bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
+                except Exception as e:
+                    logging.error(f"[AI TASK] {e}", exc_info=True)
+            executor.submit(ai_task)
+    except Exception as e:
+        logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
+
+if __name__ == "__main__":
+    logging.info("Бот запущен и готов к работе!")
+    while True:
+        try: bot.infinity_polling(timeout=20, long_polling_timeout=10)
+        except KeyboardInterrupt: break
+        except Exception as e:
+            logging.error(f"Сбой связи: {e}", exc_info=True)
+            time.sleep(5)
