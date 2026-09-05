@@ -240,6 +240,24 @@ def extract_target_and_args(m, text_parts):
                             target_uid = int(u_id_str)
                             target_name = data.get("name", uname)
                             break
+                if not target_uid:
+                    # В локальной базе не нашли (юзер ещё не писал в чат /
+                    # сменил username) — пробуем резолвнуть напрямую через
+                    # Telegram API и проверить, что он реально состоит в чате.
+                    try:
+                        chat_obj = bot.get_chat(f"@{uname}")
+                        member = bot.get_chat_member(m.chat.id, chat_obj.id)
+                        if member and member.status not in ('left', 'kicked'):
+                            target_uid = chat_obj.id
+                            target_name = chat_obj.first_name or uname
+                            with state_lock:
+                                users = db_get("users_data", {})
+                                u = users.setdefault(str(target_uid), {})
+                                u["uname"] = uname
+                                u.setdefault("name", target_name)
+                                db_set("users_data", users)
+                    except Exception:
+                        pass
                 args = text_parts[1:i] + text_parts[i+1:]
                 break
             elif part.isdigit():
