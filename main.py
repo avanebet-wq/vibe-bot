@@ -1913,7 +1913,8 @@ def text_handler(m):
                     else:
                         rank_name = ADMIN_RANKS.get(new_rank, f"{new_rank} РАНГ")
                         act = "повышен" if new_rank > target_cur_rank else "понижен"
-                        txt = f"📈 {get_user_mention(user_id=target_uid, first_name=target_name)} {act} до должности:\n<b>{rank_name}</b>"
+                        icon = "📈" if act == "повышен" else "📉"
+                        txt = f"{icon} {get_user_mention(user_id=target_uid, first_name=target_name)} {act} до должности:\n<b>{rank_name}</b>"
                     return finish_command(m, "admin_change", bot.send_message(cid, txt, parse_mode="HTML"))
                     
                 elif cmd in ["бан", "/ban"]:
