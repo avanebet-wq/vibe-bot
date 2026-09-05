@@ -399,6 +399,19 @@ def set_message_reaction_raw(chat_id, message_id, emoji):
     if not (r.status_code == 200 and data.get("ok")):
         raise RuntimeError(f"setMessageReaction failed: {r.status_code} {data}")
 
+def react_with_emoji(chat_id, message_id, emoji):
+    try:
+        if hasattr(bot, "set_message_reaction"):
+            try:
+                reaction = [types.ReactionTypeEmoji(emoji)]
+            except AttributeError:
+                reaction = [{"type": "emoji", "emoji": emoji}]
+            bot.set_message_reaction(chat_id, message_id, reaction=reaction)
+        else:
+            set_message_reaction_raw(chat_id, message_id, emoji)
+    except Exception as e:
+        logging.error(f"[REACTION] {e}", exc_info=True)
+
 def maybe_react_randomly(m):
     """С шансом RANDOM_REACTION_CHANCE ставит реакцию на случайное сообщение в чате."""
     try:
@@ -864,6 +877,7 @@ def autopost_worker():
 threading.Thread(target=autopost_worker, daemon=True).start()
 
 # --- ХЕЛПЕРЫ ДЛЯ ИГРЫ «СЛОВА» ---
+MIN_WORD_PLAYERS = 3
 def normalize_word(name):
     n = name.strip().lower().replace("ё", "е")
     n = re.sub(r'\s*-\s*', '-', n)
@@ -905,19 +919,21 @@ def resolve_is_word(raw_name, norm_name):
 def build_lobby_text(lobby):
     remaining = max(0, int(lobby["end_time"] - time.time()))
     mins, secs = remaining // 60, remaining % 60
+    time_str = f"{mins}м {secs}с"
     players = lobby["players"]
-    plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for i, (u, n) in enumerate(players.items(), 1)) or "Пока никто не записался."
-    seed_line = f"\n🎯 Первое слово: <b>{html.escape(lobby['seed'])}</b>" if lobby.get("seed") else ""
+    plist = "\n".join(f"• <b>{get_user_mention(user_id=u, first_name=n)}</b>" for u, n in players.items()) or "Пока никто не записался."
     return (
-        "━━━━━━━VIBE━━━━━━━\n"
-        "🔤 <b>ИГРА «СЛОВА»</b> 🌟\n\n"
-        "<i>Правила: по очереди называем слова на русском языке. "
-        "Слово должно начинаться на ту букву, которой закончилось предыдущее. "
-        "Повторяться нельзя! За каждое слово — +1 балл!</i>\n"
-        f"{seed_line}\n\n"
-        f"⏳ <b>До старта:</b> {mins}м {secs}с\n"
-        f"👥 <b>Участники ({len(players)}):</b>\n{plist}\n"
-        "━━━━━━━VIBE━━━━━━━"
+        "<b>💜━━━━━━━━VIBE━━━━━━━━💜\n"
+        "🌿 ИГРА «СЛОВА» 🌟</b>\n\n"
+        "<b>📖 ПРАВИЛА ИГРЫ:</b>\n\n"
+        "По очереди называем слова на <b>русском</b> языке. \n"
+        "Новое слово должно начинаться на <b>последнюю</b> букву <b>предыдущего</b> слова.\n\n"
+        "🚫 Повторять слова <b>нельзя!</b>\n"
+        "⚡ За каждое правильное слово — <b>+1 балл</b>.\n\n"
+        f"⏳ До старта: <b>{time_str}</b>\n"
+        f"👥 Участники ({len(players)}):\n{plist}\n\n"
+        "🔥 БЫСТРЕЕ ЖМИ КНОПКУ <b>ЗАПИСАТЬСЯ</b> И УЧАСТВУЙ В ИГРЕ!🥳\n"
+        "<b>💜━━━━━━━━VIBE━━━━━━━━💜</b>"
     )
 
 def lobby_kb(cid):
@@ -945,12 +961,29 @@ def handle_word_game_registration(m, payload):
         else: outcome = "unknown"
 
     if outcome == "closed": bot.send_message(m.chat.id, "⏳ Регистрация уже закрыта.")
-    elif outcome == "already": bot.send_message(m.chat.id, f"🍀 Ты уже в списке, {fname}! Жди начала игры!")
+    elif outcome == "already":
+        bot.send_message(
+            m.chat.id,
+            f"<b>🍀 {fname}, ты уже в списке участников! Проверь чат.🤫\n\n"
+            "Теперь просто дождись начала игры и приготовься побороться за первое место! 🏆🔥\n\n"
+            "⏳ Скоро начинаем — удачи и побольше быстрых ответов! 😎</b>",
+            parse_mode='HTML'
+        )
     elif outcome == "registered":
-        bot.send_message(m.chat.id, f"✅ Готово, {fname}! Жди начала игры! 🍀")
+        bot.send_message(
+            m.chat.id,
+            f"<b>✅ ЗАПИСАЛА ТЕБЯ, {fname}! ☺️\n\n"
+            "⏳ ЖДИ НАЧАЛА ИГРЫ И — ПОБЕЖДАЙ! 🍀🔥</b>",
+            parse_mode='HTML'
+        )
         repost_lobby(cid)
     elif outcome == "removed":
-        bot.send_message(m.chat.id, "❌ Вычеркнула тебя из списка участников.")
+        bot.send_message(
+            m.chat.id,
+            f"<b>{fname} ❌ ВЫЧЕРКНУЛА ТЕБЯ ИЗ СПИСКА УЧАСТНИКОВ!\n\n"
+            "Если передумаешь — сможешь зарегистрироваться снова, пока набор участников открыт. 🍀</b>",
+            parse_mode='HTML'
+        )
         repost_lobby(cid)
     elif outcome == "not_in": bot.send_message(m.chat.id, "🤷‍♀️ Ты и не был(а) записан(а) на игру.")
 
@@ -974,6 +1007,11 @@ def start_word_game_now(cid):
         except: pass
         return
 
+    if len(players) < MIN_WORD_PLAYERS:
+        try: bot.send_message(cid, f"😔 Записалось меньше {MIN_WORD_PLAYERS} участников — игра отменена.\n/start_words_game — попробовать снова")
+        except: pass
+        return
+
     if seed:
         norm_seed = normalize_word(seed)
         if not resolve_is_word(seed, norm_seed): seed = random.choice(list(BASE_WORDS)).title()
@@ -990,17 +1028,20 @@ def start_word_game_now(cid):
         }
 
     plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for u, n in players.items())
+    mins = WORDS_TURN_TIMEOUT // 60
     try:
         bot.send_message(
             cid,
-            "━━━━━━━VIBE━━━━━━━\n"
-            f"🔤 <b>ИГРА «СЛОВА» НАЧАЛАСЬ!</b>\n\n"
-            f"👥 Участники:\n{plist}\n\n"
-            f"Первое слово: <b>{html.escape(seed)}</b>\n"
-            f"Следующее на букву «{eff.upper()}»\n\n"
-            f"⏱ Тайм-аут хода: 3 мин\n"
-            f"🔇 Пока идёт игра — Лиза не встревает в чат.\n"
-            "━━━━━━━VIBE━━━━━━━",
+            "<b>💜━━━━━━━━ VIBE ━━━━━━━━💜</b>\n\n"
+            "<b>🔤 ИГРА «СЛОВА» НАЧАЛАСЬ! 🔥</b>\n\n"
+            f"👥 <b>УЧАСТНИКИ:</b>\n{plist}\n\n"
+            f"🎯 <b>ПЕРВОЕ СЛОВО:</b>\n«<b>{html.escape(seed)}</b>»\n\n"
+            f"➡️ <b>СЛЕДУЮЩЕЕ СЛОВО ДОЛЖНО НАЧИНАТЬСЯ НА БУКВУ:</b>\n«<b>{eff.upper()}</b>»\n\n"
+            f"⏱ <b>ПЕРВАЯ ПОДСКАЗКА ЧЕРЕЗ:</b> <b>{mins} МИНУТЫ</b>\n\n"
+            "🔇 <b>ПОКА ИДЁТ ИГРА — ЛИЗА НЕ ВМЕШИВАЕТСЯ В ЧАТ.</b>\n"
+            "Можно спокойно играть и отправлять свои ответы без лишних сообщений. 😎\n\n"
+            "🔥 ВРЕМЯ ПОКАЗАТЬ, КТО ЗДЕСЬ САМЫЙ БЫСТРЫЙ!\n\n"
+            "<b>💜━━━━━━━━ VIBE ━━━━━━━━💜</b>",
             parse_mode='HTML'
         )
     except Exception as e: logging.error(f"[WORDS START] {e}", exc_info=True)
@@ -1066,7 +1107,7 @@ def build_active_scoreboard(game):
     lines = [f"{i}. {get_user_mention(user_id=uid, first_name=players.get(uid, 'Игрок'))} — <b>{pts}</b> б." for i, (uid, pts) in enumerate(ordered, 1)]
     return "\n".join(lines)
 
-def process_word_guess(cid, uid, fname, raw_text):
+def process_word_guess(cid, uid, fname, raw_text, message_id=None):
     try:
         raw = raw_text.strip()
         norm = normalize_word(raw)
@@ -1118,14 +1159,14 @@ def process_word_guess(cid, uid, fname, raw_text):
             ldrs.setdefault(str(uid), {"name": fname, "wins": 0})["wins"] += 1
             db_set("words_leaders", ldrs)
 
+        if message_id:
+            react_with_emoji(cid, message_id, "🎉")
+
         if moves_count >= 50:
             with state_lock:
                 if cid in active_word_games: game_obj = active_word_games.pop(cid)
             end_word_game(cid, game_obj, reason="limit")
             return
-
-        mention = get_user_mention(user_id=uid, first_name=fname)
-        bot.send_message(cid, f"🥳 {mention} угадал(а) слово «<b>{html.escape(raw)}</b>» и получает +1 балл!🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»", parse_mode='HTML')
 
         with state_lock:
             game_now = active_word_games.get(cid)
@@ -1142,6 +1183,9 @@ def process_word_guess(cid, uid, fname, raw_text):
                 with state_lock:
                     if cid in active_word_games: active_word_games[cid]["scoreboard_msg_id"] = sb_msg.message_id
             except Exception as e: logging.error(f"[WORDS SCOREBOARD SEND] {e}", exc_info=True)
+
+        mention = get_user_mention(user_id=uid, first_name=fname)
+        bot.send_message(cid, f"🥳 {mention} угадал(а) слово «<b>{html.escape(raw)}</b>» и получает +1 балл!🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»", parse_mode='HTML')
     except Exception as e: logging.error(f"[WORDS MOVE] {e}", exc_info=True)
 
 def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
@@ -1547,6 +1591,8 @@ def cb_handler(c):
             if not lobby: return bot.answer_callback_query(c.id, "Лобби не найдено.", show_alert=True)
             if uid != lobby["creator_id"] and uid not in BOSSES and get_admin_rank(cid, uid) < 3:
                 return bot.answer_callback_query(c.id, "⛔ Только создатель или админ могут начать игру раньше.", show_alert=True)
+            if len(lobby["players"]) < MIN_WORD_PLAYERS:
+                return bot.answer_callback_query(c.id, f"⚠️ Нужно минимум {MIN_WORD_PLAYERS} участника, чтобы начать игру.", show_alert=True)
             bot.answer_callback_query(c.id, "🚀 Запускаю игру!")
             executor.submit(start_word_game_now, cid)
             return
@@ -2184,7 +2230,7 @@ def text_handler(m):
 
         with state_lock: is_words_active = cid in active_word_games
         if is_words_active and CYRILLIC_WORD_RE.match(t):
-            executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t)
+            executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t, m.message_id)
 
         if m.chat.type in ['group', 'supergroup'] and not is_words_active and not is_safe_active and not t.startswith('/'):
             executor.submit(maybe_react_randomly, m)
