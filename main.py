@@ -371,7 +371,8 @@ def format_safe_leaderboard():
         ldrs = db_get("safe_leaders", {})
         if not ldrs: return "🏆 Рейтинг взломщиков сейфа пока пуст."
         txt = "━━━━━━━VIBE━━━━━━━\n🔐 <b>РЕЙТИНГ ВЗЛОМЩИКОВ СЕЙФА</b>\n\n"
-        for i, (uid_str, uinfo) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)[:10], 1):
+        sorted_ldrs = sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)[:10]
+        for i, (uid_str, uinfo) in enumerate(sorted_ldrs, 1):
             m_icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "▫️"
             txt += f"{m_icon} {i}. {get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))} — <b>{uinfo.get('wins', 0)}</b> побед\n"
         return txt + "\n━━━━━━━VIBE━━━━━━━"
@@ -619,108 +620,44 @@ def autopost_worker():
         except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
 threading.Thread(target=autopost_worker, daemon=True).start()
 
-# --- ЛОББИ ИГРЫ «СЛОВА» ---
-def build_lobby_text(lobby):
-    remaining = max(0, int(lobby["end_time"] - time.time()))
-    mins, secs = remaining // 60, remaining % 60
-    players = lobby["players"]
-    plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for i, (u, n) in enumerate(players.items(), 1)) or "Пока никто не записался."
-    seed_line = f"\n🎯 Первое слово: <b>{html.escape(lobby['seed'])}</b>" if lobby.get("seed") else ""
-    return (
-        "━━━━━━━VIBE━━━━━━━\n"
-        "🔤 <b>ИГРА «СЛОВА»</b> 🌟\n\n"
-        "<i>Правила: по очереди называем слова на русском языке. "
-        "Слово должно начинаться на ту букву, которой закончилось предыдущее. "
-        "Повторяться нельзя! За каждое слово — +1 балл!</i>\n"
-        f"{seed_line}\n\n"
-        f"⏳ <b>До старта:</b> {mins}м {secs}с\n"
-        f"👥 <b>Участники ({len(players)}):</b>\n{plist}\n"
-        "━━━━━━━VIBE━━━━━━━"
-    )
+# --- ХЕЛПЕРЫ ДЛЯ ИГРЫ «СЛОВА» ---
+def normalize_word(name):
+    n = name.strip().lower().replace("ё", "е")
+    n = re.sub(r'\s*-\s*', '-', n)
+    return re.sub(r'\s+', ' ', n)
 
-def lobby_kb(cid):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("📝 Записаться на игру", url=f"https://t.me/{BOT_USERNAME}?start=regword_{cid}"))
-    kb.add(types.InlineKeyboardButton("❌ Отменить регистрацию", url=f"https://t.me/{BOT_USERNAME}?start=unregword_{cid}"))
-    kb.add(types.InlineKeyboardButton("🚀 Начать сейчас", callback_data="wg:startnow"))
-    return kb
+def first_letter(name):
+    n = normalize_word(name)
+    return n[0] if n else None
 
-def handle_word_game_registration(m, payload):
-    uid, fname = m.from_user.id, m.from_user.first_name
-    try:
-        action, cid_str = payload.split("_", 1)
-        cid = int(cid_str)
-    except: return bot.send_message(m.chat.id, "⚠️ Некорректная ссылка.")
+def effective_last_letter(name):
+    n = normalize_word(name)
+    idx = len(n) - 1
+    while idx >= 0 and n[idx] in "ьъ":
+        idx -= 1
+    return n[idx] if idx >= 0 else None
 
+def is_known_word(norm_name):
+    if norm_name in BASE_WORDS: return True
     with state_lock:
-        lobby = pending_word_lobbies.get(cid)
-        if not lobby or lobby.get("started"): outcome = "closed"
-        elif action == "regword":
-            outcome = "already" if uid in lobby["players"] else "registered"
-            if outcome == "registered": lobby["players"][uid] = fname
-        elif action == "unregword":
-            outcome = "removed" if lobby["players"].pop(uid, None) is not None else "not_in"
-        else: outcome = "unknown"
+        return norm_name in db_get("known_words_extra", [])
 
-    if outcome == "closed": bot.send_message(m.chat.id, "⏳ Регистрация закрыта.")
-    elif outcome == "already": bot.send_message(m.chat.id, f"Ты уже записан(а), {fname}! Жди начала! 🍀")
-    elif outcome == "registered":
-        bot.send_message(m.chat.id, f"✅ Готово, {fname}! Жди начала игры! 🍀")
-        repost_lobby(cid)
-    elif outcome == "removed":
-        bot.send_message(m.chat.id, "❌ Вычеркнула тебя из списка.")
-        repost_lobby(cid)
-    elif outcome == "not_in": bot.send_message(m.chat.id, "Ты и не был(а) записан(а).")
-
-def start_word_game_now(cid):
+def learn_word(norm_name):
     with state_lock:
-        lobby = pending_word_lobbies.pop(cid, None)
-        if not lobby or lobby.get("started"): return
-        lobby["started"] = True
-        players = dict(lobby["players"])
-        reg_msg_id = lobby.get("reg_msg_id")
-        seed = lobby.get("seed")
+        extra = db_get("known_words_extra", [])
+        if norm_name not in extra:
+            extra.append(norm_name)
+            db_set("known_words_extra", extra)
 
-    if reg_msg_id:
-        try: bot.edit_message_caption("✅ Регистрация закрыта — игра начинается!", cid, reg_msg_id)
-        except:
-            try: bot.edit_message_text("✅ Регистрация закрыта — игра начинается!", cid, reg_msg_id)
-            except: pass
+def ai_check_is_word(raw_name):
+    ans = call_ai([{"role": "user", "content": f"Слово: '{raw_name}'. Это реально существующее слово русского языка (в любой форме — существительное, глагол, прилагательное и т.д.)? Отвечай строго: ДА или НЕТ."}], 10, 0.0)
+    return "ДА" in ans.upper()
 
-    if not players:
-        try: bot.send_message(cid, "😔 Никто не успел записаться. Игра отменена.")
-        except: pass
-        return
-
-    if seed:
-        norm_seed = normalize_word(seed)
-        if not resolve_is_word(seed, norm_seed): seed = random.choice(list(BASE_WORDS)).title()
-    else: seed = random.choice(list(BASE_WORDS)).title()
-
-    eff = effective_last_letter(seed)
-    with state_lock:
-        active_word_games[cid] = {
-            "last_word": seed, "next_letter": eff, "used": {normalize_word(seed)},
-            "last_move_ts": time.time(), "last_reminder_ts": time.time(),
-            "reminder_msg_id": None, "hint_given": False, "moves": 0,
-            "players": players, "scores": {uid: 0 for uid in players},
-        }
-
-    plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for u, n in players.items())
-    try:
-        bot.send_message(
-            cid,
-            "━━━━━━━VIBE━━━━━━━\n"
-            f"🔤 <b>ИГРА «СЛОВА» НАЧАЛАСЬ!</b>\n\n"
-            f"👥 Участники:\n{plist}\n\n"
-            f"Первое слово: <b>{html.escape(seed)}</b>\n"
-            f"Следующее на букву «{eff.upper()}»\n\n"
-            f"⏱ Тайм-аут хода: 3 мин\n"
-            f"🔇 Пока идёт игра — Лиза не встревает в чат.\n"
-            "━━━━━━━VIBE━━━━━━━",
-            parse_mode='HTML'
-        )
-    except Exception as e: logging.error(f"[WORDS START] {e}", exc_info=True)
+def resolve_is_word(raw_name, norm_name):
+    if is_known_word(norm_name): return True
+    is_word = ai_check_is_word(raw_name)
+    if is_word: learn_word(norm_name)
+    return is_word
 
 # --- AI ЛОГИКА ---
 def clean_ai_response(content):
@@ -735,25 +672,36 @@ def clean_ai_response(content):
     res = clean_str + "." if clean_str and clean_str[-1].isalnum() else clean_str or "Мда..."
     return html.escape(res)
 
+def get_current_key():
+    with key_lock: return api_keys[current_key_idx]
+
+def switch_key():
+    global current_key_idx
+    with key_lock:
+        current_key_idx = (current_key_idx + 1) % len(api_keys)
+        return api_keys[current_key_idx]
+
 def call_ai(messages, max_tokens=300, temp=0.5):
     attempts = 0
     max_attempts = len(api_keys)
     while attempts < max_attempts:
-        with key_lock: current_key = api_keys[current_key_idx]
+        current_key = get_current_key()
         try:
             r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {current_key}"}, json={"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temp}, timeout=20)
             try: data = r.json()
             except: data = {}
             if r.status_code in (401, 402, 429) or (isinstance(data.get("error"), dict) and data["error"].get("code") in (401, 402, 429)):
-                with key_lock:
-                    global current_key_idx
-                    current_key_idx = (current_key_idx + 1) % len(api_keys)
+                logging.warning(f"Лимит ключа исчерпан (status={r.status_code}). Переключаю...")
+                switch_key()
                 attempts += 1
                 continue
             if "choices" in data and data["choices"]: return clean_ai_response(data["choices"][0].get("message", {}).get("content", ""))
-            else: break
-        except Exception:
-            with key_lock: current_key_idx = (current_key_idx + 1) % len(api_keys)
+            else:
+                logging.error(f"[AI API ERROR]: {data}")
+                break
+        except Exception as e: 
+            logging.error(f"[AI Exception]: {e}")
+            switch_key()
             attempts += 1
             continue
     return "Сервис временно занят."
@@ -764,36 +712,75 @@ def is_threat(txt):
         return "THREAT" in ans.upper()
     except: return False
 
-def play_lucky_game(cid, uid, fname):
+def build_active_scoreboard(game):
+    scores = game.get("scores", {})
+    players = game.get("players", {})
+    if not scores: return "Пока нет очков."
+    ordered = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    lines = [f"{i}. {get_user_mention(user_id=uid, first_name=players.get(uid, 'Игрок'))} — <b>{pts}</b> б." for i, (uid, pts) in enumerate(ordered, 1)]
+    return "\n".join(lines)
+
+def process_word_guess(cid, uid, fname, raw_text):
     try:
-        with state_lock:
-            lim = lucky_limits.setdefault(uid, {"left": 5, "reset_at": 0})
-            now = time.time()
-            if lim["left"] <= 0:
-                if now < lim["reset_at"]:
-                    rem = int(lim["reset_at"] - now)
-                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
-                    msg = bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True)
-                    track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
-                    if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
-                    return
-                else: lim["left"] = 5
-            lim["left"] -= 1
-            if lim["left"] == 0: lim["reset_at"] = now + 1800
-        
-        emoji = random.choice(["🎯", "🎳", "🏀"])
-        try: dice = bot.send_dice(cid, emoji=emoji)
-        except Exception:
-            bot.send_message(cid, "⚠️ Нет прав на кубики.")
-            with state_lock:
-                if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+        raw = raw_text.strip()
+        norm = normalize_word(raw)
+        with state_lock: game = active_word_games.get(cid)
+        if not game or uid not in game["players"]: return
+
+        f_letter, req_letter = first_letter(raw), game["next_letter"]
+        known_locally = is_known_word(norm)
+
+        if req_letter and f_letter != req_letter:
+            if not known_locally: return
+            msg = bot.send_message(cid, f"❌ Нужна буква «{req_letter.upper()}», а не «{f_letter.upper()}».")
+            auto_del(msg, 10)
             return
-        win = (emoji in ["🎯", "🎳"] and dice.dice.value == 6) or (emoji == "🏀" and dice.dice.value in [4, 5])
-        executor.submit(lucky_game_result, cid, uid, fname, dice.message_id, win, lim["left"], emoji)
-    except Exception as e:
-        logging.error(f"[PLAY LUCKY] {e}", exc_info=True)
+
         with state_lock:
-            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+            if norm in game["used"]:
+                msg = bot.send_message(cid, f"♻️ «{html.escape(raw)}» уже называли.")
+                auto_del(msg, 10)
+                return
+
+        if not resolve_is_word(raw, norm):
+            if req_letter:
+                msg = bot.send_message(cid, f"🤔 Не нахожу такого слова. Ещё раз на букву «{req_letter.upper()}».")
+                auto_del(msg, 10)
+            return
+
+        eff_letter = effective_last_letter(raw)
+        with state_lock:
+            game = active_word_games.get(cid)
+            if not game or uid not in game["players"] or (game["next_letter"] and f_letter != game["next_letter"]) or norm in game["used"]: return
+            
+            if game.get("reminder_msg_id"):
+                try: bot.delete_message(cid, game["reminder_msg_id"])
+                except: pass
+                game["reminder_msg_id"] = None
+                
+            game["used"].add(norm)
+            game["last_word"], game["next_letter"] = raw, eff_letter
+            game["last_move_ts"] = time.time()
+            game["last_reminder_ts"] = time.time()
+            game["hint_given"] = False
+            game["moves"] += 1
+            game["scores"][uid] = game["scores"].get(uid, 0) + 1
+            
+            moves_count = game["moves"]
+            
+            ldrs = db_get("words_leaders", {})
+            ldrs.setdefault(str(uid), {"name": fname, "wins": 0})["wins"] += 1
+            db_set("words_leaders", ldrs)
+
+        if moves_count >= 50:
+            with state_lock:
+                if cid in active_word_games: game_obj = active_word_games.pop(cid)
+            end_word_game(cid, game_obj, reason="limit")
+            return
+
+        mention = get_user_mention(user_id=uid, first_name=fname)
+        bot.send_message(cid, f"🥳 {mention} отгадывает слово и получает +1 балл🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»", parse_mode='HTML')
+    except Exception as e: logging.error(f"[WORDS MOVE] {e}", exc_info=True)
 
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
@@ -1244,7 +1231,9 @@ def text_handler(m):
             return
 
         # --- СИСТЕМА АДМИНИСТРИРОВАНИЯ ---
-        if cmd in ["повысить", "понизить", "разжаловать", "пред", "мут", "кто админ", "админы"]:
+        if cmd in ["повысить", "понизить", "разжаловать", "пред", "мут", "кто", "админы"]:
+            if cmd == "кто" and len(parts) > 1 and parts[1].lower() == "админ": cmd = "кто админ"
+                
             if cmd in ["кто админ", "админы"]:
                 admins = db_get("chat_admins", {}).get(str(cid), {})
                 try:
@@ -1269,24 +1258,22 @@ def text_handler(m):
                 return finish_command(m, "who_admin", bot.send_message(cid, txt, parse_mode="HTML"), ttl=120)
 
             caller_rank = get_admin_rank(cid, uid)
-            if cmd == "мут" and caller_rank < 2: return reply_no_rights(m)
-            if cmd == "пред" and caller_rank < 1: return reply_no_rights(m)
+            if cmd == "мут" and caller_rank < 2 and uid not in BOSSES: return reply_no_rights(m)
+            if cmd == "пред" and caller_rank < 1 and uid not in BOSSES: return reply_no_rights(m)
             if cmd in ["повысить", "понизить", "разжаловать"] and caller_rank < 5 and uid not in BOSSES: return reply_no_rights(m)
             
             target_uid, target_name, args = extract_target_and_args(m, parts)
             if not target_uid:
-                msg = bot.send_message(cid, "Укажите пользователя (реплай или @юз)")
-                return finish_command(m, "no_target", msg, ttl=10)
+                if cmd not in ["кто админ", "админы"]:
+                    msg = bot.send_message(cid, "Укажите пользователя (реплай или @юз)")
+                    return finish_command(m, "no_target", msg, ttl=10)
                 
-            target_cur_rank = get_admin_rank(cid, target_uid)
-            
-            if cmd in ["повысить", "понизить", "разжаловать"]:
+            if cmd in ["повысить", "понизить", "разжаловать"] and target_uid:
+                target_cur_rank = get_admin_rank(cid, target_uid)
                 if cmd == "разжаловать": new_rank = 0
                 else:
-                    if args and args[0].isdigit():
-                        new_rank = int(args[0])
-                    else:
-                        new_rank = target_cur_rank + 1 if cmd == "повысить" else target_cur_rank - 1
+                    if args and args[0].isdigit(): new_rank = int(args[0])
+                    else: new_rank = target_cur_rank + 1 if cmd == "повысить" else target_cur_rank - 1
                         
                 if new_rank > 5: new_rank = 5
                 if new_rank < 0: new_rank = 0
@@ -1296,15 +1283,15 @@ def text_handler(m):
                     if caller_rank <= new_rank and new_rank != 0: return reply_no_rights(m)
                         
                 set_admin_rank(cid, target_uid, new_rank)
-                if new_rank == 0:
-                    txt = f"📉 {get_user_mention(user_id=target_uid, first_name=target_name)} разжалован до обычного участника."
+                if new_rank == 0: txt = f"📉 {get_user_mention(user_id=target_uid, first_name=target_name)} разжалован до обычного участника."
                 else:
                     rank_name = ADMIN_RANKS.get(new_rank, f"{new_rank} РАНГ")
                     act = "повышен" if new_rank > target_cur_rank else "понижен"
                     txt = f"📈 {get_user_mention(user_id=target_uid, first_name=target_name)} {act} до должности:\n<b>{rank_name}</b>"
                 return finish_command(m, "admin_change", bot.send_message(cid, txt, parse_mode="HTML"))
                 
-            if cmd == "пред":
+            if cmd == "пред" and target_uid:
+                target_cur_rank = get_admin_rank(cid, target_uid)
                 if caller_rank <= target_cur_rank and uid not in BOSSES:
                     return finish_command(m, "no_rights_warn", bot.send_message(cid, "У вас нет прав на этого администратора."), ttl=10)
                 
@@ -1339,7 +1326,8 @@ def text_handler(m):
                     txt = f"{get_user_mention(user_id=uid, first_name=fname)} выдал {warn_count} предупреждение/й {get_user_mention(user_id=target_uid, first_name=target_name)}\nПричина: {reason}\nУ пользователя {total_w}/3 предупреждений."
                 return finish_command(m, "warn", bot.send_message(cid, txt, parse_mode="HTML"))
                 
-            if cmd == "мут":
+            if cmd == "мут" and target_uid:
+                target_cur_rank = get_admin_rank(cid, target_uid)
                 if caller_rank <= target_cur_rank and uid not in BOSSES:
                     return finish_command(m, "no_rights_mute", bot.send_message(cid, "У вас нет прав наказывать этого администратора."), ttl=10)
                 
