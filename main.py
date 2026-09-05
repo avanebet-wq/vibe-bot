@@ -59,7 +59,7 @@ last_command_messages = {}
 messages_to_delete = []
 active_fsm = {}
 
-# --- ИГРА «СЛОВА»: РЕГИСТРАЦИЯ И АКТИВНЫЕ ИГРЫ ---
+# --- ИГРА «СЛОВА» ---
 pending_word_lobbies = {}
 active_word_games = {}
 WORDS_TURN_TIMEOUT = 180
@@ -104,36 +104,87 @@ RANKS = [
     (25000, "👑🔥 БОСС ШИШЕК")
 ]
 
-def pluralize_weed(n):
-    if n % 10 == 1 and n % 100 != 11:
-        return "травка"
-    elif 2 <= n % 10 <= 4 and (n % 100 < 10 or n % 100 >= 20):
-        return "травки"
+ADMIN_RANKS = {
+    1: "🌱 1 РАНГ — СЕМЕЧКО",
+    2: "🍃 2 РАНГ — РОСТОК",
+    3: "🌿 3 РАНГ — ХАПЕР",
+    4: "🔥 4 РАНГ — СТАФФЕР",
+    5: "👑 5 РАНГ — БОСС"
+}
+
+def set_admin_rank(cid, uid, rank):
+    with state_lock:
+        admins = db_get("chat_admins", {})
+        chat_adms = admins.setdefault(str(cid), {})
+        if rank <= 0:
+            chat_adms.pop(str(uid), None)
+        else:
+            chat_adms[str(uid)] = rank
+        db_set("chat_admins", admins)
+
+def get_admin_rank(cid, uid):
+    if uid in BOSSES: return 5
+    with state_lock:
+        admins = db_get("chat_admins", {})
+        chat_adms = admins.get(str(cid), {})
+        if str(uid) in chat_adms: return chat_adms[str(uid)]
+    
+    try:
+        member = bot.get_chat_member(cid, uid)
+        if member.status == 'creator':
+            set_admin_rank(cid, uid, 5)
+            return 5
+    except: pass
+    return 0
+
+def extract_target_and_args(m, text_parts):
+    target_uid, target_name = None, None
+    args = []
+    if m.reply_to_message:
+        target_uid = m.reply_to_message.from_user.id
+        target_name = m.reply_to_message.from_user.first_name
+        args = text_parts[1:]
     else:
-        return "травок"
+        for i, part in enumerate(text_parts):
+            if part.startswith('@') and len(part) > 1:
+                uname = part[1:].lower()
+                with state_lock:
+                    for u_id_str, data in db_get("users_data", {}).items():
+                        if data.get("uname", "").lower() == uname:
+                            target_uid = int(u_id_str)
+                            target_name = data.get("name", uname)
+                            break
+                args = text_parts[1:i] + text_parts[i+1:]
+                break
+    return target_uid, target_name, args
+
+def parse_mute_time(time_str):
+    match = re.match(r'(\d+)\s*([а-яё]+)', time_str.lower())
+    if not match: return None
+    v = int(match.group(1))
+    u = match.group(2)
+    if u.startswith('д'): return v * 86400
+    if u.startswith('ч'): return v * 3600
+    if u.startswith('м'): return v * 60
+    return None
+
+def pluralize_weed(n):
+    if n % 10 == 1 and n % 100 != 11: return "травка"
+    elif 2 <= n % 10 <= 4 and (n % 100 < 10 or n % 100 >= 20): return "травки"
+    else: return "травок"
 
 def get_farm_reward():
     r = random.random()
-    if r < 0.50: return 1, random.randint(1, 5)     # 50%
-    elif r < 0.75: return 2, random.randint(5, 15)  # 25%
-    elif r < 0.90: return 3, random.randint(15, 38) # 15%
-    elif r < 0.97: return 4, random.randint(38, 55) # 7%
-    else: return 5, random.randint(55, 100)         # 3%
+    if r < 0.50: return 1, random.randint(1, 5)
+    elif r < 0.75: return 2, random.randint(5, 15)
+    elif r < 0.90: return 3, random.randint(15, 38)
+    elif r < 0.97: return 4, random.randint(38, 55)
+    else: return 5, random.randint(55, 100)
 
-def get_user_rank_info(uid, xp, chat_obj=None, user_obj=None):
-    if chat_obj and chat_obj.type in ['group', 'supergroup']:
-        try:
-            member = bot.get_chat_member(chat_obj.id, uid)
-            if member.status in ['creator', 'administrator']:
-                if user_obj and user_obj.is_bot:
-                    return "💁‍♀️Хелпер", xp, 0, None
-                return "💜VIBE💜", xp, 0, None
-        except: pass
-    
+def get_user_rank_info(xp):
     curr_rank = RANKS[0][1]
     next_xp = 100
     next_rank = RANKS[1][1]
-    
     for i, (r_xp, r_name) in enumerate(RANKS):
         if xp >= r_xp:
             curr_rank = r_name
@@ -143,8 +194,7 @@ def get_user_rank_info(uid, xp, chat_obj=None, user_obj=None):
             else:
                 next_xp = 0
                 next_rank = None
-        else:
-            break
+        else: break
     return curr_rank, xp, next_xp, next_rank
 
 def record_xp_and_stats(m):
@@ -171,14 +221,13 @@ def record_xp_and_stats(m):
         old_xp = u["xp"]
         u["xp"] += random.randint(1, 3)
         u["msgs"] += 1
-        
         db_set("users_data", users)
         new_xp = u["xp"]
         
-    old_rank, _, _, _ = get_user_rank_info(uid, old_xp, m.chat, m.from_user)
-    new_rank, _, _, _ = get_user_rank_info(uid, new_xp, m.chat, m.from_user)
+    old_rank, _, _, _ = get_user_rank_info(old_xp)
+    new_rank, _, _, _ = get_user_rank_info(new_xp)
     
-    if old_rank != new_rank and new_rank not in ["💜VIBE💜", "💁‍♀️Хелпер"]:
+    if old_rank != new_rank:
         try:
             bot.send_message(cid, f"🎉 <b>ПОЗДРАВЛЯЕМ!</b>\n\n{get_user_mention(m.from_user)} достигает ранга: <b>{new_rank}</b> 🚀\nТак держать!", parse_mode='HTML')
             try: bot.set_chat_administrator_custom_title(chat_id=cid, user_id=uid, custom_title=new_rank)
@@ -189,28 +238,23 @@ def handle_profile_request(m, target_uid, target_user=None):
     with state_lock:
         users = db_get("users_data", {})
         u = users.get(str(target_uid))
-    
     if not u:
         try: bot.reply_to(m, "🤷‍♀️ Информации об этом пользователе пока нет.")
         except: pass
         return
     
-    xp = u.get("xp", 0)
-    msgs = u.get("msgs", 0)
-    respects = u.get("respects", 0)
-    weed = u.get("weed", 0)
+    xp, msgs = u.get("xp", 0), u.get("msgs", 0)
+    respects, weed = u.get("respects", 0), u.get("weed", 0)
     first_seen = u.get("first_seen", time.time())
     
-    days_in_group = int((time.time() - first_seen) / 86400)
-    if days_in_group == 0: days_in_group = 1
-    
+    days_in_group = max(1, int((time.time() - first_seen) / 86400))
     fs_date = datetime.fromtimestamp(first_seen, KYIV_TZ).strftime('%d.%m.%Y')
     
     activity = "Низкая 💤"
     if msgs > 1000: activity = "Высокая 🔥"
     elif msgs > 100: activity = "Средняя ⚡"
     
-    rank, _, next_xp, next_rank = get_user_rank_info(target_uid, xp, m.chat, target_user)
+    rank, _, next_xp, next_rank = get_user_rank_info(xp)
     
     if next_xp:
         progress = min(1.0, xp / next_xp)
@@ -243,18 +287,12 @@ def handle_profile_request(m, target_uid, target_user=None):
     except: pass
 
 def process_farm_command(m):
-    cid = m.chat.id
-    uid = m.from_user.id
-    fname = m.from_user.first_name
-    uname = m.from_user.username
-    
+    cid, uid, fname, uname = m.chat.id, m.from_user.id, m.from_user.first_name, m.from_user.username
     with state_lock:
         users = db_get("users_data", {})
         u = users.setdefault(str(uid), {
-            "xp": 0, "msgs": 0, "name": fname, 
-            "uname": uname, "first_seen": time.time(),
-            "respects": 0, "given_respects": 0, "respect_reset": 0,
-            "weed": 0, "last_farm": 0
+            "xp": 0, "msgs": 0, "name": fname, "uname": uname, "first_seen": time.time(),
+            "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0
         })
         now = time.time()
         cooldown = 4 * 3600
@@ -274,38 +312,36 @@ def process_farm_command(m):
         u["xp"] += xp_gain
         u["weed"] = u.get("weed", 0) + weeds
         u["last_farm"] = now
-        
         new_xp = u["xp"]
-        new_balance = u["weed"]
         db_set("users_data", users)
         
-    msg = bot.send_message(cid, f"✅ Успешный Фарм, вы получили: 🌿 {weeds} {pluralize_weed(weeds)} 😁\n🌟 Опыт: +{xp_gain} XP\n\n🌿 Ваш баланс теперь: <b>{new_balance} {pluralize_weed(new_balance)}</b>", parse_mode='HTML')
+    msg = bot.send_message(cid, f"✅ Успешный Фарм, вы получили: 🌿 {weeds} {pluralize_weed(weeds)} 😁\n🌟 Опыт: +{xp_gain} XP", parse_mode='HTML')
     finish_command(m, "farm_success", msg, ttl=30)
     
-    old_rank, _, _, _ = get_user_rank_info(uid, old_xp, m.chat, m.from_user)
-    new_rank, _, _, _ = get_user_rank_info(uid, new_xp, m.chat, m.from_user)
-    if old_rank != new_rank and new_rank not in ["💜VIBE💜", "💁‍♀️Хелпер"]:
+    old_rank, _, _, _ = get_user_rank_info(old_xp)
+    new_rank, _, _, _ = get_user_rank_info(new_xp)
+    if old_rank != new_rank:
         try:
             bot.send_message(cid, f"🎉 <b>ПОЗДРАВЛЯЕМ!</b>\n\n{get_user_mention(m.from_user)} достигает ранга: <b>{new_rank}</b> 🚀\nТак держать!", parse_mode='HTML')
             try: bot.set_chat_administrator_custom_title(chat_id=cid, user_id=uid, custom_title=new_rank)
             except: pass
         except: pass
 
+def reply_no_rights(m):
+    try: bot.delete_message(m.chat.id, m.message_id)
+    except: pass
+    msg = bot.send_message(m.chat.id, "⛔ У вас нет прав на использование этой команды.", parse_mode="HTML")
+    auto_del(msg, 5)
+
 # --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
 def get_v(cid, k, d=False):
-    with state_lock:
-        return db_get("settings", {}).get(str(cid), {}).get(k, d)
+    with state_lock: return db_get("settings", {}).get(str(cid), {}).get(k, d)
 
 def set_v(cid, k, val):
     with state_lock:
         s = db_get("settings", {})
         s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False})[k] = val
         db_set("settings", s)
-
-def get_user_mention(user_obj=None, user_id=None, first_name=None):
-    if user_obj: user_id, first_name = user_obj.id, user_obj.first_name
-    safe_name = html.escape(str(first_name or "User"))
-    return f'<a href="tg://user?id={user_id}">{safe_name}</a>' if user_id else safe_name
 
 def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
     if not new_msg: return
@@ -314,21 +350,18 @@ def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
         if key in last_command_messages:
             try: bot.delete_message(chat_id, last_command_messages[key])
             except Exception as e:
-                if "message to delete not found" not in str(e):
-                    logging.error(f"[DEL OLD CMD] {e}")
+                if "message to delete not found" not in str(e): logging.error(f"[DEL OLD CMD] {e}")
         last_command_messages[key] = new_msg.message_id
 
 def auto_del(msg, ttl=180):
     if msg:
-        with state_lock:
-            messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
+        with state_lock: messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
 
 def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
     if delete_user_msg and not getattr(m, "is_callback", False):
         try: bot.delete_message(m.chat.id, m.message_id)
         except Exception as e:
-            if "message to delete not found" not in str(e):
-                logging.error(f"[DEL CMD:{cmd_name}] {e}")
+            if "message to delete not found" not in str(e): logging.error(f"[DEL CMD:{cmd_name}] {e}")
     if sent_msg:
         track_and_replace_specific_cmd(m.chat.id, m.from_user.id, cmd_name, sent_msg)
         if ttl: auto_del(sent_msg, ttl)
@@ -338,8 +371,7 @@ def format_safe_leaderboard():
         ldrs = db_get("safe_leaders", {})
         if not ldrs: return "🏆 Рейтинг взломщиков сейфа пока пуст."
         txt = "━━━━━━━VIBE━━━━━━━\n🔐 <b>РЕЙТИНГ ВЗЛОМЩИКОВ СЕЙФА</b>\n\n"
-        sorted_ldrs = sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)[:10]
-        for i, (uid_str, uinfo) in enumerate(sorted_ldrs, 1):
+        for i, (uid_str, uinfo) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins", 0), reverse=True)[:10], 1):
             m_icon = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else "▫️"
             txt += f"{m_icon} {i}. {get_user_mention(user_id=int(uid_str), first_name=uinfo.get('name'))} — <b>{uinfo.get('wins', 0)}</b> побед\n"
         return txt + "\n━━━━━━━VIBE━━━━━━━"
@@ -379,7 +411,7 @@ def check_access(m):
             is_words_active = cid in active_word_games
             game = active_word_games.get(cid)
         if is_words_active and game:
-            if uid not in game["players"] and uid not in BOSSES:
+            if uid not in game["players"] and uid not in BOSSES and get_admin_rank(cid, uid) == 0:
                 try: bot.delete_message(cid, m.message_id)
                 except: pass
                 warn = bot.send_message(cid, f"🤫 {get_user_mention(m.from_user)}, тсс! Идёт игра в слова, писать могут только участники!", parse_mode='HTML')
@@ -422,13 +454,10 @@ def cleanup_worker():
                     if now >= item["time"]:
                         try: bot.delete_message(item["cid"], item["mid"])
                         except Exception as e:
-                            if "message to delete not found" not in str(e):
-                                logging.error(f"[CLEANUP DEL] {e}")
-                    else:
-                        remaining.append(item)
+                            if "message to delete not found" not in str(e): logging.error(f"[CLEANUP DEL] {e}")
+                    else: remaining.append(item)
                 messages_to_delete[:] = remaining
-        except Exception as e:
-            logging.error(f"[CLEANUP WORKER] {e}", exc_info=True)
+        except Exception as e: logging.error(f"[CLEANUP WORKER] {e}", exc_info=True)
 threading.Thread(target=cleanup_worker, daemon=True).start()
 
 def send_lobby_msg(cid, lobby):
@@ -437,10 +466,8 @@ def send_lobby_msg(cid, lobby):
     msg = None
     try:
         if os.path.exists("words_preview.png"):
-            with open("words_preview.png", "rb") as photo:
-                msg = bot.send_photo(cid, photo, caption=text, reply_markup=kb, parse_mode='HTML')
-        else:
-            msg = bot.send_message(cid, text, reply_markup=kb, parse_mode='HTML')
+            with open("words_preview.png", "rb") as photo: msg = bot.send_photo(cid, photo, caption=text, reply_markup=kb, parse_mode='HTML')
+        else: msg = bot.send_message(cid, text, reply_markup=kb, parse_mode='HTML')
         if msg:
             try: bot.pin_chat_message(cid, msg.message_id, disable_notification=True)
             except: pass
@@ -459,11 +486,9 @@ def repost_lobby(cid):
             if "message to delete not found" not in str(e): pass
             
     msg = send_lobby_msg(cid, lobby)
-    
     if msg:
         with state_lock:
-            if cid in pending_word_lobbies:
-                pending_word_lobbies[cid]["reg_msg_id"] = msg.message_id
+            if cid in pending_word_lobbies: pending_word_lobbies[cid]["reg_msg_id"] = msg.message_id
 
 def end_word_game(cid, game, reason="timeout"):
     try: bot.unpin_all_chat_messages(cid)
@@ -474,7 +499,6 @@ def end_word_game(cid, game, reason="timeout"):
         txt = f"🏁 <b>ИГРА «СЛОВА» ЗАВЕРШЕНА!</b> 🎉\nУра! Вы совместно назвали 50 слов!\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}"
     else:
         txt = f"⌛ <b>ИГРА «СЛОВА» ОКОНЧЕНА ПО ТАЙМ-АУТУ.</b>\nНазвано слов: {game['moves']}.\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}\n\n/start_words_game — начать заново"
-    
     try:
         msg = bot.send_message(cid, txt, parse_mode='HTML')
         try: bot.pin_chat_message(cid, msg.message_id, disable_notification=False)
@@ -486,30 +510,22 @@ def word_game_active_worker():
         try:
             time.sleep(5)
             now = time.time()
-            to_end = []
-            to_hint = []
-            to_remind = []
-            
+            to_end, to_hint, to_remind = [], [], []
             with state_lock:
                 for cid, game in list(active_word_games.items()):
                     elapsed = now - game["last_move_ts"]
-                    
                     if elapsed > WORDS_TURN_TIMEOUT:
                         to_end.append((cid, game))
                         del active_word_games[cid]
                         continue
-                        
                     if elapsed >= 120 and not game.get("hint_given"):
                         game["hint_given"] = True
                         to_hint.append((cid, game))
-                        
                     if now - game.get("last_reminder_ts", 0) >= 30:
                         game["last_reminder_ts"] = now
                         to_remind.append((cid, game))
                         
-            for cid, game in to_end:
-                end_word_game(cid, game, reason="timeout")
-                
+            for cid, game in to_end: end_word_game(cid, game, reason="timeout")
             for cid, game in to_hint:
                 req_letter = game["next_letter"]
                 possible_words = [w for w in BASE_WORDS if w.startswith(req_letter) and w not in game["used"]]
@@ -520,21 +536,17 @@ def word_game_active_worker():
                         msg = bot.send_message(cid, f"💡 <b>ПОДСКАЗКА:</b>\nНикто не может вспомнить слово на «<b>{req_letter.upper()}</b>»?\nВот половинка: <b>{hint.upper()}</b>", parse_mode='HTML')
                         auto_del(msg, 30)
                     except: pass
-                    
             for cid, game in to_remind:
                 try:
                     if game.get("reminder_msg_id"):
                         try: bot.delete_message(cid, game["reminder_msg_id"])
                         except: pass
                     req_letter = game["next_letter"]
-                    msg = bot.send_message(cid, f"✨ <b>ИГРА ИДЁТ!</b> ✨\n\nЖду от вас словечко на букву «<b>{req_letter.upper()}</b>» 👇", parse_mode='HTML')
+                    msg = bot.send_message(cid, f"💜 <b>Игра идёт!</b>\nНапиши слово на букву «<b>{req_letter.upper()}</b>» 👇", parse_mode='HTML')
                     with state_lock:
-                        if cid in active_word_games:
-                            active_word_games[cid]["reminder_msg_id"] = msg.message_id
+                        if cid in active_word_games: active_word_games[cid]["reminder_msg_id"] = msg.message_id
                 except: pass
-                
-        except Exception as e:
-            logging.error(f"[WORDS ACTIVE WORKER] {e}", exc_info=True)
+        except Exception as e: logging.error(f"[WORDS ACTIVE WORKER] {e}", exc_info=True)
 threading.Thread(target=word_game_active_worker, daemon=True).start()
 
 def word_lobby_worker():
@@ -545,57 +557,67 @@ def word_lobby_worker():
             with state_lock:
                 for cid, lobby in list(pending_word_lobbies.items()):
                     if not lobby.get("started"):
-                        if now >= lobby["end_time"]:
-                            to_start.append(cid)
+                        if now >= lobby["end_time"]: to_start.append(cid)
                         elif now >= lobby.get("next_repost", 0):
                             lobby["next_repost"] = now + 60
                             to_repost.append(cid)
-            for cid in to_repost:
-                repost_lobby(cid)
-            for cid in to_start:
-                start_word_game_now(cid)
-        except Exception as e:
-            logging.error(f"[WORD LOBBY WORKER] {e}", exc_info=True)
+            for cid in to_repost: repost_lobby(cid)
+            for cid in to_start: start_word_game_now(cid)
+        except Exception as e: logging.error(f"[WORD LOBBY WORKER] {e}", exc_info=True)
 threading.Thread(target=word_lobby_worker, daemon=True).start()
 
-# --- ХЕЛПЕРЫ ДЛЯ ИГРЫ «СЛОВА» ---
-def normalize_word(name):
-    n = name.strip().lower().replace("ё", "е")
-    n = re.sub(r'\s*-\s*', '-', n)
-    return re.sub(r'\s+', ' ', n)
+# --- ФОНОВЫЕ ЗАДАЧИ АВТОПОСТИНГА ---
+def send_specific_post(chat_id, post):
+    try:
+        mk = build_post_user_kb(post)
+        txt = post.get("text", "")
+        if post.get("photo"): msg = bot.send_photo(chat_id, post["photo"], caption=txt, reply_markup=mk, parse_mode='HTML')
+        else: msg = bot.send_message(chat_id, txt, reply_markup=mk, parse_mode='HTML')
+        old_msg_id = None
+        with state_lock:
+            if post.get("auto_delete_prev") and post.get("last_msg_id"): old_msg_id = post["last_msg_id"]
+            post["last_msg_id"] = msg.message_id
+        if old_msg_id:
+            try: bot.delete_message(chat_id, old_msg_id)
+            except Exception as e:
+                if "message to delete not found" not in str(e): logging.error(f"[AUTOPOST DEL PREV] {e}")
+    except Exception as e: logging.error(f"[AUTOPOST SEND] {e}", exc_info=True)
 
-def first_letter(name):
-    n = normalize_word(name)
-    return n[0] if n else None
-
-def effective_last_letter(name):
-    n = normalize_word(name)
-    idx = len(n) - 1
-    while idx >= 0 and n[idx] in "ьъ":
-        idx -= 1
-    return n[idx] if idx >= 0 else None
-
-def is_known_word(norm_name):
-    if norm_name in BASE_WORDS: return True
-    with state_lock:
-        return norm_name in db_get("known_words_extra", [])
-
-def learn_word(norm_name):
-    with state_lock:
-        extra = db_get("known_words_extra", [])
-        if norm_name not in extra:
-            extra.append(norm_name)
-            db_set("known_words_extra", extra)
-
-def ai_check_is_word(raw_name):
-    ans = call_ai([{"role": "user", "content": f"Слово: '{raw_name}'. Это реально существующее слово русского языка (в любой форме — существительное, глагол, прилагательное и т.д.)? Отвечай строго: ДА или НЕТ."}], 10, 0.0)
-    return "ДА" in ans.upper()
-
-def resolve_is_word(raw_name, norm_name):
-    if is_known_word(norm_name): return True
-    is_word = ai_check_is_word(raw_name)
-    if is_word: learn_word(norm_name)
-    return is_word
+def autopost_worker():
+    while True:
+        try:
+            time.sleep(15)
+            now_ts = datetime.now(KYIV_TZ).timestamp()
+            td_str, curr_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d"), datetime.now(KYIV_TZ).strftime("%H:%M")
+            to_send = []
+            with state_lock:
+                data = db_get("autopost", {"posts": []})
+                updated = False
+                for p in data.get("posts", []):
+                    if not p.get("enabled") or (p.get("start_date") and td_str < p["start_date"]): continue
+                    dt = p.get("daily_time")
+                    if dt:
+                        if curr_str >= dt and p.get("last_sent_date") != td_str:
+                            p["last_post"], p["last_sent_date"], updated = now_ts, td_str, True
+                            to_send.append((p.get("chat_id"), p))
+                    elif p.get("interval", 0) > 0 and now_ts - p.get("last_post", 0) >= p["interval"]:
+                        p["last_post"], updated = now_ts, True
+                        to_send.append((p.get("chat_id"), p))
+                if updated: db_set("autopost", data)
+            for chat_id, p in to_send: send_specific_post(chat_id, p)
+            if to_send:
+                with state_lock:
+                    fresh = db_get("autopost", {"posts": []})
+                    by_id = {item["id"]: item for item in fresh.get("posts", [])}
+                    for _, sent_post in to_send:
+                        target = by_id.get(sent_post["id"])
+                        if target:
+                            target["last_msg_id"] = sent_post.get("last_msg_id")
+                            target["last_post"] = sent_post.get("last_post")
+                            if "last_sent_date" in sent_post: target["last_sent_date"] = sent_post["last_sent_date"]
+                    db_set("autopost", fresh)
+        except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
+threading.Thread(target=autopost_worker, daemon=True).start()
 
 # --- ЛОББИ ИГРЫ «СЛОВА» ---
 def build_lobby_text(lobby):
@@ -673,22 +695,15 @@ def start_word_game_now(cid):
     if seed:
         norm_seed = normalize_word(seed)
         if not resolve_is_word(seed, norm_seed): seed = random.choice(list(BASE_WORDS)).title()
-    else:
-        seed = random.choice(list(BASE_WORDS)).title()
+    else: seed = random.choice(list(BASE_WORDS)).title()
 
     eff = effective_last_letter(seed)
     with state_lock:
         active_word_games[cid] = {
-            "last_word": seed,
-            "next_letter": eff,
-            "used": {normalize_word(seed)},
-            "last_move_ts": time.time(),
-            "last_reminder_ts": time.time(),
-            "reminder_msg_id": None,
-            "hint_given": False,
-            "moves": 0,
-            "players": players,
-            "scores": {uid: 0 for uid in players},
+            "last_word": seed, "next_letter": eff, "used": {normalize_word(seed)},
+            "last_move_ts": time.time(), "last_reminder_ts": time.time(),
+            "reminder_msg_id": None, "hint_given": False, "moves": 0,
+            "players": players, "scores": {uid: 0 for uid in players},
         }
 
     plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for u, n in players.items())
@@ -720,41 +735,25 @@ def clean_ai_response(content):
     res = clean_str + "." if clean_str and clean_str[-1].isalnum() else clean_str or "Мда..."
     return html.escape(res)
 
-def get_current_key():
-    with key_lock:
-        return api_keys[current_key_idx]
-
-def switch_key():
-    global current_key_idx
-    with key_lock:
-        current_key_idx = (current_key_idx + 1) % len(api_keys)
-        return api_keys[current_key_idx]
-
 def call_ai(messages, max_tokens=300, temp=0.5):
     attempts = 0
     max_attempts = len(api_keys)
     while attempts < max_attempts:
-        current_key = get_current_key()
+        with key_lock: current_key = api_keys[current_key_idx]
         try:
             r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {current_key}"}, json={"model": AI_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temp}, timeout=20)
             try: data = r.json()
             except: data = {}
-
-            key_is_bad = (r.status_code in (401, 402, 429) or (isinstance(data.get("error"), dict) and data["error"].get("code") in (401, 402, 429)))
-            if key_is_bad:
-                logging.warning(f"Лимит ключа исчерпан (status={r.status_code}). Переключаю...")
-                switch_key()
+            if r.status_code in (401, 402, 429) or (isinstance(data.get("error"), dict) and data["error"].get("code") in (401, 402, 429)):
+                with key_lock:
+                    global current_key_idx
+                    current_key_idx = (current_key_idx + 1) % len(api_keys)
                 attempts += 1
                 continue
-                
-            if "choices" in data and data["choices"]: 
-                return clean_ai_response(data["choices"][0].get("message", {}).get("content", ""))
-            else:
-                logging.error(f"[AI API ERROR]: {data}")
-                break
-        except Exception as e: 
-            logging.error(f"[AI Exception]: {e}")
-            switch_key()
+            if "choices" in data and data["choices"]: return clean_ai_response(data["choices"][0].get("message", {}).get("content", ""))
+            else: break
+        except Exception:
+            with key_lock: current_key_idx = (current_key_idx + 1) % len(api_keys)
             attempts += 1
             continue
     return "Сервис временно занят."
@@ -764,111 +763,6 @@ def is_threat(txt):
         ans = call_ai([{"role": "user", "content": f"Текст: '{txt}'. Это угроза докса/сватинга? Отвечай THREAT или SAFE."}], 10, 0.0)
         return "THREAT" in ans.upper()
     except: return False
-
-def build_active_scoreboard(game):
-    scores = game.get("scores", {})
-    players = game.get("players", {})
-    if not scores: return "Пока нет очков."
-    ordered = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    lines = [f"{i}. {get_user_mention(user_id=uid, first_name=players.get(uid, 'Игрок'))} — <b>{pts}</b> б." for i, (uid, pts) in enumerate(ordered, 1)]
-    return "\n".join(lines)
-
-def process_word_guess(cid, uid, fname, raw_text):
-    try:
-        raw = raw_text.strip()
-        norm = normalize_word(raw)
-        with state_lock: game = active_word_games.get(cid)
-        if not game or uid not in game["players"]: return
-
-        f_letter, req_letter = first_letter(raw), game["next_letter"]
-        known_locally = is_known_word(norm)
-
-        if req_letter and f_letter != req_letter:
-            if not known_locally: return
-            msg = bot.send_message(cid, f"❌ Нужна буква «{req_letter.upper()}», а не «{f_letter.upper()}».")
-            auto_del(msg, 10)
-            return
-
-        with state_lock:
-            if norm in game["used"]:
-                msg = bot.send_message(cid, f"♻️ «{html.escape(raw)}» уже называли.")
-                auto_del(msg, 10)
-                return
-
-        if not resolve_is_word(raw, norm):
-            if req_letter:
-                msg = bot.send_message(cid, f"🤔 Не нахожу такого слова. Ещё раз на букву «{req_letter.upper()}».")
-                auto_del(msg, 10)
-            return
-
-        eff_letter = effective_last_letter(raw)
-        with state_lock:
-            game = active_word_games.get(cid)
-            if not game or uid not in game["players"] or (game["next_letter"] and f_letter != game["next_letter"]) or norm in game["used"]: return
-            
-            if game.get("reminder_msg_id"):
-                try: bot.delete_message(cid, game["reminder_msg_id"])
-                except: pass
-                game["reminder_msg_id"] = None
-                
-            game["used"].add(norm)
-            game["last_word"], game["next_letter"] = raw, eff_letter
-            game["last_move_ts"] = time.time()
-            game["last_reminder_ts"] = time.time()
-            game["hint_given"] = False
-            game["moves"] += 1
-            game["scores"][uid] = game["scores"].get(uid, 0) + 1
-            
-            moves_count = game["moves"]
-            
-            ldrs = db_get("words_leaders", {})
-            ldrs.setdefault(str(uid), {"name": fname, "wins": 0})["wins"] += 1
-            db_set("words_leaders", ldrs)
-
-        if moves_count >= 50:
-            with state_lock:
-                if cid in active_word_games:
-                    game_obj = active_word_games.pop(cid)
-            end_word_game(cid, game_obj, reason="limit")
-            return
-
-        mention = get_user_mention(user_id=uid, first_name=fname)
-        bot.send_message(cid, f"🥳 {mention} отгадывает слово и получает +1 балл🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»", parse_mode='HTML')
-    except Exception as e: logging.error(f"[WORDS MOVE] {e}", exc_info=True)
-
-def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
-    try:
-        wait_s = DICE_ANIMATION_SECONDS.get(emoji, 4.0) + DELETE_ANIM_DELAY
-        time.sleep(wait_s)
-        try: bot.delete_message(cid, msg_id)
-        except Exception as e:
-            if "message to delete not found" not in str(e): logging.error(f"[LUCKY DEL] {e}")
-                
-        mention = get_user_mention(user_id=uid, first_name=fname)
-        if win:
-            with state_lock:
-                ldrs = db_get("lucky_leaders", {})
-                u = ldrs.setdefault(str(uid), {"name": fname, "wins": 0})
-                u["wins"] += 1
-                db_set("lucky_leaders", ldrs)
-                rank = sum(1 for v in ldrs.values() if v.get("wins",0) > u["wins"]) + 1
-            txt = f"🎉 {mention}, невероятно! Ты выиграл +1 балл!\nТвое место: #{rank}\n"
-        else:
-            txt = f"😔 {mention}, не повезло.\n"
-        
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🎲 Снова", callback_data=f"lucky:again:{uid}")) if left > 0 else None
-        if left == 0:
-            with state_lock: rem = int(lucky_limits[uid]["reset_at"] - time.time())
-            txt += f"\nПопыток больше нет😔\nНовые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
-        else:
-            txt += f"Осталось попыток: {left}\nСыграем еще?"
-            
-        msg = bot.send_message(cid, txt, reply_markup=kb, parse_mode='HTML')
-        track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
-    except Exception as e: logging.error(f"[LUCKY RESULT] {e}", exc_info=True)
-    finally:
-        with state_lock:
-            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
 
 def play_lucky_game(cid, uid, fname):
     try:
@@ -889,7 +783,7 @@ def play_lucky_game(cid, uid, fname):
         
         emoji = random.choice(["🎯", "🎳", "🏀"])
         try: dice = bot.send_dice(cid, emoji=emoji)
-        except Exception as e:
+        except Exception:
             bot.send_message(cid, "⚠️ Нет прав на кубики.")
             with state_lock:
                 if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
@@ -962,6 +856,8 @@ def cmd_events(m):
 @bot.message_handler(commands=['start_game_safe'])
 def cmd_sgs(m):
     if not check_access(m): return
+    caller_rank = get_admin_rank(m.chat.id, m.from_user.id)
+    if caller_rank < 1 and m.from_user.id not in BOSSES: return reply_no_rights(m)
     with state_lock:
         if m.chat.id in active_safes:
             msg = bot.send_message(m.chat.id, "⚠️ Сейф уже активирован.")
@@ -979,6 +875,8 @@ def cmd_lsg(m):
 @bot.message_handler(commands=['start_words_game'])
 def cmd_start_words(m):
     if not check_access(m): return
+    caller_rank = get_admin_rank(m.chat.id, m.from_user.id)
+    if caller_rank < 1 and m.from_user.id not in BOSSES: return reply_no_rights(m)
     cid = m.chat.id
     with state_lock:
         if cid in active_word_games:
@@ -996,25 +894,21 @@ def cmd_start_words(m):
 
     with state_lock:
         pending_word_lobbies[cid] = {
-            "creator_id": m.from_user.id,
-            "seed": seed,
-            "players": {},
-            "reg_msg_id": None,
-            "end_time": time.time() + REGISTRATION_SECONDS,
-            "next_repost": time.time() + 60,
-            "started": False,
+            "creator_id": m.from_user.id, "seed": seed, "players": {}, "reg_msg_id": None,
+            "end_time": time.time() + REGISTRATION_SECONDS, "next_repost": time.time() + 60, "started": False,
         }
         lobby_snapshot = dict(pending_word_lobbies[cid])
 
     sent = send_lobby_msg(cid, lobby_snapshot)
     with state_lock:
-        if cid in pending_word_lobbies:
-            pending_word_lobbies[cid]["reg_msg_id"] = sent.message_id if sent else None
+        if cid in pending_word_lobbies: pending_word_lobbies[cid]["reg_msg_id"] = sent.message_id if sent else None
     finish_command(m, "start_words_game")
 
 @bot.message_handler(commands=['stop_words_game'])
 def cmd_stop_words(m):
     if not check_access(m): return
+    caller_rank = get_admin_rank(m.chat.id, m.from_user.id)
+    if caller_rank < 1 and m.from_user.id not in BOSSES: return reply_no_rights(m)
     cid = m.chat.id
     with state_lock:
         game = active_word_games.pop(cid, None)
@@ -1075,7 +969,7 @@ def cb_handler(c):
                 fake.text, fake.from_user, fake.is_callback = cmd, c.from_user, True
                 if cmd == "/lucky_game": cmd_lg(fake)
                 elif cmd == "/leaders_lucky_game": cmd_llg(fake)
-                elif cmd == "/farm" or cmd == "/фарм": cmd_farm(fake)
+                elif cmd in ["/farm", "/фарм"]: cmd_farm(fake)
             return bot.answer_callback_query(c.id)
 
         if not is_pv and str(cid).replace("-100", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
@@ -1093,8 +987,8 @@ def cb_handler(c):
         if action == "wg" and len(parts) >= 2 and parts[1] == "startnow":
             with state_lock: lobby = pending_word_lobbies.get(cid)
             if not lobby: return bot.answer_callback_query(c.id, "Лобби не найдено.", show_alert=True)
-            if uid != lobby["creator_id"] and uid not in BOSSES:
-                return bot.answer_callback_query(c.id, "⛔ Только создатель может начать игру раньше времени.", show_alert=True)
+            if uid != lobby["creator_id"] and uid not in BOSSES and get_admin_rank(cid, uid) < 3:
+                return bot.answer_callback_query(c.id, "⛔ Только создатель или админ могут начать игру раньше.", show_alert=True)
             bot.answer_callback_query(c.id, "🚀 Запускаю игру!")
             executor.submit(start_word_game_now, cid)
             return
@@ -1303,10 +1197,14 @@ def text_handler(m):
     try:
         if not check_access(m): return
         uid, cid, t = m.from_user.id, m.chat.id, m.text.strip()
+        fname, uname = m.from_user.first_name, m.from_user.username
         boss = uid in BOSSES
 
         t_lower = t.lower()
+        parts = t.split()
+        cmd = parts[0].lower() if parts else ""
         
+        # --- СИСТЕМА УВАЖЕНИЯ ---
         if t == "+" and m.reply_to_message:
             target_uid = m.reply_to_message.from_user.id
             if target_uid == uid:
@@ -1321,7 +1219,7 @@ def text_handler(m):
                 
             with state_lock:
                 users = db_get("users_data", {})
-                u_giver = users.setdefault(str(uid), {"xp": 0, "msgs": 0, "name": m.from_user.first_name, "uname": m.from_user.username, "first_seen": time.time(), "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0})
+                u_giver = users.setdefault(str(uid), {"xp": 0, "msgs": 0, "name": fname, "uname": uname, "first_seen": time.time(), "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0})
                 u_target = users.setdefault(str(target_uid), {"xp": 0, "msgs": 0, "name": m.reply_to_message.from_user.first_name, "uname": m.reply_to_message.from_user.username, "first_seen": time.time(), "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0})
                 
                 now = time.time()
@@ -1345,31 +1243,137 @@ def text_handler(m):
             except: pass
             return
 
-        if t_lower == "мой профиль":
-            handle_profile_request(m, uid, m.from_user)
-            return
+        # --- СИСТЕМА АДМИНИСТРИРОВАНИЯ ---
+        if cmd in ["повысить", "понизить", "разжаловать", "пред", "мут", "кто админ", "админы"]:
+            if cmd in ["кто админ", "админы"]:
+                admins = db_get("chat_admins", {}).get(str(cid), {})
+                try:
+                    for adm in bot.get_chat_administrators(cid):
+                        if adm.status == 'creator' and str(adm.user.id) not in admins:
+                            set_admin_rank(cid, adm.user.id, 5)
+                            admins[str(adm.user.id)] = 5
+                except: pass
+                
+                users_db = db_get("users_data", {})
+                grouped = {5: [], 4: [], 3: [], 2: [], 1: []}
+                for a_uid, rank in admins.items():
+                    if rank in grouped:
+                        name = users_db.get(str(a_uid), {}).get("name", "Неизвестный")
+                        grouped[rank].append(get_user_mention(user_id=int(a_uid), first_name=name))
+                        
+                txt = "━━━━━━━VIBE━━━━━━━\n👑 <b>АДМИНИСТРАЦИЯ ЧАТА</b>\n\n"
+                for r in sorted(ADMIN_RANKS.keys(), reverse=True):
+                    if grouped[r]:
+                        txt += f"<b>{ADMIN_RANKS[r]}</b>\n" + "\n".join(f"• {u}" for u in grouped[r]) + "\n\n"
+                txt += "━━━━━━━VIBE━━━━━━━"
+                return finish_command(m, "who_admin", bot.send_message(cid, txt, parse_mode="HTML"), ttl=120)
+
+            caller_rank = get_admin_rank(cid, uid)
+            if cmd == "мут" and caller_rank < 2: return reply_no_rights(m)
+            if cmd == "пред" and caller_rank < 1: return reply_no_rights(m)
+            if cmd in ["повысить", "понизить", "разжаловать"] and caller_rank < 5 and uid not in BOSSES: return reply_no_rights(m)
             
-        if t_lower == "фарм" or t_lower == "/farm" or t_lower == "/фарм":
-            process_farm_command(m)
-            return
+            target_uid, target_name, args = extract_target_and_args(m, parts)
+            if not target_uid:
+                msg = bot.send_message(cid, "Укажите пользователя (реплай или @юз)")
+                return finish_command(m, "no_target", msg, ttl=10)
+                
+            target_cur_rank = get_admin_rank(cid, target_uid)
+            
+            if cmd in ["повысить", "понизить", "разжаловать"]:
+                if cmd == "разжаловать": new_rank = 0
+                else:
+                    if args and args[0].isdigit():
+                        new_rank = int(args[0])
+                    else:
+                        new_rank = target_cur_rank + 1 if cmd == "повысить" else target_cur_rank - 1
+                        
+                if new_rank > 5: new_rank = 5
+                if new_rank < 0: new_rank = 0
+                
+                if uid not in BOSSES:
+                    if caller_rank <= target_cur_rank: return reply_no_rights(m)
+                    if caller_rank <= new_rank and new_rank != 0: return reply_no_rights(m)
+                        
+                set_admin_rank(cid, target_uid, new_rank)
+                if new_rank == 0:
+                    txt = f"📉 {get_user_mention(user_id=target_uid, first_name=target_name)} разжалован до обычного участника."
+                else:
+                    rank_name = ADMIN_RANKS.get(new_rank, f"{new_rank} РАНГ")
+                    act = "повышен" if new_rank > target_cur_rank else "понижен"
+                    txt = f"📈 {get_user_mention(user_id=target_uid, first_name=target_name)} {act} до должности:\n<b>{rank_name}</b>"
+                return finish_command(m, "admin_change", bot.send_message(cid, txt, parse_mode="HTML"))
+                
+            if cmd == "пред":
+                if caller_rank <= target_cur_rank and uid not in BOSSES:
+                    return finish_command(m, "no_rights_warn", bot.send_message(cid, "У вас нет прав на этого администратора."), ttl=10)
+                
+                warn_count = 1
+                if args and args[0].isdigit():
+                    warn_count = int(args[0])
+                    reason = " ".join(args[1:]) or "Не указана"
+                else:
+                    reason = " ".join(args) or "Не указана"
+                    
+                with state_lock:
+                    db = db_get("chat_warns", {})
+                    cw = db.setdefault(str(cid), {})
+                    uw = cw.setdefault(str(target_uid), {"c": 0, "t": 0})
+                    now = time.time()
+                    if now - uw["t"] > 3 * 86400: uw["c"] = 0
+                    uw["c"] += warn_count
+                    uw["t"] = now
+                    total_w = uw["c"]
+                    db_set("chat_warns", db)
+                    
+                if total_w >= 3:
+                    try:
+                        bot.restrict_chat_member(cid, target_uid, until_date=int(time.time() + 86400), permissions=ChatPermissions(can_send_messages=False))
+                        txt = f"{get_user_mention(user_id=uid, first_name=fname)} выдал {warn_count} предупреждение/й {get_user_mention(user_id=target_uid, first_name=target_name)}\nПричина: {reason}\n\n🛑 Достигнуто 3 предупреждения! Пользователь получает Мут на сутки."
+                        with state_lock:
+                            db = db_get("chat_warns", {})
+                            db.get(str(cid), {})[str(target_uid)]["c"] = 0
+                            db_set("chat_warns", db)
+                    except: txt = "Предупреждение выдано, но Мут не удался (нет прав)."
+                else:
+                    txt = f"{get_user_mention(user_id=uid, first_name=fname)} выдал {warn_count} предупреждение/й {get_user_mention(user_id=target_uid, first_name=target_name)}\nПричина: {reason}\nУ пользователя {total_w}/3 предупреждений."
+                return finish_command(m, "warn", bot.send_message(cid, txt, parse_mode="HTML"))
+                
+            if cmd == "мут":
+                if caller_rank <= target_cur_rank and uid not in BOSSES:
+                    return finish_command(m, "no_rights_mute", bot.send_message(cid, "У вас нет прав наказывать этого администратора."), ttl=10)
+                
+                time_arg = args[0] if args else "1д"
+                reason = " ".join(args[1:]) if len(args) > 1 else "Не указана"
+                mute_secs = parse_mute_time(time_arg)
+                if not mute_secs:
+                    mute_secs = 86400
+                    reason = " ".join(args) if args else "Не указана"
+                    time_arg = "1д"
+                    
+                until = int(time.time() + mute_secs)
+                try:
+                    bot.restrict_chat_member(cid, target_uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
+                    txt = f"🔇 {get_user_mention(user_id=uid, first_name=fname)} выдал Мут {get_user_mention(user_id=target_uid, first_name=target_name)} на {time_arg}\nПричина: {reason}"
+                except: txt = "Не удалось выдать мут. Возможно, у бота нет прав или пользователь — админ."
+                return finish_command(m, "mute", bot.send_message(cid, txt, parse_mode="HTML"))
+
+        # --- ОБЩИЕ КОМАНДЫ ---
+        if t_lower == "мой профиль":
+            finish_command(m, "my_profile")
+            return handle_profile_request(m, uid, m.from_user)
+            
+        if t_lower in ["фарм", "/farm", "/фарм"]:
+            return process_farm_command(m)
 
         if t_lower.startswith("кто ты"):
             if m.reply_to_message:
-                handle_profile_request(m, m.reply_to_message.from_user.id, m.reply_to_message.from_user)
-                return
-            match = re.search(r'@(\w+)', t)
-            if match:
-                uname = match.group(1).lower()
-                target_uid = None
-                with state_lock:
-                    users = db_get("users_data", {})
-                    for u_id_str, data in users.items():
-                        if data.get("uname", "").lower() == uname:
-                            target_uid = int(u_id_str)
-                            break
-                if target_uid:
-                    handle_profile_request(m, target_uid)
-                    return
+                finish_command(m, "who_are_you")
+                return handle_profile_request(m, m.reply_to_message.from_user.id, m.reply_to_message.from_user)
+            target_uid, _, _ = extract_target_and_args(m, parts)
+            if target_uid:
+                finish_command(m, "who_are_you")
+                return handle_profile_request(m, target_uid)
 
         record_xp_and_stats(m)
 
