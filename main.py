@@ -365,16 +365,35 @@ def set_v(cid, k, val):
         s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False, "max_warns": 3, "warn_action": "mute", "random_reactions": True})[k] = val
         db_set("settings", s)
 
+def set_message_reaction_raw(chat_id, message_id, emoji):
+    """Прямой вызов Telegram Bot API setMessageReaction — используется как обход,
+    так как в установленной версии pyTelegramBotAPI метод set_message_reaction отсутствует."""
+    url = f"https://api.telegram.org/bot{TOKEN}/setMessageReaction"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reaction": [{"type": "emoji", "emoji": emoji}],
+    }
+    r = requests.post(url, json=payload, timeout=10)
+    data = {}
+    try: data = r.json()
+    except Exception: pass
+    if not (r.status_code == 200 and data.get("ok")):
+        raise RuntimeError(f"setMessageReaction failed: {r.status_code} {data}")
+
 def maybe_react_randomly(m):
     """С шансом RANDOM_REACTION_CHANCE ставит реакцию на случайное сообщение в чате."""
     try:
         if not get_v(m.chat.id, "random_reactions", True): return
         if random.random() >= RANDOM_REACTION_CHANCE: return
-        try:
-            reaction = [types.ReactionTypeEmoji(RANDOM_REACTION_EMOJI)]
-        except AttributeError:
-            reaction = [{"type": "emoji", "emoji": RANDOM_REACTION_EMOJI}]
-        bot.set_message_reaction(m.chat.id, m.message_id, reaction=reaction)
+        if hasattr(bot, "set_message_reaction"):
+            try:
+                reaction = [types.ReactionTypeEmoji(RANDOM_REACTION_EMOJI)]
+            except AttributeError:
+                reaction = [{"type": "emoji", "emoji": RANDOM_REACTION_EMOJI}]
+            bot.set_message_reaction(m.chat.id, m.message_id, reaction=reaction)
+        else:
+            set_message_reaction_raw(m.chat.id, m.message_id, RANDOM_REACTION_EMOJI)
     except Exception as e:
         logging.error(f"[RANDOM REACTION] {e}", exc_info=True)
 
