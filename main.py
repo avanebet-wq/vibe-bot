@@ -1886,6 +1886,13 @@ def text_handler(m):
                         return finish_command(m, "no_target", bot.send_message(cid, "⚠️ Укажите пользователя (ответом на сообщение или через @юзернейм/ID)."), ttl=10)
                         
                 target_cur_rank = get_admin_rank(cid, target_uid)
+                # Отдельно берём именно СОХРАНЁННЫЙ в базе ранг для текста
+                # "повышен/понижен". get_admin_rank может вернуть 5 для
+                # создателя чата (creator-фолбэк), даже если в базе у него
+                # другой ранг — из-за этого сравнение new_rank>target_cur_rank
+                # ломалось (всегда "понижен").
+                with state_lock:
+                    target_stored_rank = db_get("chat_admins", {}).get(str(cid), {}).get(str(target_uid), 0)
                 
                 if cmd not in ["варны", "/warns"]:
                     if target_uid == BOT_ID or (target_uid == uid and cmd not in ["снять мут", "/unmute", "снятьбан", "/unban"]):
@@ -1912,7 +1919,7 @@ def text_handler(m):
                     if new_rank == 0: txt = f"📉 {get_user_mention(user_id=target_uid, first_name=target_name)} разжалован до обычного участника."
                     else:
                         rank_name = ADMIN_RANKS.get(new_rank, f"{new_rank} РАНГ")
-                        act = "повышен" if new_rank > target_cur_rank else "понижен"
+                        act = "повышен" if new_rank >= target_stored_rank else "понижен"
                         icon = "📈" if act == "повышен" else "📉"
                         txt = f"{icon} {get_user_mention(user_id=target_uid, first_name=target_name)} {act} до должности:\n<b>{rank_name}</b>"
                     return finish_command(m, "admin_change", bot.send_message(cid, txt, parse_mode="HTML"))
