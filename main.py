@@ -97,6 +97,7 @@ SMOKE_WEED_COOLDOWN_PHRASES = [
 pending_word_lobbies = {}
 active_word_games = {}
 WORDS_TURN_TIMEOUT = 600  # 10 минут (было 180 сек / 3 мин)
+WORD_HINT_DELAY_SECONDS = 180  # 3 минуты — через сколько даётся первая подсказка
 REGISTRATION_SECONDS = 1200 
 
 DICE_ANIMATION_SECONDS = {"🎯": 4.0, "🎳": 4.0, "🏀": 4.0}
@@ -742,8 +743,8 @@ def end_word_game(cid, game, reason="timeout"):
             if "message to delete not found" not in str(e): pass
 
     scoreboard = build_active_scoreboard(game)
-    if reason == "limit": txt = f"🏁 <b>ИГРА «СЛОВА» ЗАВЕРШЕНА!</b> 🎉\nУра! Вы совместно назвали 50 слов!\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}"
-    else: txt = f"⌛ <b>ИГРА «СЛОВА» ОКОНЧЕНА ПО ТАЙМ-АУТУ.</b>\nНазвано слов: {game['moves']}.\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}\n\n/start_words_game — начать заново"
+    if reason == "limit": txt = f"🏁 <b>ИГРА «СЛОВА» ЗАВЕРШЕНА!</b> 🎉\nУра! Вы совместно назвали 50 слов!\n\n🏆<b>УЧАСТНИКИ И БАЛЫ:</b>\n{scoreboard}"
+    else: txt = f"⌛ <b>ИГРА «СЛОВА» ОКОНЧЕНА ПО ТАЙМ-АУТУ.</b>\nНазвано слов: {game['moves']}.\n\n🏆<b>УЧАСТНИКИ И БАЛЫ:</b>\n{scoreboard}\n\n/start_words_game — начать заново"
     try:
         msg = bot.send_message(cid, txt, parse_mode='HTML')
         try: bot.pin_chat_message(cid, msg.message_id, disable_notification=False)
@@ -763,7 +764,7 @@ def word_game_active_worker():
                         to_end.append((cid, game))
                         del active_word_games[cid]
                         continue
-                    if elapsed >= 120 and not game.get("hint_given"):
+                    if elapsed >= WORD_HINT_DELAY_SECONDS and not game.get("hint_given"):
                         game["hint_given"] = True
                         to_hint.append((cid, game))
                     if now - game.get("last_reminder_ts", 0) >= 30:
@@ -1028,7 +1029,7 @@ def start_word_game_now(cid):
         }
 
     plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for u, n in players.items())
-    mins = WORDS_TURN_TIMEOUT // 60
+    hint_mins = WORD_HINT_DELAY_SECONDS // 60
     try:
         bot.send_message(
             cid,
@@ -1037,7 +1038,7 @@ def start_word_game_now(cid):
             f"👥 <b>УЧАСТНИКИ:</b>\n{plist}\n\n"
             f"🎯 <b>ПЕРВОЕ СЛОВО:</b>\n«<b>{html.escape(seed)}</b>»\n\n"
             f"➡️ <b>СЛЕДУЮЩЕЕ СЛОВО ДОЛЖНО НАЧИНАТЬСЯ НА БУКВУ:</b>\n«<b>{eff.upper()}</b>»\n\n"
-            f"⏱ <b>ПЕРВАЯ ПОДСКАЗКА ЧЕРЕЗ:</b> <b>{mins} МИНУТЫ</b>\n\n"
+            f"⏱ <b>ПЕРВАЯ ПОДСКАЗКА ЧЕРЕЗ:</b> <b>{hint_mins} МИНУТЫ</b>\n\n"
             "🔇 <b>ПОКА ИДЁТ ИГРА — ЛИЗА НЕ ВМЕШИВАЕТСЯ В ЧАТ.</b>\n"
             "Можно спокойно играть и отправлять свои ответы без лишних сообщений. 😎\n\n"
             "🔥 ВРЕМЯ ПОКАЗАТЬ, КТО ЗДЕСЬ САМЫЙ БЫСТРЫЙ!\n\n"
