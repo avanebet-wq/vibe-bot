@@ -1364,3 +1364,57 @@ def text_handler(m):
             ai_executor.submit(butt_in_task)
     except Exception as e:
         logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
+
+# ============================================================
+# Регистрация обработчиков.
+# Без этого блока бот получает апдейты от Telegram, но НИКАК
+# на них не реагирует — ни одна функция выше не была подключена
+# к боту (текстовые сообщения, кнопки, команды, вход/выход
+# участников). Судя по всему, это и было потеряно при рефакторинге.
+#
+# Названия слэш-команд для cmd_sgs/cmd_lsg/cmd_start_words и т.д.
+# восстановлены по внутренним меткам finish_command(...) и по
+# текстам самих сообщений (например "/start_words_game",
+# "/leaders_safe_game"). Для "сейфа" точное название команды в
+# коде нигде прямо не упоминается — заведено сразу под 3
+# вероятных варианта, лишние просто никогда не сработают.
+# ============================================================
+
+_EXPLICIT_COMMANDS = [
+    "start", "settings", "lucky_game", "leaders_lucky_game", "events",
+    "start_game_safe", "start_safe_game", "safe_game", "leaders_safe_game",
+    "start_words_game", "stop_words_game", "leaders_words_game", "words_status",
+]
+
+def _is_explicit_command(m):
+    """True если сообщение — одна из команд, для которых зарегистрирован
+    отдельный обработчик ниже (нужно, чтобы text_handler не обрабатывал
+    их повторно)."""
+    if not m.text or not m.text.startswith("/"):
+        return False
+    cmd = m.text.split()[0][1:].split("@")[0].lower()
+    return cmd in _EXPLICIT_COMMANDS
+
+# Системные сообщения (вход/выход участников) и фото
+bot.register_message_handler(handle_system_messages, content_types=["new_chat_members", "left_chat_member"])
+bot.register_message_handler(on_photo, content_types=["photo"])
+
+# Явные слэш-команды
+bot.register_message_handler(cmd_start, commands=["start"])
+bot.register_message_handler(cmd_settings, commands=["settings"])
+bot.register_message_handler(cmd_lg, commands=["lucky_game"])
+bot.register_message_handler(cmd_llg, commands=["leaders_lucky_game"])
+bot.register_message_handler(cmd_events, commands=["events"])
+bot.register_message_handler(cmd_sgs, commands=["start_game_safe", "start_safe_game", "safe_game"])
+bot.register_message_handler(cmd_lsg, commands=["leaders_safe_game"])
+bot.register_message_handler(cmd_start_words, commands=["start_words_game"])
+bot.register_message_handler(cmd_stop_words, commands=["stop_words_game"])
+bot.register_message_handler(cmd_leaders_words, commands=["leaders_words_game"])
+bot.register_message_handler(cmd_words_status, commands=["words_status"])
+
+# Весь остальной текст (включая "кто админ", "+варн", "/ban", "фарм" и т.д.,
+# они разбираются внутри самого text_handler по тексту сообщения)
+bot.register_message_handler(text_handler, content_types=["text"], func=lambda m: not _is_explicit_command(m))
+
+# Инлайн-кнопки
+bot.register_callback_query_handler(cb_handler, func=lambda c: True)

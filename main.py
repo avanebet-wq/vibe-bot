@@ -20,6 +20,11 @@ if __name__ == "__main__":
     threading.Thread(target=games.word_lobby_worker, daemon=True).start()
     threading.Thread(target=autopost.autopost_worker, daemon=True).start()
 
+    try:
+        bot.remove_webhook()
+    except Exception as e:
+        logging.error(f"[REMOVE WEBHOOK] {e}")
+
     logging.info("Бот запущен и готов к работе!")
     while True:
         try:
