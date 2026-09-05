@@ -224,6 +224,17 @@ def parse_duration(time_str):
     if u.startswith('мес') or u.startswith('mo'): return v * 86400 * 30, True
     return 0, False
 
+def parse_duration_from_args(args):
+    """Парсит срок как из слитного токена ('5м', '5мин'), так и из двух
+    раздельных слов ('5', 'минут'). Возвращает (секунды, ok, сколько_токенов_съедено)."""
+    if not args: return 0, False, 0
+    dur, ok = parse_duration(args[0])
+    if ok: return dur, True, 1
+    if len(args) > 1 and args[0].isdigit():
+        dur, ok = parse_duration(args[0] + args[1])
+        if ok: return dur, True, 2
+    return 0, False, 0
+
 def extract_target_and_args(m, text_parts):
     target_uid, target_name = None, None
     args = []
@@ -2008,11 +2019,10 @@ def text_handler(m):
                     return finish_command(m, "admin_change", bot.send_message(cid, txt, parse_mode="HTML"))
                     
                 elif cmd in ["бан", "/ban"]:
-                    time_arg = args[0] if args else ""
-                    dur_secs, parsed = parse_duration(time_arg)
+                    dur_secs, parsed, consumed = parse_duration_from_args(args)
                     if parsed:
-                        reason = " ".join(args[1:]) if len(args) > 1 else "Не указана"
-                        time_str = time_arg
+                        reason = " ".join(args[consumed:]) if len(args) > consumed else "Не указана"
+                        time_str = format_seconds_human(dur_secs) if dur_secs > 0 else "навсегда"
                     else:
                         reason = " ".join(args) if args else "Не указана"
                         dur_secs = 0
@@ -2050,11 +2060,10 @@ def text_handler(m):
                     return finish_command(m, "kick", bot.send_message(cid, txt, parse_mode="HTML"))
 
                 elif cmd in ["мут", "/mute"]:
-                    time_arg = args[0] if args else ""
-                    dur_secs, parsed = parse_duration(time_arg)
+                    dur_secs, parsed, consumed = parse_duration_from_args(args)
                     if parsed:
-                        reason = " ".join(args[1:]) if len(args) > 1 else "Не указана"
-                        time_str = time_arg
+                        reason = " ".join(args[consumed:]) if len(args) > consumed else "Не указана"
+                        time_str = format_seconds_human(dur_secs) if dur_secs > 0 else "навсегда"
                     else:
                         reason = " ".join(args) if args else "Не указана"
                         dur_secs = 0
