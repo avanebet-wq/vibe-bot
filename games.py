@@ -184,7 +184,7 @@ def handle_word_game_registration(m, payload):
     try:
         action, cid_str = payload.split("_", 1)
         cid = int(cid_str)
-    except: return bot.send_message(m.chat.id, "⚠️ Некорректная ссылка.")
+    except: return bot.send_message(m.chat.id, "⚠️ <b>Некорректная ссылка</b>\nПроверь адрес и попробуй ещё раз.")
 
     with state_lock:
         lobby = pending_word_lobbies.get(cid)
@@ -196,7 +196,7 @@ def handle_word_game_registration(m, payload):
             outcome = "removed" if lobby["players"].pop(uid, None) is not None else "not_in"
         else: outcome = "unknown"
 
-    if outcome == "closed": bot.send_message(m.chat.id, "⏳ Регистрация уже закрыта.")
+    if outcome == "closed": bot.send_message(m.chat.id, "⏳ <b>Регистрация уже закрыта</b>\nПрисоединиться к этой игре больше нельзя.")
     elif outcome == "already":
         bot.send_message(
             m.chat.id,
@@ -221,7 +221,7 @@ def handle_word_game_registration(m, payload):
             parse_mode='HTML'
         )
         repost_lobby(cid)
-    elif outcome == "not_in": bot.send_message(m.chat.id, "🤷‍♀️ Ты и не был(а) записан(а) на игру.")
+    elif outcome == "not_in": bot.send_message(m.chat.id, "🤷‍♀️ <b>Ты не записан(а) на игру</b>\nПоэтому отменять запись не нужно.")
 
 def start_word_game_now(cid):
     with state_lock:
@@ -239,7 +239,7 @@ def start_word_game_now(cid):
             except: pass
 
     if not players:
-        try: bot.send_message(cid, "😔 Никто не успел записаться. Игра отменена.")
+        try: bot.send_message(cid, "😔 <b>Никто не записался</b>\nИгра отменена. Можно запустить её заново.")
         except: pass
         return
 
@@ -362,7 +362,7 @@ def process_word_guess(cid, uid, fname, raw_text, message_id=None):
 
         if game_now:
             try:
-                sb_msg = bot.send_message(cid, f"📊 <b>Актуальный счёт игроков:</b>\n{build_active_scoreboard(game_now)}", parse_mode='HTML')
+                sb_msg = bot.send_message(cid, f"📊 <b>Текущий счёт игроков</b>\n{build_active_scoreboard(game_now)}", parse_mode='HTML')
                 with state_lock:
                     if cid in active_word_games: active_word_games[cid]["scoreboard_msg_id"] = sb_msg.message_id
             except Exception as e: logging.error(f"[WORDS SCOREBOARD SEND] {e}", exc_info=True)
@@ -425,7 +425,7 @@ def play_lucky_game(cid, uid, fname):
         emoji = random.choice(["🎯", "🎳", "🏀"])
         try: dice = bot.send_dice(cid, emoji=emoji)
         except Exception:
-            bot.send_message(cid, "⚠️ У меня нет прав отправлять кубики в этом чате.")
+            bot.send_message(cid, "⚠️ <b>Не хватает прав</b>\nДай Лизе разрешение отправлять анимации/кубики в этом чате.")
             with state_lock:
                 if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
             return

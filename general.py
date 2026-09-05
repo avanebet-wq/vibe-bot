@@ -187,7 +187,7 @@ def handle_profile_request(m, target_uid, target_user=None):
         users = db_get("users_data", {})
         u = users.get(str(target_uid))
     if not u:
-        try: bot.reply_to(m, "🤷‍♀️ Информации об этом пользователе пока нет.")
+        try: bot.reply_to(m, "🤷‍♀️ <b>Данных пока нет</b>\nЛиза ещё не собрала достаточно информации об этом пользователе.")
         except: pass
         return
     

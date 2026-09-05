@@ -209,11 +209,20 @@ def check_access(m):
         if m.text:
             parts_ = m.text.split()
             if parts_: cmd_word = parts_[0].lstrip("/").split("@")[0].lower()
-        if cmd_word in ("start", "settings"):
+        # В ЛС разрешаем только безопасные справочные/личные команды.
+        # Команды, меняющие настройки чата или модерирующие участников,
+        # по-прежнему доступны только внутри группы.
+        private_readonly = {
+            "мои баны", "мой бан", "мой спам", "моя стата", "моя статистика",
+            "мой актив", "где мои ириски", "мои чеки", "мой баланс", "баланс",
+            "ириски", "экономика", "моя экономика", "помощь", "команды",
+            "команды лиза", "лизa помощь"
+        }
+        if cmd_word in ("start", "settings") or (m.text and m.text.strip().lower() in private_readonly):
             return True
         try: bot.delete_message(cid, m.message_id)
         except: pass
-        msg = bot.send_message(cid, "⛔ В личных сообщениях доступны только /start и /settings.", parse_mode='HTML')
+        msg = bot.send_message(cid, "⛔ <b>Команда недоступна в ЛС</b>\nДля этой функции открой чат с Лизой в группе.", parse_mode='HTML')
         auto_del(msg, 5)
         return False
     # Лиза доступна в любой группе/супергруппе, куда её добавили.
@@ -221,11 +230,36 @@ def check_access(m):
     register_chat(m.chat)
     return True
 
+def _polish_liza_text(text):
+    """Lightweight final pass for short plain-text bot replies.
+
+    Existing HTML-rich responses are left untouched; short plain responses get
+    a compact Liza header so the whole bot has one recognizable voice without
+    turning every message into a decorative wall of emojis.
+    """
+    if not isinstance(text, str):
+        return text, None
+    raw = text.strip()
+    if not raw or '<b>' in raw or '<i>' in raw or '<code>' in raw or '<a ' in raw:
+        return text, None
+    if raw.startswith(('http://', 'https://')):
+        return text, None
+    # Avoid touching long generated/AI text and content that is clearly a post.
+    if len(raw) > 420 or '\n' in raw and len(raw) > 300:
+        return text, None
+    return f"💗 <b>Лиза</b>\n\n{html.escape(raw)}", 'HTML'
+
 def reply_no_rights(m):
     try: bot.delete_message(m.chat.id, m.message_id)
     except: pass
-    msg = bot.send_message(m.chat.id, "⛔ У вас нет прав на использование этой команды.", parse_mode="HTML")
-    auto_del(msg, 5)
+    msg = bot.send_message(
+        m.chat.id,
+        "🔒 <b>Недостаточно прав</b>\n\n"
+        "Для этой команды нужен соответствующий ранг модератора.\n"
+        "Проверь свой ранг командой <code>Кто админ</code>.",
+        parse_mode="HTML"
+    )
+    auto_del(msg, 7)
 
 def parse_interval_input(text):
     match = re.match(r'^(\d+)([дчм])$', text.lower().strip())
@@ -371,11 +405,38 @@ def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
             if "message to delete not found" not in err and "message can't be deleted" not in err:
                 logging.error(f"[DEL CMD:{cmd_name}] {e}")
     if sent_msg:
+        # A final visual pass for short plain replies keeps legacy handlers
+        # consistent with the newer Liza UI. Rich HTML responses remain intact.
+        try:
+            polished, mode = _polish_liza_text(getattr(sent_msg, 'text', None))
+            if mode and polished != getattr(sent_msg, 'text', None):
+                bot.edit_message_text(
+                    polished,
+                    chat_id=sent_msg.chat.id,
+                    message_id=sent_msg.message_id,
+                    parse_mode=mode,
+                    reply_markup=getattr(sent_msg, 'reply_markup', None)
+                )
+                sent_msg.text = polished
+        except Exception as e:
+            # Styling must never break the command itself.
+            logging.debug(f"[UI POLISH:{cmd_name}] {e}")
         track_and_replace_specific_cmd(m.chat.id, m.from_user.id, cmd_name, sent_msg)
         if ttl: auto_del(sent_msg, ttl)
 
 def get_v(cid, k, d=False):
-    with state_lock: return db_get("settings", {}).get(str(cid), {}).get(k, d)
+    """Read a chat setting with backward compatibility.
+
+    Older builds accidentally wrote settings to ``chat_settings`` while the
+    readers used ``settings``.  Prefer the canonical store but fall back to
+    the legacy store so existing installations keep their configuration.
+    """
+    with state_lock:
+        primary = db_get("settings", {}).get(str(cid), {}) or {}
+        if k in primary:
+            return primary[k]
+        legacy = db_get("chat_settings", {}).get(str(cid), {}) or {}
+        return legacy.get(k, d)
 
 def auto_del(msg, ttl=180):
     if msg:
@@ -393,10 +454,19 @@ def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
 
 
 def set_chat_setting(cid, key, value):
-    """Persist a single chat setting in the shared SQLite-backed settings store."""
+    """Persist a setting and mirror it to the legacy store.
+
+    Mirroring keeps compatibility with cleanup.py from older releases while
+    making ``settings`` the canonical source for all new handlers.
+    """
     with state_lock:
-        settings = db_get("chat_settings", {})
-        chat = dict(settings.get(str(cid), {}))
+        settings = db_get("settings", {}) or {}
+        chat = dict(settings.get(str(cid), {}) or {})
         chat[key] = value
         settings[str(cid)] = chat
-        db_set("chat_settings", settings)
+        db_set("settings", settings)
+        legacy = db_get("chat_settings", {}) or {}
+        legacy_chat = dict(legacy.get(str(cid), {}) or {})
+        legacy_chat[key] = value
+        legacy[str(cid)] = legacy_chat
+        db_set("chat_settings", legacy)

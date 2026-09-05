@@ -150,12 +150,12 @@ def _handle_advanced_cleanup(m):
                 if member.status=="kicked" and row.get("name"):
                     found.append((int(sid),row,0))
             except: pass
-        return finish_command(m,"who_deleted",bot.send_message(cid,"👻 <b>VIBE — УДАЛЁННЫЕ АККАУНТЫ</b>\n\n"+_format_cleanup_users(found),parse_mode="HTML"),ttl=60) or True
+        return finish_command(m,"who_deleted",bot.send_message(cid,"👻 <b>Удалённые аккаунты</b>\n\n"+_format_cleanup_users(found),parse_mode="HTML"),ttl=60) or True
     if low.startswith("неактив") or low.startswith("молчуны") or low.startswith("по смс"):
         mode="inactive" if low.startswith("неактив") else ("silent" if low.startswith("молчуны") else "sms")
         if not _cleanup_dk_allowed(cid,uid,"кик неактив" if mode=="inactive" else ("кик молчунов" if mode=="silent" else "кик по смс")): return reply_no_rights(m) or True
         rows=_cleanup_candidates(cid,mode,(7*86400 if mode=="inactive" else 30*86400 if mode=="silent" else (10,7*86400)))
-        return finish_command(m,"clean_list",bot.send_message(cid,"🧹 <b>VIBE-СПИСОК</b>\n\n"+_format_cleanup_users(rows),parse_mode="HTML"),ttl=60) or True
+        return finish_command(m,"clean_list",bot.send_message(cid,"🧹 <b>Список для очистки</b>\n\n"+_format_cleanup_users(rows),parse_mode="HTML"),ttl=60) or True
     if low.startswith("кик "):
         if low.startswith("кик неактив"):
             code="кик неактив"; mode="inactive"
@@ -192,7 +192,7 @@ def _handle_advanced_cleanup(m):
                 count=n or 1; period=_parse_period_words(low) or 7*86400
                 rows=_cleanup_candidates(cid,mode,(count,period))
         if not rows:
-            return finish_command(m,"clean_none",bot.send_message(cid,"🧹 <b>VIBE-ЧИСТКА</b>\nПодходящих участников не найдено."),ttl=15) or True
+            return finish_command(m,"clean_none",bot.send_message(cid,"🧹 <b>Очистка чата</b>\nПодходящих участников не найдено."),ttl=15) or True
         # For numeric inactive mode, choose the least active first. For active/new, process all matching rows.
         if mode=="inactive": rows=sorted(rows,key=lambda x:x[2],reverse=True)
         if mode=="active": rows=sorted(rows,key=lambda x:x[2])
@@ -200,5 +200,5 @@ def _handle_advanced_cleanup(m):
         kicked=0
         for row in rows[:limit]:
             if _kick_user(cid,row[0]): kicked+=1
-        return finish_command(m,"clean_kick",bot.send_message(cid,f"🧹 <b>VIBE-ЧИСТКА</b>\n👢 Исключено участников: <b>{kicked}</b>.\n📋 Найдено: <b>{len(rows)}</b>.",parse_mode="HTML"),ttl=20) or True
+        return finish_command(m,"clean_kick",bot.send_message(cid,f"🧹 <b>Очистка чата</b>\n👢 Исключено участников: <b>{kicked}</b>.\n📋 Найдено: <b>{len(rows)}</b>.",parse_mode="HTML"),ttl=20) or True
     return False
