@@ -353,14 +353,30 @@ def trim_btn_text(text, limit=22):
         rest = rest[:limit - 1].rstrip() + "…"
     return prefix + rest
 
+RANDOM_REACTION_EMOJI = "❤️‍🔥"
+RANDOM_REACTION_CHANCE = 0.35
+
 def get_v(cid, k, d=False):
     with state_lock: return db_get("settings", {}).get(str(cid), {}).get(k, d)
 
 def set_v(cid, k, val):
     with state_lock:
         s = db_get("settings", {})
-        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False, "max_warns": 3, "warn_action": "mute"})[k] = val
+        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False, "max_warns": 3, "warn_action": "mute", "random_reactions": True})[k] = val
         db_set("settings", s)
+
+def maybe_react_randomly(m):
+    """С шансом RANDOM_REACTION_CHANCE ставит реакцию на случайное сообщение в чате."""
+    try:
+        if not get_v(m.chat.id, "random_reactions", True): return
+        if random.random() >= RANDOM_REACTION_CHANCE: return
+        try:
+            reaction = [types.ReactionTypeEmoji(RANDOM_REACTION_EMOJI)]
+        except AttributeError:
+            reaction = [{"type": "emoji", "emoji": RANDOM_REACTION_EMOJI}]
+        bot.set_message_reaction(m.chat.id, m.message_id, reaction=reaction)
+    except Exception as e:
+        logging.error(f"[RANDOM REACTION] {e}", exc_info=True)
 
 def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
     if not new_msg: return
@@ -377,10 +393,12 @@ def auto_del(msg, ttl=180):
         with state_lock: messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
 
 def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
-    if delete_user_msg and not getattr(m, "is_callback", False):
+    if delete_user_msg and not getattr(m, "is_callback", False) and m.chat.type != 'private':
         try: bot.delete_message(m.chat.id, m.message_id)
         except Exception as e:
-            if "message to delete not found" not in str(e): logging.error(f"[DEL CMD:{cmd_name}] {e}")
+            err = str(e)
+            if "message to delete not found" not in err and "message can't be deleted" not in err:
+                logging.error(f"[DEL CMD:{cmd_name}] {e}")
     if sent_msg:
         track_and_replace_specific_cmd(m.chat.id, m.from_user.id, cmd_name, sent_msg)
         if ttl: auto_del(sent_msg, ttl)
@@ -1163,8 +1181,10 @@ def main_kb(cid, is_pv):
     del_sys = get_v(cid, "del_sys", False)
     freq = get_v(cid, "freq", 40)
     anger = get_v(cid, "anger", 40)
+    random_reactions = get_v(cid, "random_reactions", True)
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton(f"💬 Отвечать в чате: {'✅' if intervene else '❌'}", callback_data="m:toggle_intervene"))
+    kb.add(types.InlineKeyboardButton(f"🔥 Случайные реакции: {'✅' if random_reactions else '❌'}", callback_data="m:toggle_reactions"))
     kb.add(types.InlineKeyboardButton(f"🗑 Чистить системку: {'✅' if del_sys else '❌'}", callback_data="m:toggle_sys"))
     kb.add(types.InlineKeyboardButton(f"📊 Частота ответов: {freq}%", callback_data="m:freq"))
     kb.add(types.InlineKeyboardButton(f"😠 Токсичность: {anger}%", callback_data="m:anger"))
@@ -1481,7 +1501,8 @@ def cb_handler(c):
                 "🔹 Слежу за порядком и матом в чате\n"
                 "🔹 Автопостинг по расписанию\n"
                 "🔹 Игры: /lucky_game, сейф, /start_words_game\n"
-                "🔹 Фарм травки: /farm"
+                "🔹 Фарм травки: /farm\n"
+                "🔹 Иногда сама встреваю в чат и ставлю реакции 🔥"
             )
             return bot.edit_message_text(txt_can_do, cid, c.message.message_id, parse_mode='HTML', reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
             
@@ -1509,6 +1530,11 @@ def cb_handler(c):
             
         if d == "m:toggle_sys":
             set_v(cid, "del_sys", not get_v(cid, "del_sys", False))
+            bot.answer_callback_query(c.id)
+            return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
+
+        if d == "m:toggle_reactions":
+            set_v(cid, "random_reactions", not get_v(cid, "random_reactions", True))
             bot.answer_callback_query(c.id)
             return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
 
@@ -2086,6 +2112,9 @@ def text_handler(m):
         with state_lock: is_words_active = cid in active_word_games
         if is_words_active and CYRILLIC_WORD_RE.match(t):
             executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t)
+
+        if m.chat.type in ['group', 'supergroup'] and not is_words_active and not is_safe_active and not t.startswith('/'):
+            executor.submit(maybe_react_randomly, m)
 
         if m.chat.type in ['group', 'supergroup'] and not boss:
             if any(bad_word in t_lower for bad_word in MUTES):
