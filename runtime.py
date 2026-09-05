@@ -256,14 +256,6 @@ DK_ALIASES = {
     "лог дк": "лог дк", "+дк": "доступ команд", "-дк": "доступ команд", "+лдк": "личный дк", "-лдк": "личный дк",
 }
 
-threading.Thread(target=cleanup_worker, daemon=True).start()
-
-threading.Thread(target=word_game_active_worker, daemon=True).start()
-
-threading.Thread(target=word_lobby_worker, daemon=True).start()
-
-threading.Thread(target=autopost_worker, daemon=True).start()
-
 MIN_WORD_PLAYERS = 3
 
 CLEANUP_DK_DEFAULTS = {

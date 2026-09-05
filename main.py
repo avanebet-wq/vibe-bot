@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """VIBE Telegram bot entry point."""
+import threading
+
 from runtime import bot, logging, time
 
 import core
@@ -13,6 +15,11 @@ import cleanup
 import handlers
 
 if __name__ == "__main__":
+    threading.Thread(target=cleanup.cleanup_worker, daemon=True).start()
+    threading.Thread(target=games.word_game_active_worker, daemon=True).start()
+    threading.Thread(target=games.word_lobby_worker, daemon=True).start()
+    threading.Thread(target=autopost.autopost_worker, daemon=True).start()
+
     logging.info("Бот запущен и готов к работе!")
     while True:
         try:
