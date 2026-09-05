@@ -236,7 +236,7 @@ def extract_target_and_args(m, text_parts):
                 uname = part[1:].lower()
                 with state_lock:
                     for u_id_str, data in db_get("users_data", {}).items():
-                        if data.get("uname", "").lower() == uname:
+                        if (data.get("uname") or "").lower() == uname:
                             target_uid = int(u_id_str)
                             target_name = data.get("name", uname)
                             break
