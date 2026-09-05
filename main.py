@@ -527,7 +527,7 @@ def word_game_active_worker():
                         try: bot.delete_message(cid, game["reminder_msg_id"])
                         except: pass
                     req_letter = game["next_letter"]
-                    msg = bot.send_message(cid, f"💜 <b>Игра идёт!</b>\nНапиши слово на букву «<b>{req_letter.upper()}</b>» 👇", parse_mode='HTML')
+                    msg = bot.send_message(cid, f"✨ <b>ИГРА ИДЁТ!</b> ✨\n\nЖду от вас словечко на букву «<b>{req_letter.upper()}</b>» 👇", parse_mode='HTML')
                     with state_lock:
                         if cid in active_word_games:
                             active_word_games[cid]["reminder_msg_id"] = msg.message_id
@@ -835,6 +835,71 @@ def process_word_guess(cid, uid, fname, raw_text):
         mention = get_user_mention(user_id=uid, first_name=fname)
         bot.send_message(cid, f"🥳 {mention} отгадывает слово и получает +1 балл🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»", parse_mode='HTML')
     except Exception as e: logging.error(f"[WORDS MOVE] {e}", exc_info=True)
+
+def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
+    try:
+        wait_s = DICE_ANIMATION_SECONDS.get(emoji, 4.0) + DELETE_ANIM_DELAY
+        time.sleep(wait_s)
+        try: bot.delete_message(cid, msg_id)
+        except Exception as e:
+            if "message to delete not found" not in str(e): logging.error(f"[LUCKY DEL] {e}")
+                
+        mention = get_user_mention(user_id=uid, first_name=fname)
+        if win:
+            with state_lock:
+                ldrs = db_get("lucky_leaders", {})
+                u = ldrs.setdefault(str(uid), {"name": fname, "wins": 0})
+                u["wins"] += 1
+                db_set("lucky_leaders", ldrs)
+                rank = sum(1 for v in ldrs.values() if v.get("wins",0) > u["wins"]) + 1
+            txt = f"🎉 {mention}, невероятно! Ты выиграл +1 балл!\nТвое место: #{rank}\n"
+        else:
+            txt = f"😔 {mention}, не повезло.\n"
+        
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🎲 Снова", callback_data=f"lucky:again:{uid}")) if left > 0 else None
+        if left == 0:
+            with state_lock: rem = int(lucky_limits[uid]["reset_at"] - time.time())
+            txt += f"\nПопыток больше нет😔\nНовые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
+        else:
+            txt += f"Осталось попыток: {left}\nСыграем еще?"
+            
+        msg = bot.send_message(cid, txt, reply_markup=kb, parse_mode='HTML')
+        track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
+    except Exception as e: logging.error(f"[LUCKY RESULT] {e}", exc_info=True)
+    finally:
+        with state_lock:
+            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+
+def play_lucky_game(cid, uid, fname):
+    try:
+        with state_lock:
+            lim = lucky_limits.setdefault(uid, {"left": 5, "reset_at": 0})
+            now = time.time()
+            if lim["left"] <= 0:
+                if now < lim["reset_at"]:
+                    rem = int(lim["reset_at"] - now)
+                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
+                    msg = bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True)
+                    track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
+                    if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+                    return
+                else: lim["left"] = 5
+            lim["left"] -= 1
+            if lim["left"] == 0: lim["reset_at"] = now + 1800
+        
+        emoji = random.choice(["🎯", "🎳", "🏀"])
+        try: dice = bot.send_dice(cid, emoji=emoji)
+        except Exception as e:
+            bot.send_message(cid, "⚠️ Нет прав на кубики.")
+            with state_lock:
+                if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+            return
+        win = (emoji in ["🎯", "🎳"] and dice.dice.value == 6) or (emoji == "🏀" and dice.dice.value in [4, 5])
+        executor.submit(lucky_game_result, cid, uid, fname, dice.message_id, win, lim["left"], emoji)
+    except Exception as e:
+        logging.error(f"[PLAY LUCKY] {e}", exc_info=True)
+        with state_lock:
+            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
 
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
