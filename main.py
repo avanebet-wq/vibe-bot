@@ -362,7 +362,7 @@ def get_v(cid, k, d=False):
 def set_v(cid, k, val):
     with state_lock:
         s = db_get("settings", {})
-        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False, "max_warns": 3, "warn_action": "mute", "random_reactions": True})[k] = val
+        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False, "max_warns": 3, "warn_action": "mute", "random_reactions": True, "butt_in": False, "butt_in_chance": 15})[k] = val
         db_set("settings", s)
 
 def set_message_reaction_raw(chat_id, message_id, emoji):
@@ -1201,8 +1201,13 @@ def main_kb(cid, is_pv):
     freq = get_v(cid, "freq", 40)
     anger = get_v(cid, "anger", 40)
     random_reactions = get_v(cid, "random_reactions", True)
+    butt_in = get_v(cid, "butt_in", False)
+    butt_in_chance = get_v(cid, "butt_in_chance", 15)
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(types.InlineKeyboardButton(f"💬 Отвечать в чате: {'✅' if intervene else '❌'}", callback_data="m:toggle_intervene"))
+    kb.add(types.InlineKeyboardButton(f"🗣 Встревать в диалог: {'✅' if butt_in else '❌'}", callback_data="m:toggle_butt_in"))
+    if butt_in:
+        kb.add(types.InlineKeyboardButton(f"🎚 Шанс вмешаться: {butt_in_chance}%", callback_data="m:butt_in_chance"))
     kb.add(types.InlineKeyboardButton(f"🔥 Случайные реакции: {'✅' if random_reactions else '❌'}", callback_data="m:toggle_reactions"))
     kb.add(types.InlineKeyboardButton(f"🗑 Чистить системку: {'✅' if del_sys else '❌'}", callback_data="m:toggle_sys"))
     kb.add(types.InlineKeyboardButton(f"📊 Частота ответов: {freq}%", callback_data="m:freq"))
@@ -1557,14 +1562,19 @@ def cb_handler(c):
             bot.answer_callback_query(c.id)
             return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
 
-        if d in ["m:freq", "m:anger"]:
+        if d == "m:toggle_butt_in":
+            set_v(cid, "butt_in", not get_v(cid, "butt_in", False))
             bot.answer_callback_query(c.id)
-            t = "freq" if d == "m:freq" else "anger"
+            return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
+
+        if d in ["m:freq", "m:anger", "m:butt_in_chance"]:
+            bot.answer_callback_query(c.id)
+            t = {"m:freq": "freq", "m:anger": "anger", "m:butt_in_chance": "butt_in_chance"}[d]
             kb = types.InlineKeyboardMarkup(row_width=4)
-            kb.add(*[types.InlineKeyboardButton(f"{v}%", callback_data=f"s:{t}:{v}") for v in [10, 20, 30, 40, 50, 70, 100]])
+            kb.add(*[types.InlineKeyboardButton(f"{v}%", callback_data=f"s:{t}:{v}") for v in [5, 10, 15, 20, 30, 50, 70, 100]])
             kb.add(types.InlineKeyboardButton("« Назад", callback_data="open_main_settings"))
-            label = "📊 Частота ответов" if t == "freq" else "😠 Токсичность"
-            return bot.edit_message_text(f"{label} — выберите значение:", cid, c.message.message_id, reply_markup=kb)
+            labels = {"freq": "📊 Частота ответов", "anger": "😠 Токсичность", "butt_in_chance": "🎚 Шанс вмешаться в диалог"}
+            return bot.edit_message_text(f"{labels[t]} — выберите значение:", cid, c.message.message_id, reply_markup=kb)
 
         if action == "s":
             t, v = parts[1], parts[2]
@@ -2155,11 +2165,13 @@ def text_handler(m):
             executor.submit(threat_check)
 
         direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t_lower or f"@{BOT_USER}" in t_lower
-        if direct or any(w in t_lower for w in CONFL):
+        conflict_hit = any(w in t_lower for w in CONFL)
+
+        if direct or conflict_hit:
             with state_lock: cities_running = cid in active_word_games
             if cities_running: return  
             if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
-            prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t_lower for w in CONFL) and m.reply_to_message) else m.text
+            prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (conflict_hit and m.reply_to_message) else m.text
             def ai_task():
                 try:
                     bot.send_chat_action(cid, 'typing')
@@ -2169,6 +2181,23 @@ def text_handler(m):
                 except Exception as e:
                     logging.error(f"[AI TASK] {e}", exc_info=True)
             executor.submit(ai_task)
+
+        elif (m.chat.type in ['group', 'supergroup'] and not is_words_active and not is_safe_active
+              and not t.startswith('/') and get_v(cid, "butt_in", False)
+              and random.randint(1, 100) <= get_v(cid, "butt_in_chance", 15)):
+            def butt_in_task():
+                try:
+                    bot.send_chat_action(cid, 'typing')
+                    prompt = (
+                        f"В чате кто-то написал сообщение: '{m.text}'. Тебя никто не звал и не упоминал. "
+                        "Просто сама реши встрять в разговор одной короткой живой репликой по теме сообщения, "
+                        "как будто случайно зацепилась взглядом за эту фразу в общем чате:"
+                    )
+                    ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
+                    bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
+                except Exception as e:
+                    logging.error(f"[BUTT IN TASK] {e}", exc_info=True)
+            executor.submit(butt_in_task)
     except Exception as e:
         logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
 
