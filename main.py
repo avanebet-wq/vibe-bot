@@ -19,6 +19,7 @@ if __name__ == "__main__":
     threading.Thread(target=games.word_game_active_worker, daemon=True).start()
     threading.Thread(target=games.word_lobby_worker, daemon=True).start()
     threading.Thread(target=autopost.autopost_worker, daemon=True).start()
+    threading.Thread(target=handlers._timers_worker, daemon=True).start()
 
     try:
         bot.remove_webhook()

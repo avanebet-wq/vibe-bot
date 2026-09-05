@@ -27,7 +27,6 @@ def set_admin_rank(cid, uid, rank):
         db_set("chat_admins", admins)
 
 def get_admin_rank(cid, uid):
-    if uid in BOSSES: return 5
     with state_lock:
         admins = db_get("chat_admins", {})
         chat_adms = admins.get(str(cid), {})
@@ -41,7 +40,6 @@ def get_admin_rank(cid, uid):
     return 0
 
 def has_permission(cid, uid, perm_name):
-    if uid in BOSSES: return True
     rank = get_admin_rank(cid, uid)
     if rank <= 0: return False
     perms = get_rank_permissions(cid, rank)
@@ -136,10 +134,15 @@ def issue_warn(cid, chat_title, target_uid, target_name, admin_uid, admin_name, 
         db = db_get("chat_warns", {})
         cw = db.setdefault(str(cid), {})
         uw = cw.setdefault(str(target_uid), {"count": 0, "history": []})
-        
+        now = time.time()
+        history = [h for h in uw.get("history", []) if not h.get("expires") or h.get("expires", 0) > now]
+        uw["history"] = history
+        uw["count"] = len(history)
         uw["count"] += warn_count
+        warn_period = get_v(cid, "warn_period", 0)
         uw["history"].append({
-            "reason": reason, "by_uid": admin_uid, "by_name": admin_name, "date": time.time()
+            "reason": reason, "by_uid": admin_uid, "by_name": admin_name, "date": time.time(),
+            "expires": (time.time() + warn_period) if warn_period else 0
         })
         count = uw["count"]
         db_set("chat_warns", db)
@@ -195,7 +198,7 @@ def check_access(m):
             is_words_active = cid in active_word_games
             game = active_word_games.get(cid)
         if is_words_active and game:
-            if uid not in game["players"] and uid not in BOSSES and get_admin_rank(cid, uid) == 0:
+            if uid not in game["players"] and get_admin_rank(cid, uid) == 0:
                 try: bot.delete_message(cid, m.message_id)
                 except: pass
                 warn = bot.send_message(cid, f"🤫 {get_user_mention(m.from_user)}, тсс! Идёт игра в слова, писать могут только участники!", parse_mode='HTML')
@@ -233,10 +236,12 @@ def parse_interval_input(text):
 def moderation_rank_name(rank):
     return ADMIN_RANKS.get(int(rank), "🌿 Обычный участник") if rank else "🌿 Обычный участник"
 
+def is_superadmin(cid, uid):
+    """Абсолютные права получает создатель Telegram-чата; старого whitelist больше нет."""
+    return get_admin_rank(cid, uid) >= 5
+
 def can_moderate_target(cid, actor_uid, target_uid):
     """Иерархия Iris: нельзя менять решения/роль равного или старшего ранга."""
-    if actor_uid in BOSSES:
-        return True
     actor_rank = get_admin_rank(cid, actor_uid)
     target_rank = get_admin_rank(cid, target_uid)
     return actor_rank > target_rank
@@ -320,7 +325,7 @@ def set_personal_dk(cid, uid, command, enabled):
     db_set("personal_command_access", data)
 
 def command_allowed_by_dk(cid, uid, command):
-    if uid in BOSSES: return True
+    if get_admin_rank(cid, uid) >= 5: return True
     code = DK_ALIASES.get(command.lower().strip(), command.lower().strip())
     personal = get_personal_dk(cid, uid)
     if code in personal:

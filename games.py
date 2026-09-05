@@ -394,7 +394,7 @@ def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
         kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🎲 Снова", callback_data=f"lucky:again:{uid}")) if left > 0 else None
         if left == 0:
             with state_lock: rem = int(lucky_limits[uid]["reset_at"] - time.time())
-            txt += f"\n😔 Попытки закончились.\n⏳ Новые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\n😉 А в нашем боте можно играть без ограничений!\n🔥 @vibe_247top_bot"
+            txt += f"\n😔 Попытки закончились.\n⏳ Новые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\n😉 А в нашем боте можно играть без ограничений!"
         else:
             txt += f"🎲 Осталось попыток: {left}\nСыграем ещё?"
             
@@ -413,7 +413,7 @@ def play_lucky_game(cid, uid, fname):
             if lim["left"] <= 0:
                 if now < lim["reset_at"]:
                     rem = int(lim["reset_at"] - now)
-                    txt = f"😔 {get_user_mention(user_id=uid, first_name=fname)}, попытки закончились.\n⏳ Новые через: {rem//60}м {rem%60}с.\n\n😉 А в нашем боте можно играть без ограничений!\n🔥 @vibe_247top_bot"
+                    txt = f"😔 {get_user_mention(user_id=uid, first_name=fname)}, попытки закончились.\n⏳ Новые через: {rem//60}м {rem%60}с.\n\n😉 А в нашем боте можно играть без ограничений!"
                     msg = bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True)
                     track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
                     if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))

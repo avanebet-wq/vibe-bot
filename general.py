@@ -4,19 +4,6 @@ from runtime import *
 from runtime import _EMOJI_RE
 from core import *
 
-def pluralize_weed(n):
-    if n % 10 == 1 and n % 100 != 11: return "травка"
-    elif 2 <= n % 10 <= 4 and (n % 100 < 10 or n % 100 >= 20): return "травки"
-    else: return "травок"
-
-def get_farm_reward():
-    r = random.random()
-    if r < 0.50: return 1, random.randint(1, 5)
-    elif r < 0.75: return 2, random.randint(5, 15)
-    elif r < 0.90: return 3, random.randint(15, 38)
-    elif r < 0.97: return 4, random.randint(38, 55)
-    else: return 5, random.randint(55, 100)
-
 def get_user_rank_info(xp):
     curr_rank, next_xp, next_rank = RANKS[0][1], 100, RANKS[1][1]
     for i, (r_xp, r_name) in enumerate(RANKS):
@@ -147,7 +134,7 @@ def record_xp_and_stats(m):
         users = db_get("users_data", {})
         u = users.setdefault(str(uid), {
             "xp": 0, "msgs": 0, "name": fname, "uname": uname, "first_seen": now,
-            "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0
+            "respects": 0, "given_respects": 0, "respect_reset": 0
         })
         if uname: u["uname"] = uname
         u["name"] = fname
@@ -163,6 +150,16 @@ def record_xp_and_stats(m):
         cu["msgs"] = cu.get("msgs", 0) + 1
         cu["name"] = fname
         if uname: cu["uname"] = uname
+        # История по дням и часам нужна для Iris-style статистики.
+        day_key = datetime.fromtimestamp(now, KYIV_TZ).strftime("%Y-%m-%d")
+        hour_key = datetime.fromtimestamp(now, KYIV_TZ).strftime("%H")
+        daily = cu.setdefault("daily", {})
+        hourly = cu.setdefault("hourly", {})
+        daily[day_key] = int(daily.get(day_key, 0) or 0) + 1
+        hourly[hour_key] = int(hourly.get(hour_key, 0) or 0) + 1
+        # Не даём служебной истории разрастаться бесконечно.
+        if len(daily) > 120:
+            for k in sorted(daily)[:-120]: daily.pop(k, None)
 
         pending = _stats_pending.setdefault(str(uid), {"count": 0, "last_flush": now})
         pending["count"] += 1
@@ -195,7 +192,7 @@ def handle_profile_request(m, target_uid, target_user=None):
         return
     
     xp, msgs = u.get("xp", 0), u.get("msgs", 0)
-    respects, weed = u.get("respects", 0), u.get("weed", 0)
+    respects = u.get("respects", 0)
     first_seen = u.get("first_seen", time.time())
     
     days_in_group = max(1, int((time.time() - first_seen) / 86400))
@@ -223,7 +220,6 @@ def handle_profile_request(m, target_uid, target_user=None):
         f"👤 Это: {get_user_mention(user_id=target_uid, first_name=u.get('name'))}\n\n"
         f"🏆 Ранг: <b>{rank}</b>\n"
         f"⭐ XP: {xp} / {next_xp if next_xp else 'MAX'}\n"
-        f"🌿 Баланс: <b>{weed}</b> {pluralize_weed(weed)}\n"
         f"🤝 Уважение: <b>{respects}</b>\n"
         f"📊 Прогресс: {p_bar}\n\n"
         f"💬 Сообщений: {msgs}\n"
@@ -236,72 +232,6 @@ def handle_profile_request(m, target_uid, target_user=None):
     try: bot.send_message(m.chat.id, text, parse_mode='HTML')
     except: pass
 
-def process_farm_command(m):
-    flush_stats(m.from_user.id)
-    cid, uid, fname, uname = m.chat.id, m.from_user.id, m.from_user.first_name, m.from_user.username
-    with state_lock:
-        users = db_get("users_data", {})
-        u = users.setdefault(str(uid), {
-            "xp": 0, "msgs": 0, "name": fname, "uname": uname, "first_seen": time.time(),
-            "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0
-        })
-        now = time.time()
-        cooldown = 4 * 3600
-        elapsed = now - u.get("last_farm", 0)
-        
-        if elapsed < cooldown:
-            rem = int(cooldown - elapsed)
-            h, rem = divmod(rem, 3600)
-            m_min, s = divmod(rem, 60)
-            time_str = f"{h}ч {m_min}м {s}с" if h > 0 else f"{m_min}м {s}с"
-            msg = bot.send_message(cid, f"❌ Вы слишком устали и не можете отправиться за травкой. 😔🌿\n\nОтдохните и попробуйте через: <b>{time_str}</b>", parse_mode='HTML')
-            finish_command(m, "farm_cd", msg, ttl=15)
-            return
-            
-        weeds, xp_gain = get_farm_reward()
-        old_xp = u["xp"]
-        u["xp"] += xp_gain
-        u["weed"] = u.get("weed", 0) + weeds
-        u["last_farm"] = now
-        new_xp = u["xp"]
-        db_set("users_data", users)
-        
-    msg = bot.send_message(cid, f"✅ Успешный Фарм, вы получили: 🌿 {weeds} {pluralize_weed(weeds)} 😁\n🌟 Опыт: +{xp_gain} XP", parse_mode='HTML')
-    finish_command(m, "farm_success", msg, ttl=30)
-    
-    old_rank, _, _, _ = get_user_rank_info(old_xp)
-    new_rank, _, _, _ = get_user_rank_info(new_xp)
-    if old_rank != new_rank:
-        try:
-            bot.send_message(cid, f"🎉 <b>ПОЗДРАВЛЯЕМ!</b>\n\n{get_user_mention(m.from_user)} достигает ранга: <b>{new_rank}</b> 🚀\nТак держать!", parse_mode='HTML')
-            try: bot.set_chat_administrator_custom_title(chat_id=cid, user_id=uid, custom_title=new_rank)
-            except: pass
-        except: pass
-
-def process_smoke_weed(m):
-    cid, uid = m.chat.id, m.from_user.id
-    mention = get_user_mention(m.from_user)
-    now = time.time()
-    with state_lock:
-        last_used = smoke_weed_cooldowns.get(uid, 0)
-        elapsed = now - last_used
-        if elapsed < SMOKE_WEED_COOLDOWN_SECONDS:
-            remaining = int(SMOKE_WEED_COOLDOWN_SECONDS - elapsed)
-            on_cooldown = True
-        else:
-            smoke_weed_cooldowns[uid] = now
-            on_cooldown = False
-
-    if on_cooldown:
-        mins, secs = divmod(remaining, 60)
-        phrase = random.choice(SMOKE_WEED_COOLDOWN_PHRASES).format(u=mention)
-        txt = f"{phrase}\nПопробуй через: {mins}м {secs}с"
-        msg = bot.send_message(cid, txt, parse_mode='HTML')
-        return finish_command(m, "smoke_weed_cd", msg, ttl=15)
-
-    phrase = random.choice(SMOKE_WEED_RESULTS).format(u=mention)
-    msg = bot.send_message(cid, phrase, parse_mode='HTML')
-    finish_command(m, "smoke_weed", msg, ttl=60)
 
 def format_safe_leaderboard():
     with state_lock:
