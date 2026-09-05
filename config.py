@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 # Секреты тянутся из Railway Variables
 TOKEN = os.environ.get("BOT_TOKEN")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY")
+LOG_CHAT_ID = os.environ.get("LOG_CHAT_ID")  # ID канала/чата для логов (опционально)
 
 # Парсинг админов
 BOSSES_STR = os.environ.get("BOSSES", "8343784157, 8986901371")

@@ -13,7 +13,7 @@ from telebot.types import ChatPermissions
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from config import TOKEN, OPENROUTER_KEY, BOSSES, AI_MODEL, ALLOWED_GROUPS, ALLOWED_GROUPS_RAW, DENIED_MSG, KYIV_TZ, SYS_PROMPT, SUSP, MUTES, CONFL
+from config import TOKEN, OPENROUTER_KEY, BOSSES, AI_MODEL, ALLOWED_GROUPS, ALLOWED_GROUPS_RAW, DENIED_MSG, KYIV_TZ, SYS_PROMPT, SUSP, MUTES, CONFL, LOG_CHAT_ID
 from database import db_get, db_set
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -85,25 +85,16 @@ try:
 except Exception as e:
     logging.error(f"[LOAD WORDS] {e}")
 
-# --- СИСТЕМА РАНГОВ И ОПЫТА ---
+# --- СИСТЕМА РАНГОВ И ОПЫТА (ДЛЯ ИГРОКОВ) ---
 RANKS = [
-    (0, "🌱 Новичок"),
-    (100, "🌿 Травяной"),
-    (300, "💨 Пыхач"),
-    (600, "🍃 Хапарь"),
-    (1000, "😶‍🌫️ Дунувший"),
-    (1500, "🌀 Обдутый"),
-    (2200, "💨 Дутый"),
-    (3200, "🧙 Зелёный Маг"),
-    (4500, "🔥 Мастер Напаса"),
-    (6000, "🌿 Шишечный Гуру"),
-    (8000, "🧙‍♂️ Архимаг Дыма"),
-    (10500, "👑 Повелитель Хапки"),
-    (14000, "🏆 Легендарный Пыхарь"),
-    (18000, "☁️ Верховный Стоунер"),
-    (25000, "👑🔥 БОСС ШИШЕК")
+    (0, "🌱 Новичок"), (100, "🌿 Травяной"), (300, "💨 Пыхач"), (600, "🍃 Хапарь"),
+    (1000, "😶‍🌫️ Дунувший"), (1500, "🌀 Обдутый"), (2200, "💨 Дутый"),
+    (3200, "🧙 Зелёный Маг"), (4500, "🔥 Мастер Напаса"), (6000, "🌿 Шишечный Гуру"),
+    (8000, "🧙‍♂️ Архимаг Дыма"), (10500, "👑 Повелитель Хапки"), (14000, "🏆 Легендарный Пыхарь"),
+    (18000, "☁️ Верховный Стоунер"), (25000, "👑🔥 БОСС ШИШЕК")
 ]
 
+# --- СИСТЕМА ИЕРАРХИИ АДМИНИСТРАТОРОВ (IRIS-STYLE) ---
 ADMIN_RANKS = {
     1: "🌱 1 РАНГ — СЕМЕЧКО",
     2: "🍃 2 РАНГ — РОСТОК",
@@ -112,14 +103,50 @@ ADMIN_RANKS = {
     5: "👑 5 РАНГ — БОСС"
 }
 
+DEFAULT_RANK_PERMS = {
+    1: {"can_warn": True,  "can_mute": False, "can_ban": False, "can_kick": False, "can_promote": False, "can_pin": False, "can_change_settings": False},
+    2: {"can_warn": True,  "can_mute": True,  "can_ban": False, "can_kick": False, "can_promote": False, "can_pin": False, "can_change_settings": False},
+    3: {"can_warn": True,  "can_mute": True,  "can_ban": True,  "can_kick": True,  "can_promote": False, "can_pin": False, "can_change_settings": False},
+    4: {"can_warn": True,  "can_mute": True,  "can_ban": True,  "can_kick": True,  "can_promote": False, "can_pin": False, "can_change_settings": False},
+    5: {"can_warn": True,  "can_mute": True,  "can_ban": True,  "can_kick": True,  "can_promote": True,  "can_pin": True,  "can_change_settings": True}
+}
+
+PERM_NAMES = {
+    "can_warn": "варн", "can_mute": "мут", "can_ban": "бан",
+    "can_kick": "кик", "can_promote": "ранги",
+    "can_pin": "закреп", "can_change_settings": "настройки"
+}
+
+CMD_PERM_MAP = {
+    "мут": "can_mute", "/mute": "can_mute", "снятьмут": "can_mute", "/unmute": "can_mute",
+    "бан": "can_ban", "/ban": "can_ban", "снятьбан": "can_ban", "/unban": "can_ban",
+    "кик": "can_kick", "/kick": "can_kick",
+    "пред": "can_warn", "/warn": "can_warn", "снятьпред": "can_warn", "/unwarn": "can_warn",
+    "повысить": "can_promote", "понизить": "can_promote", "разжаловать": "can_promote"
+}
+
+def get_rank_permissions(cid, rank):
+    db = db_get("rank_permissions", {})
+    chat_perms = db.get(str(cid), {})
+    if str(rank) in chat_perms:
+        return chat_perms[str(rank)]
+    return dict(DEFAULT_RANK_PERMS.get(int(rank), {}))
+
+def set_rank_permission(cid, rank, perm_name, value):
+    db = db_get("rank_permissions", {})
+    chat_perms = db.setdefault(str(cid), {})
+    for r in range(1, 6):
+        if str(r) not in chat_perms:
+            chat_perms[str(r)] = dict(DEFAULT_RANK_PERMS[r])
+    chat_perms[str(rank)][perm_name] = value
+    db_set("rank_permissions", db)
+
 def set_admin_rank(cid, uid, rank):
     with state_lock:
         admins = db_get("chat_admins", {})
         chat_adms = admins.setdefault(str(cid), {})
-        if rank <= 0:
-            chat_adms.pop(str(uid), None)
-        else:
-            chat_adms[str(uid)] = rank
+        if rank <= 0: chat_adms.pop(str(uid), None)
+        else: chat_adms[str(uid)] = rank
         db_set("chat_admins", admins)
 
 def get_admin_rank(cid, uid):
@@ -128,7 +155,6 @@ def get_admin_rank(cid, uid):
         admins = db_get("chat_admins", {})
         chat_adms = admins.get(str(cid), {})
         if str(uid) in chat_adms: return chat_adms[str(uid)]
-    
     try:
         member = bot.get_chat_member(cid, uid)
         if member.status == 'creator':
@@ -136,6 +162,32 @@ def get_admin_rank(cid, uid):
             return 5
     except: pass
     return 0
+
+def has_permission(cid, uid, perm_name):
+    if uid in BOSSES: return True
+    rank = get_admin_rank(cid, uid)
+    if rank <= 0: return False
+    perms = get_rank_permissions(cid, rank)
+    return perms.get(perm_name, False)
+
+# --- ИНСТРУМЕНТЫ МОДЕРАЦИИ ---
+def log_moderation_action(chat_title_or_id, text):
+    if LOG_CHAT_ID:
+        try: bot.send_message(LOG_CHAT_ID, f"[{chat_title_or_id}] {text}", parse_mode="HTML")
+        except Exception as e: logging.error(f"[LOG MODERATION] Failed to send log: {e}")
+
+def parse_duration(time_str):
+    if not time_str or time_str.lower() in ["навсегда", "forever", "0"]: return 0, True
+    match = re.match(r'^(\d+)\s*([a-zA-Zа-яА-ЯёЁ]+)$', time_str.lower())
+    if not match: return 0, False
+    v = int(match.group(1))
+    u = match.group(2)
+    if u.startswith('м') and not u.startswith('мес') or u.startswith('m') and not u.startswith('mo'): return v * 60, True
+    if u.startswith('ч') or u.startswith('h'): return v * 3600, True
+    if u.startswith('д') or u.startswith('d'): return v * 86400, True
+    if u.startswith('н') or u.startswith('w'): return v * 86400 * 7, True
+    if u.startswith('мес') or u.startswith('mo'): return v * 86400 * 30, True
+    return 0, False
 
 def extract_target_and_args(m, text_parts):
     target_uid, target_name = None, None
@@ -145,7 +197,7 @@ def extract_target_and_args(m, text_parts):
         target_name = m.reply_to_message.from_user.first_name
         args = text_parts[1:]
     else:
-        for i, part in enumerate(text_parts):
+        for i, part in enumerate(text_parts[1:], start=1):
             if part.startswith('@') and len(part) > 1:
                 uname = part[1:].lower()
                 with state_lock:
@@ -156,18 +208,66 @@ def extract_target_and_args(m, text_parts):
                             break
                 args = text_parts[1:i] + text_parts[i+1:]
                 break
+            elif part.isdigit():
+                with state_lock:
+                    u_data = db_get("users_data", {}).get(part)
+                    if u_data:
+                        target_uid = int(part)
+                        target_name = u_data.get("name", f"ID:{part}")
+                        args = text_parts[1:i] + text_parts[i+1:]
+                        break
     return target_uid, target_name, args
 
-def parse_mute_time(time_str):
-    match = re.match(r'(\d+)\s*([а-яё]+)', time_str.lower())
-    if not match: return None
-    v = int(match.group(1))
-    u = match.group(2)
-    if u.startswith('д'): return v * 86400
-    if u.startswith('ч'): return v * 3600
-    if u.startswith('м'): return v * 60
-    return None
+def issue_warn(cid, chat_title, target_uid, target_name, admin_uid, admin_name, reason, m_to_reply, warn_count=1):
+    max_warns = get_v(cid, "max_warns", 3)
+    warn_action = get_v(cid, "warn_action", "mute")
+    
+    with state_lock:
+        db = db_get("chat_warns", {})
+        cw = db.setdefault(str(cid), {})
+        uw = cw.setdefault(str(target_uid), {"count": 0, "history": []})
+        
+        uw["count"] += warn_count
+        uw["history"].append({
+            "reason": reason, "by_uid": admin_uid, "by_name": admin_name, "date": time.time()
+        })
+        count = uw["count"]
+        db_set("chat_warns", db)
+        
+    mention_admin = get_user_mention(user_id=admin_uid, first_name=admin_name) if admin_uid != BOT_ID else "🤖 Автомодератор"
+    mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+    txt = f"⚠️ {mention_admin} выдал предупреждение {mention_target} ({count}/{max_warns})\nПричина: {reason}"
+    log_moderation_action(chat_title or str(cid), txt)
+    
+    if count >= max_warns:
+        with state_lock:
+            db = db_get("chat_warns", {})
+            db[str(cid)][str(target_uid)]["count"] = 0
+            db_set("chat_warns", db)
+        action_txt = ""
+        if warn_action == "ban":
+            try:
+                bot.ban_chat_member(cid, target_uid, until_date=0)
+                action_txt = f"🔨 {mention_target} забанен навсегда (достигнут лимит предупреждений)."
+            except: action_txt = f"⚠️ Не удалось забанить {mention_target} (нет прав)."
+        elif warn_action == "kick":
+            try:
+                bot.ban_chat_member(cid, target_uid, until_date=0)
+                bot.unban_chat_member(cid, target_uid, only_if_banned=True)
+                action_txt = f"👢 {mention_target} кикнут (достигнут лимит предупреждений)."
+            except: action_txt = f"⚠️ Не удалось кикнуть {mention_target} (нет прав)."
+        else:
+            try:
+                bot.restrict_chat_member(cid, target_uid, until_date=0, permissions=ChatPermissions(can_send_messages=False))
+                action_txt = f"🔇 {mention_target} получил мут навсегда (достигнут лимит предупреждений)."
+            except: action_txt = f"⚠️ Не удалось замутить {mention_target} (нет прав)."
+        txt += f"\n\n{action_txt}"
+        log_moderation_action(chat_title or str(cid), action_txt)
 
+    if m_to_reply: finish_command(m_to_reply, "warn", bot.send_message(cid, txt, parse_mode="HTML"))
+    else: bot.send_message(cid, txt, parse_mode="HTML")
+
+# --- СИСТЕМА ФАРМА ТРАВКИ ---
 def pluralize_weed(n):
     if n % 10 == 1 and n % 100 != 11: return "травка"
     elif 2 <= n % 10 <= 4 and (n % 100 < 10 or n % 100 >= 20): return "травки"
@@ -182,34 +282,25 @@ def get_farm_reward():
     else: return 5, random.randint(55, 100)
 
 def get_user_rank_info(xp):
-    curr_rank = RANKS[0][1]
-    next_xp = 100
-    next_rank = RANKS[1][1]
+    curr_rank, next_xp, next_rank = RANKS[0][1], 100, RANKS[1][1]
     for i, (r_xp, r_name) in enumerate(RANKS):
         if xp >= r_xp:
             curr_rank = r_name
             if i + 1 < len(RANKS):
-                next_xp = RANKS[i+1][0]
-                next_rank = RANKS[i+1][1]
+                next_xp, next_rank = RANKS[i+1][0], RANKS[i+1][1]
             else:
-                next_xp = 0
-                next_rank = None
+                next_xp, next_rank = 0, None
         else: break
     return curr_rank, xp, next_xp, next_rank
 
-# --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
-def get_user_mention(user_obj=None, user_id=None, first_name=None):
-    if user_obj: user_id, first_name = user_obj.id, user_obj.first_name
-    safe_name = html.escape(str(first_name or "User"))
-    return f'<a href="tg://user?id={user_id}">{safe_name}</a>' if user_id else safe_name
-
+# --- ОБЩИЕ УТИЛИТЫ ---
 def get_v(cid, k, d=False):
     with state_lock: return db_get("settings", {}).get(str(cid), {}).get(k, d)
 
 def set_v(cid, k, val):
     with state_lock:
         s = db_get("settings", {})
-        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False})[k] = val
+        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False, "max_warns": 3, "warn_action": "mute"})[k] = val
         db_set("settings", s)
 
 def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
@@ -240,22 +331,17 @@ def record_xp_and_stats(m):
     uid = m.from_user.id
     if m.from_user.is_bot: return
     
-    fname = m.from_user.first_name
-    uname = m.from_user.username
+    fname, uname = m.from_user.first_name, m.from_user.username
     cid = m.chat.id
     
     with state_lock:
         users = db_get("users_data", {})
         u = users.setdefault(str(uid), {
-            "xp": 0, "msgs": 0, "name": fname, 
-            "uname": uname, "first_seen": time.time(),
-            "respects": 0, "given_respects": 0, "respect_reset": 0,
-            "weed": 0, "last_farm": 0
+            "xp": 0, "msgs": 0, "name": fname, "uname": uname, "first_seen": time.time(),
+            "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0
         })
-        
         if uname: u["uname"] = uname
         u["name"] = fname
-        
         old_xp = u["xp"]
         u["xp"] += random.randint(1, 3)
         u["msgs"] += 1
@@ -264,7 +350,6 @@ def record_xp_and_stats(m):
         
     old_rank, _, _, _ = get_user_rank_info(old_xp)
     new_rank, _, _, _ = get_user_rank_info(new_xp)
-    
     if old_rank != new_rank:
         try:
             bot.send_message(cid, f"🎉 <b>ПОЗДРАВЛЯЕМ!</b>\n\n{get_user_mention(m.from_user)} достигает ранга: <b>{new_rank}</b> 🚀\nТак держать!", parse_mode='HTML')
@@ -304,7 +389,6 @@ def handle_profile_request(m, target_uid, target_user=None):
         next_info = "👑 ВЫ ДОСТИГЛИ МАКСИМАЛЬНОГО РАНГА!\n━━━━━━━VIBE━━━━━━━"
     
     title = "ВАШ ПРОФИЛЬ" if target_uid == m.from_user.id else "ПРОФИЛЬ"
-    
     text = (
         "━━━━━━━VIBE━━━━━━━\n"
         f"🌿 <b>{title}:</b>\n\n"
@@ -411,7 +495,6 @@ def register_chat(chat):
 def check_access(m):
     uid = m.from_user.id if m.from_user else 0
     cid = m.chat.id
-    
     if m.chat.type in ['group', 'supergroup']:
         with state_lock:
             is_words_active = cid in active_word_games
@@ -423,7 +506,6 @@ def check_access(m):
                 warn = bot.send_message(cid, f"🤫 {get_user_mention(m.from_user)}, тсс! Идёт игра в слова, писать могут только участники!", parse_mode='HTML')
                 auto_del(warn, 5)
                 return False
-                
     if m.chat.type == 'private':
         if uid not in BOSSES:
             try: bot.delete_message(cid, m.message_id)
@@ -432,7 +514,6 @@ def check_access(m):
             auto_del(msg, 5)
             return False
         return True
-        
     register_chat(m.chat)
     if str(cid).replace("-100", "").replace("-", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
         try: bot.delete_message(cid, m.message_id)
@@ -501,10 +582,8 @@ def end_word_game(cid, game, reason="timeout"):
     except: pass
     
     scoreboard = build_active_scoreboard(game)
-    if reason == "limit":
-        txt = f"🏁 <b>ИГРА «СЛОВА» ЗАВЕРШЕНА!</b> 🎉\nУра! Вы совместно назвали 50 слов!\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}"
-    else:
-        txt = f"⌛ <b>ИГРА «СЛОВА» ОКОНЧЕНА ПО ТАЙМ-АУТУ.</b>\nНазвано слов: {game['moves']}.\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}\n\n/start_words_game — начать заново"
+    if reason == "limit": txt = f"🏁 <b>ИГРА «СЛОВА» ЗАВЕРШЕНА!</b> 🎉\nУра! Вы совместно назвали 50 слов!\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}"
+    else: txt = f"⌛ <b>ИГРА «СЛОВА» ОКОНЧЕНА ПО ТАЙМ-АУТУ.</b>\nНазвано слов: {game['moves']}.\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}\n\n/start_words_game — начать заново"
     try:
         msg = bot.send_message(cid, txt, parse_mode='HTML')
         try: bot.pin_chat_message(cid, msg.message_id, disable_notification=False)
@@ -644,8 +723,7 @@ def effective_last_letter(name):
 
 def is_known_word(norm_name):
     if norm_name in BASE_WORDS: return True
-    with state_lock:
-        return norm_name in db_get("known_words_extra", [])
+    with state_lock: return norm_name in db_get("known_words_extra", [])
 
 def learn_word(norm_name):
     with state_lock:
@@ -745,16 +823,10 @@ def start_word_game_now(cid):
     eff = effective_last_letter(seed)
     with state_lock:
         active_word_games[cid] = {
-            "last_word": seed,
-            "next_letter": eff,
-            "used": {normalize_word(seed)},
-            "last_move_ts": time.time(),
-            "last_reminder_ts": time.time(),
-            "reminder_msg_id": None,
-            "hint_given": False,
-            "moves": 0,
-            "players": players,
-            "scores": {uid: 0 for uid in players},
+            "last_word": seed, "next_letter": eff, "used": {normalize_word(seed)},
+            "last_move_ts": time.time(), "last_reminder_ts": time.time(),
+            "reminder_msg_id": None, "hint_given": False, "moves": 0,
+            "players": players, "scores": {uid: 0 for uid in players},
         }
 
     plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for u, n in players.items())
@@ -985,9 +1057,6 @@ def cmd_start(m):
 @bot.message_handler(commands=['setting', 'settings'])
 def cmd_settings(m):
     if not check_access(m): return
-    if m.from_user.id not in BOSSES:
-        msg = bot.send_message(m.chat.id, "⛔ Только для руководства.", parse_mode='HTML')
-        return finish_command(m, "settings", msg, ttl=15)
     msg = bot.send_message(m.chat.id, "🎛 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЛИЗОЙ</b> ✨\n\nНастрой характер и функции бота под свой чат:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
     finish_command(m, "settings", msg) 
 
@@ -1413,9 +1482,9 @@ def text_handler(m):
             return
 
         # --- СИСТЕМА АДМИНИСТРИРОВАНИЯ ---
-        if cmd in ["повысить", "понизить", "разжаловать", "пред", "мут", "кто", "админы"]:
+        if cmd in ["повысить", "понизить", "разжаловать", "пред", "/warn", "снятьпред", "/unwarn", "мут", "/mute", "снятьмут", "/unmute", "бан", "/ban", "снятьбан", "/unban", "кик", "/kick", "кто", "админы", "варны", "/warns", "права", "/rank_perms", "rank_perms"]:
             if cmd == "кто" and len(parts) > 1 and parts[1].lower() == "админ": cmd = "кто админ"
-                
+            
             if cmd in ["кто админ", "админы"]:
                 admins = db_get("chat_admins", {}).get(str(cid), {})
                 try:
@@ -1435,98 +1504,217 @@ def text_handler(m):
                 txt = "━━━━━━━VIBE━━━━━━━\n👑 <b>АДМИНИСТРАЦИЯ ЧАТА</b>\n\n"
                 for r in sorted(ADMIN_RANKS.keys(), reverse=True):
                     if grouped[r]:
-                        txt += f"<b>{ADMIN_RANKS[r]}</b>\n" + "\n".join(f"• {u}" for u in grouped[r]) + "\n\n"
+                        perms = get_rank_permissions(cid, r)
+                        active_perms = [PERM_NAMES[p] for p, v in perms.items() if v]
+                        perms_str = f" <i>({', '.join(active_perms)})</i>" if active_perms else ""
+                        txt += f"<b>{ADMIN_RANKS[r]}</b>{perms_str}\n" + "\n".join(f"• {u}" for u in grouped[r]) + "\n\n"
                 txt += "━━━━━━━VIBE━━━━━━━"
                 return finish_command(m, "who_admin", bot.send_message(cid, txt, parse_mode="HTML"), ttl=120)
 
-            caller_rank = get_admin_rank(cid, uid)
-            if cmd == "мут" and caller_rank < 2 and uid not in BOSSES: return reply_no_rights(m)
-            if cmd == "пред" and caller_rank < 1 and uid not in BOSSES: return reply_no_rights(m)
-            if cmd in ["повысить", "понизить", "разжаловать"] and caller_rank < 5 and uid not in BOSSES: return reply_no_rights(m)
-            
-            target_uid, target_name, args = extract_target_and_args(m, parts)
-            if not target_uid:
-                if cmd not in ["кто админ", "админы"]:
-                    msg = bot.send_message(cid, "Укажите пользователя (реплай или @юз)")
-                    return finish_command(m, "no_target", msg, ttl=10)
+            elif cmd in ["/rank_perms", "rank_perms"]:
+                if len(parts) < 2 or not parts[1].isdigit():
+                    return finish_command(m, "rank_perms_err", bot.send_message(cid, "⚠️ Укажите ранг (1-5), например: /rank_perms 3"), ttl=10)
+                r_num = int(parts[1])
+                if r_num < 1 or r_num > 5:
+                    return finish_command(m, "rank_perms_err", bot.send_message(cid, "⚠️ Ранг должен быть от 1 до 5."), ttl=10)
                 
-            if cmd in ["повысить", "понизить", "разжаловать"] and target_uid:
-                target_cur_rank = get_admin_rank(cid, target_uid)
-                if cmd == "разжаловать": new_rank = 0
-                else:
-                    if args and args[0].isdigit(): new_rank = int(args[0])
-                    else: new_rank = target_cur_rank + 1 if cmd == "повысить" else target_cur_rank - 1
-                        
-                if new_rank > 5: new_rank = 5
-                if new_rank < 0: new_rank = 0
-                
-                if uid not in BOSSES:
-                    if caller_rank <= target_cur_rank: return reply_no_rights(m)
-                    if caller_rank <= new_rank and new_rank != 0: return reply_no_rights(m)
-                        
-                set_admin_rank(cid, target_uid, new_rank)
-                if new_rank == 0: txt = f"📉 {get_user_mention(user_id=target_uid, first_name=target_name)} разжалован до обычного участника."
-                else:
-                    rank_name = ADMIN_RANKS.get(new_rank, f"{new_rank} РАНГ")
-                    act = "повышен" if new_rank > target_cur_rank else "понижен"
-                    txt = f"📈 {get_user_mention(user_id=target_uid, first_name=target_name)} {act} до должности:\n<b>{rank_name}</b>"
-                return finish_command(m, "admin_change", bot.send_message(cid, txt, parse_mode="HTML"))
-                
-            if cmd == "пред" and target_uid:
-                target_cur_rank = get_admin_rank(cid, target_uid)
-                if caller_rank <= target_cur_rank and uid not in BOSSES:
-                    return finish_command(m, "no_rights_warn", bot.send_message(cid, "У вас нет прав на этого администратора."), ttl=10)
-                
-                warn_count = 1
-                if args and args[0].isdigit():
-                    warn_count = int(args[0])
-                    reason = " ".join(args[1:]) or "Не указана"
-                else:
-                    reason = " ".join(args) or "Не указана"
+                perms = get_rank_permissions(cid, r_num)
+                txt = f"⚙️ <b>ПРАВА РАНГА {r_num} ({ADMIN_RANKS[r_num]}):</b>\n\n"
+                for p_key, p_name in PERM_NAMES.items():
+                    status = "✅" if perms.get(p_key, False) else "❌"
+                    txt += f"{status} <code>{p_key}</code> — {p_name}\n"
+                return finish_command(m, "rank_perms", bot.send_message(cid, txt, parse_mode="HTML"), ttl=60)
+
+            elif cmd == "права":
+                if not boss: return reply_no_rights(m)
+                if len(parts) < 4:
+                    return finish_command(m, "права_err", bot.send_message(cid, "⚠️ Формат: права <ранг> <permission> вкл|выкл\nПример: права 2 can_ban вкл"), ttl=15)
+                r_num_str, p_key, p_val_str = parts[1], parts[2].lower(), parts[3].lower()
+                if not r_num_str.isdigit() or not (1 <= int(r_num_str) <= 5):
+                    return finish_command(m, "права_err", bot.send_message(cid, "⚠️ Ранг должен быть от 1 до 5."), ttl=10)
+                if p_key not in PERM_NAMES:
+                    return finish_command(m, "права_err", bot.send_message(cid, f"⚠️ Неизвестное право: {p_key}.\nДоступные: {', '.join(PERM_NAMES.keys())}"), ttl=15)
+                if p_val_str not in ["вкл", "выкл"]:
+                    return finish_command(m, "права_err", bot.send_message(cid, "⚠️ Значение должно быть 'вкл' или 'выкл'."), ttl=10)
                     
-                with state_lock:
-                    db = db_get("chat_warns", {})
-                    cw = db.setdefault(str(cid), {})
-                    uw = cw.setdefault(str(target_uid), {"c": 0, "t": 0})
-                    now = time.time()
-                    if now - uw["t"] > 3 * 86400: uw["c"] = 0
-                    uw["c"] += warn_count
-                    uw["t"] = now
-                    total_w = uw["c"]
-                    db_set("chat_warns", db)
+                r_num = int(r_num_str)
+                new_val = (p_val_str == "вкл")
+                set_rank_permission(cid, r_num, p_key, new_val)
+                
+                perms = get_rank_permissions(cid, r_num)
+                txt = f"✅ <b>Права обновлены для ранга {r_num} ({ADMIN_RANKS[r_num]})</b>\n\n"
+                for pk, p_name in PERM_NAMES.items():
+                    status = "✅" if perms.get(pk, False) else "❌"
+                    txt += f"{status} <code>{pk}</code> — {p_name}\n"
+                return finish_command(m, "права_ok", bot.send_message(cid, txt, parse_mode="HTML"))
+
+            elif cmd in CMD_PERM_MAP or cmd in ["варны", "/warns"]:
+                req_perm = CMD_PERM_MAP.get(cmd)
+                caller_rank = get_admin_rank(cid, uid)
+                
+                if req_perm and not has_permission(cid, uid, req_perm):
+                    return reply_no_rights(m)
                     
-                if total_w >= 3:
+                target_uid, target_name, args = extract_target_and_args(m, parts)
+                
+                if not target_uid:
+                    if cmd in ["варны", "/warns"]:
+                        target_uid, target_name = uid, fname
+                    else:
+                        return finish_command(m, "no_target", bot.send_message(cid, "Укажите пользователя (реплай или @юз/ID)"), ttl=10)
+                        
+                target_cur_rank = get_admin_rank(cid, target_uid)
+                
+                if cmd not in ["варны", "/warns"]:
+                    if target_uid == BOT_ID or (target_uid == uid and cmd not in ["снятьмут", "/unmute", "снятьбан", "/unban"]):
+                        msg = bot.send_message(cid, "Это действие нельзя применить к данной цели.")
+                        return finish_command(m, "invalid_target", msg, ttl=5)
+                        
+                    if not boss:
+                        if target_uid in BOSSES or caller_rank <= target_cur_rank:
+                            return reply_no_rights(m)
+
+                if cmd in ["повысить", "понизить", "разжаловать"]:
+                    if cmd == "разжаловать": new_rank = 0
+                    else:
+                        if args and args[0].isdigit(): new_rank = int(args[0])
+                        else: new_rank = target_cur_rank + 1 if cmd == "повысить" else target_cur_rank - 1
+                            
+                    if new_rank > 5: new_rank = 5
+                    if new_rank < 0: new_rank = 0
+                    
+                    if not boss:
+                        if caller_rank <= new_rank and new_rank != 0: return reply_no_rights(m)
+                            
+                    set_admin_rank(cid, target_uid, new_rank)
+                    if new_rank == 0: txt = f"📉 {get_user_mention(user_id=target_uid, first_name=target_name)} разжалован до обычного участника."
+                    else:
+                        rank_name = ADMIN_RANKS.get(new_rank, f"{new_rank} РАНГ")
+                        act = "повышен" if new_rank > target_cur_rank else "понижен"
+                        txt = f"📈 {get_user_mention(user_id=target_uid, first_name=target_name)} {act} до должности:\n<b>{rank_name}</b>"
+                    return finish_command(m, "admin_change", bot.send_message(cid, txt, parse_mode="HTML"))
+                    
+                elif cmd in ["бан", "/ban"]:
+                    time_arg = args[0] if args else ""
+                    dur_secs, parsed = parse_duration(time_arg)
+                    if parsed:
+                        reason = " ".join(args[1:]) if len(args) > 1 else "Не указана"
+                        time_str = time_arg
+                    else:
+                        reason = " ".join(args) if args else "Не указана"
+                        dur_secs = 0
+                        time_str = "навсегда"
+                        
+                    until = int(time.time() + dur_secs) if dur_secs > 0 else 0
                     try:
-                        bot.restrict_chat_member(cid, target_uid, until_date=int(time.time() + 86400), permissions=ChatPermissions(can_send_messages=False))
-                        txt = f"{get_user_mention(user_id=uid, first_name=fname)} выдал {warn_count} предупреждение/й {get_user_mention(user_id=target_uid, first_name=target_name)}\nПричина: {reason}\n\n🛑 Достигнуто 3 предупреждения! Пользователь получает Мут на сутки."
-                        with state_lock:
-                            db = db_get("chat_warns", {})
-                            db.get(str(cid), {})[str(target_uid)]["c"] = 0
-                            db_set("chat_warns", db)
-                    except: txt = "Предупреждение выдано, но Мут не удался (нет прав)."
-                else:
-                    txt = f"{get_user_mention(user_id=uid, first_name=fname)} выдал {warn_count} предупреждение/й {get_user_mention(user_id=target_uid, first_name=target_name)}\nПричина: {reason}\nУ пользователя {total_w}/3 предупреждений."
-                return finish_command(m, "warn", bot.send_message(cid, txt, parse_mode="HTML"))
-                
-            if cmd == "мут" and target_uid:
-                target_cur_rank = get_admin_rank(cid, target_uid)
-                if caller_rank <= target_cur_rank and uid not in BOSSES:
-                    return finish_command(m, "no_rights_mute", bot.send_message(cid, "У вас нет прав наказывать этого администратора."), ttl=10)
-                
-                time_arg = args[0] if args else "1д"
-                reason = " ".join(args[1:]) if len(args) > 1 else "Не указана"
-                mute_secs = parse_mute_time(time_arg)
-                if not mute_secs:
-                    mute_secs = 86400
+                        bot.ban_chat_member(cid, target_uid, until_date=until)
+                        mention_admin = get_user_mention(user_id=uid, first_name=fname)
+                        mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+                        txt = f"🔨 {mention_admin} забанил {mention_target} — {time_str}\nПричина: {reason}"
+                        log_moderation_action(m.chat.title or str(cid), txt)
+                    except: txt = "⚠️ Не удалось выполнить действие. Проверь права бота в этом чате."
+                    return finish_command(m, "ban", bot.send_message(cid, txt, parse_mode="HTML"))
+
+                elif cmd in ["снятьбан", "/unban"]:
+                    try:
+                        bot.unban_chat_member(cid, target_uid, only_if_banned=True)
+                        mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+                        txt = f"✅ Снят бан с {mention_target}"
+                        log_moderation_action(m.chat.title or str(cid), txt)
+                    except: txt = "⚠️ Не удалось выполнить действие. Проверь права бота в этом чате."
+                    return finish_command(m, "unban", bot.send_message(cid, txt, parse_mode="HTML"))
+
+                elif cmd in ["кик", "/kick"]:
                     reason = " ".join(args) if args else "Не указана"
-                    time_arg = "1д"
+                    try:
+                        bot.ban_chat_member(cid, target_uid, until_date=0)
+                        bot.unban_chat_member(cid, target_uid, only_if_banned=True)
+                        mention_admin = get_user_mention(user_id=uid, first_name=fname)
+                        mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+                        txt = f"👢 {mention_admin} кикнул {mention_target}\nПричина: {reason}"
+                        log_moderation_action(m.chat.title or str(cid), txt)
+                    except: txt = "⚠️ Не удалось выполнить действие. Проверь права бота в этом чате."
+                    return finish_command(m, "kick", bot.send_message(cid, txt, parse_mode="HTML"))
+
+                elif cmd in ["мут", "/mute"]:
+                    time_arg = args[0] if args else ""
+                    dur_secs, parsed = parse_duration(time_arg)
+                    if parsed:
+                        reason = " ".join(args[1:]) if len(args) > 1 else "Не указана"
+                        time_str = time_arg
+                    else:
+                        reason = " ".join(args) if args else "Не указана"
+                        dur_secs = 0
+                        time_str = "навсегда"
+                        
+                    until = int(time.time() + dur_secs) if dur_secs > 0 else 0
+                    try:
+                        bot.restrict_chat_member(cid, target_uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
+                        mention_admin = get_user_mention(user_id=uid, first_name=fname)
+                        mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+                        txt = f"🔇 {mention_admin} выдал Мут {mention_target} на {time_str}\nПричина: {reason}"
+                        log_moderation_action(m.chat.title or str(cid), txt)
+                    except: txt = "⚠️ Не удалось выполнить действие. Проверь права бота в этом чате."
+                    return finish_command(m, "mute", bot.send_message(cid, txt, parse_mode="HTML"))
+
+                elif cmd in ["снятьмут", "/unmute"]:
+                    try:
+                        bot.restrict_chat_member(cid, target_uid, permissions=ChatPermissions(
+                            can_send_messages=True, can_send_media_messages=True, 
+                            can_send_other_messages=True, can_add_web_page_previews=True))
+                        mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+                        txt = f"✅ Снят мут с {mention_target}"
+                        log_moderation_action(m.chat.title or str(cid), txt)
+                    except: txt = "⚠️ Не удалось выполнить действие. Проверь права бота в этом чате."
+                    return finish_command(m, "unmute", bot.send_message(cid, txt, parse_mode="HTML"))
+
+                elif cmd in ["пред", "/warn"]:
+                    warn_count = 1
+                    if args and args[0].isdigit():
+                        warn_count = int(args[0])
+                        reason = " ".join(args[1:]) or "Не указана"
+                    else:
+                        reason = " ".join(args) or "Не указана"
+                    issue_warn(cid, m.chat.title, target_uid, target_name, uid, fname, reason, m, warn_count)
+                    return
+
+                elif cmd in ["снятьпред", "/unwarn"]:
+                    with state_lock:
+                        db = db_get("chat_warns", {})
+                        cw = db.setdefault(str(cid), {})
+                        uw = cw.setdefault(str(target_uid), {"count": 0, "history": []})
+                        if uw["count"] > 0:
+                            uw["count"] -= 1
+                            if uw["history"]: uw["history"].pop()
+                            count = uw["count"]
+                            max_warns = get_v(cid, "max_warns", 3)
+                            db_set("chat_warns", db)
+                            mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+                            txt = f"✅ Снято предупреждение с {mention_target} ({count}/{max_warns})"
+                            log_moderation_action(m.chat.title or str(cid), txt)
+                        else:
+                            txt = "У пользователя нет предупреждений."
+                    return finish_command(m, "unwarn", bot.send_message(cid, txt, parse_mode="HTML"))
                     
-                until = int(time.time() + mute_secs)
-                try:
-                    bot.restrict_chat_member(cid, target_uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
-                    txt = f"🔇 {get_user_mention(user_id=uid, first_name=fname)} выдал Мут {get_user_mention(user_id=target_uid, first_name=target_name)} на {time_arg}\nПричина: {reason}"
-                except: txt = "Не удалось выдать мут. Возможно, у бота нет прав или пользователь — админ."
-                return finish_command(m, "mute", bot.send_message(cid, txt, parse_mode="HTML"))
+                elif cmd in ["варны", "/warns"]:
+                    with state_lock:
+                        db = db_get("chat_warns", {})
+                        cw = db.get(str(cid), {})
+                        uw = cw.get(str(target_uid), {"count": 0, "history": []})
+                        count = uw.get("count", 0)
+                        history = uw.get("history", [])
+                    
+                    max_warns = get_v(cid, "max_warns", 3)
+                    mention_target = get_user_mention(user_id=target_uid, first_name=target_name)
+                    
+                    txt = f"⚠️ <b>Предупреждения</b> {mention_target} ({count}/{max_warns}):\n"
+                    if history:
+                        for idx, item in enumerate(history[-5:], 1):
+                            dt_str = datetime.fromtimestamp(item["date"], KYIV_TZ).strftime('%d.%m.%Y %H:%M')
+                            txt += f"{idx}. {item['reason']} (выдал {html.escape(item['by_name'])} {dt_str})\n"
+                    else:
+                        txt += "\nИстория пуста."
+                    return finish_command(m, "warns", bot.send_message(cid, txt, parse_mode="HTML"))
 
         # --- ОБЩИЕ КОМАНДЫ ---
         if t_lower == "мой профиль":
@@ -1629,7 +1817,13 @@ def text_handler(m):
         if is_words_active and CYRILLIC_WORD_RE.match(t):
             executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t)
 
-        if m.chat.type in ['group', 'supergroup'] and not boss and any(s in t_lower for s in SUSP):
+        if m.chat.type in ['group', 'supergroup'] and not boss:
+            if any(bad_word in t_lower for bad_word in MUTES):
+                try: bot.delete_message(cid, m.message_id)
+                except: pass
+                issue_warn(cid, m.chat.title, uid, fname, BOT_ID, "Автомодератор", "Автомодерация: нецензурная лексика", None)
+                return
+
             def threat_check():
                 try:
                     if is_threat(m.text):
