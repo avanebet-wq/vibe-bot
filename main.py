@@ -813,6 +813,17 @@ def send_specific_post(chat_id, post):
             try: bot.delete_message(chat_id, old_msg_id)
             except Exception as e:
                 if "message to delete not found" not in str(e): logging.error(f"[AUTOPOST DEL PREV] {e}")
+        if post.get("pin_after_send"):
+            prev_pinned = post.get("last_pinned_msg_id")
+            try: bot.pin_chat_message(chat_id, msg.message_id, disable_notification=True)
+            except Exception as e:
+                logging.error(f"[AUTOPOST PIN] {e}")
+            else:
+                with state_lock: post["last_pinned_msg_id"] = msg.message_id
+                if prev_pinned and prev_pinned != msg.message_id:
+                    try: bot.unpin_chat_message(chat_id, prev_pinned)
+                    except Exception as e:
+                        if "message to unpin not found" not in str(e): logging.error(f"[AUTOPOST UNPIN PREV] {e}")
     except Exception as e: logging.error(f"[AUTOPOST SEND] {e}", exc_info=True)
 
 def autopost_worker():
@@ -847,6 +858,7 @@ def autopost_worker():
                             target["last_msg_id"] = sent_post.get("last_msg_id")
                             target["last_post"] = sent_post.get("last_post")
                             if "last_sent_date" in sent_post: target["last_sent_date"] = sent_post["last_sent_date"]
+                            if "last_pinned_msg_id" in sent_post: target["last_pinned_msg_id"] = sent_post["last_pinned_msg_id"]
                     db_set("autopost", fresh)
         except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
 threading.Thread(target=autopost_worker, daemon=True).start()
@@ -1269,7 +1281,8 @@ def post_text_view(pid):
         f"📅 Старт: {post.get('start_date') or 'сразу'}\n"
         f"🖼 Фото: {'есть ✅' if post.get('photo') else 'нет ❌'}\n"
         f"🔘 Кнопок: {len(post.get('buttons', []))}\n"
-        f"🧹 Автоудаление предыдущего: {'вкл ✅' if post.get('auto_delete_prev') else 'выкл ❌'}\n\n"
+        f"🧹 Автоудаление предыдущего: {'вкл ✅' if post.get('auto_delete_prev') else 'выкл ❌'}\n"
+        f"📌 Закреплять после отправки: {'вкл ✅' if post.get('pin_after_send') else 'выкл ❌'}\n\n"
         "───────────────\n"
         f"📝 <b>Текст поста:</b>\n{preview}\n"
         "━━━━━━━VIBE━━━━━━━"
@@ -1286,6 +1299,9 @@ def post_settings_kb(pid):
     kb.add(
         types.InlineKeyboardButton(f"{'✅' if post.get('enabled') else '❌'} Включен", callback_data=f"ap:toggle:{pid}"),
         types.InlineKeyboardButton(f"🗑 Автоудаление: {'вкл' if post.get('auto_delete_prev') else 'выкл'}", callback_data=f"ap:autodel:{pid}")
+    )
+    kb.add(
+        types.InlineKeyboardButton(f"📌 Закреплять: {'вкл' if post.get('pin_after_send') else 'выкл'}", callback_data=f"ap:pin:{pid}")
     )
     kb.add(
         types.InlineKeyboardButton("⏱ Интервал", callback_data=f"ap:int_menu:{pid}"),
@@ -1650,14 +1666,15 @@ def cb_handler(c):
                     db_set("autopost", data)
                 bot.answer_callback_query(c.id, "🗑 Пост удалён")
                 return bot.edit_message_text("📋 <b>Посты в этой группе:</b>", cid, c.message.message_id, reply_markup=autopost_list_kb(c_str), parse_mode='HTML')
-            elif sub in ["toggle", "autodel"]:
+            elif sub in ["toggle", "autodel", "pin"]:
                 pid = parts[2]
                 with state_lock:
                     data = db_get("autopost", {"posts": []})
                     for p in data["posts"]:
                         if p["id"] == pid:
                             if sub == "toggle": p["enabled"] = not p.get("enabled", False)
-                            else: p["auto_delete_prev"] = not p.get("auto_delete_prev", False)
+                            elif sub == "autodel": p["auto_delete_prev"] = not p.get("auto_delete_prev", False)
+                            else: p["pin_after_send"] = not p.get("pin_after_send", False)
                     db_set("autopost", data)
                 bot.answer_callback_query(c.id, "✅")
                 return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid), parse_mode='HTML')
@@ -1731,6 +1748,7 @@ def cb_handler(c):
                                 if p["id"] == pid:
                                     p["last_post"] = time.time()
                                     p["last_msg_id"] = post.get("last_msg_id")
+                                    if "last_pinned_msg_id" in post: p["last_pinned_msg_id"] = post["last_pinned_msg_id"]
                             db_set("autopost", fresh)
                         return bot.answer_callback_query(c.id, "🚀 Отправлено!", show_alert=True)
                     except Exception as e:
