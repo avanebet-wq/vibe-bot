@@ -218,6 +218,11 @@ def extract_target_and_args(m, text_parts):
                         break
     return target_uid, target_name, args
 
+def get_user_mention(user_obj=None, user_id=None, first_name=None):
+    if user_obj: user_id, first_name = user_obj.id, user_obj.first_name
+    safe_name = html.escape(str(first_name or "User"))
+    return f'<a href="tg://user?id={user_id}">{safe_name}</a>' if user_id else safe_name
+
 def issue_warn(cid, chat_title, target_uid, target_name, admin_uid, admin_name, reason, m_to_reply, warn_count=1):
     max_warns = get_v(cid, "max_warns", 3)
     warn_action = get_v(cid, "warn_action", "mute")
@@ -1033,6 +1038,118 @@ def play_lucky_game(cid, uid, fname):
         with state_lock:
             if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
 
+# --- КЛАВИАТУРЫ НАСТРОЕК И АВТОПОСТИНГА (ВОССТАНОВЛЕНО) ---
+def format_seconds_human(secs):
+    if not secs or secs <= 0: return "выкл"
+    h, rem = divmod(int(secs), 3600)
+    m_, s_ = divmod(rem, 60)
+    if h: return f"{h}ч" + (f" {m_}м" if m_ else "")
+    if m_: return f"{m_}м"
+    return f"{s_}с"
+
+def chats_selection_kb():
+    cache = db_get("chats_cache", {"-1004374303475": "Основная VIBE", "-1003514059820": "Вторая группа"})
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for cid_str, cname in cache.items():
+        kb.add(types.InlineKeyboardButton(f"📢 {cname}", callback_data=f"ap:chat:{cid_str}"))
+    return kb
+
+def main_kb(cid, is_pv):
+    intervene = get_v(cid, "intervene", True)
+    del_sys = get_v(cid, "del_sys", False)
+    freq = get_v(cid, "freq", 40)
+    anger = get_v(cid, "anger", 40)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(f"💬 Реагировать на сообщения: {'✅ ВКЛ' if intervene else '❌ ВЫКЛ'}", callback_data="m:toggle_intervene"))
+    kb.add(types.InlineKeyboardButton(f"🗑 Удалять системные сообщения: {'✅ ВКЛ' if del_sys else '❌ ВЫКЛ'}", callback_data="m:toggle_sys"))
+    kb.add(types.InlineKeyboardButton(f"📊 Частота ответов: {freq}%", callback_data="m:freq"))
+    kb.add(types.InlineKeyboardButton(f"😠 Токсичность: {anger}%", callback_data="m:anger"))
+    if is_pv:
+        kb.add(types.InlineKeyboardButton("📢 Автопостинг", callback_data="m:autopost_list"))
+    else:
+        kb.add(types.InlineKeyboardButton("📢 Автопостинг (в ЛС)", callback_data="to_group_settings"))
+    return kb
+
+def autopost_list_kb(target_cid):
+    data = db_get("autopost", {"posts": []})
+    posts = [p for p in data.get("posts", []) if str(p.get("chat_id")) == str(target_cid)]
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for p in posts:
+        status = "✅" if p.get("enabled") else "⏸"
+        kb.add(types.InlineKeyboardButton(f"{status} {p.get('name', 'Пост')}", callback_data=f"ap:select:{p['id']}"))
+    kb.add(types.InlineKeyboardButton("➕ Создать пост", callback_data=f"ap:create:{target_cid}"))
+    if posts:
+        kb.add(types.InlineKeyboardButton("🗑 Удалить пост", callback_data=f"ap:delmenu:{target_cid}"))
+    kb.add(types.InlineKeyboardButton("« Назад", callback_data="m:autopost_list"))
+    return kb
+
+def post_text_view(pid):
+    data = db_get("autopost", {"posts": []})
+    post = next((p for p in data.get("posts", []) if p["id"] == pid), None)
+    if not post: return "⚠️ Пост не найден (возможно, был удалён)."
+    preview = html.escape((post.get("text") or "")[:200])
+    if post.get("interval"): schedule = f"каждые {format_seconds_human(post.get('interval', 0))}"
+    elif post.get("daily_time"): schedule = f"ежедневно в {post.get('daily_time')}"
+    else: schedule = "выключено"
+    return (
+        f"⚙️ <b>Настройка поста: {html.escape(post.get('name', 'Пост'))}</b>\n\n"
+        f"Статус: {'✅ включен' if post.get('enabled') else '❌ выключен'}\n"
+        f"Расписание: {schedule}\n"
+        f"Старт: {post.get('start_date') or 'сразу'}\n"
+        f"Фото: {'есть' if post.get('photo') else 'нет'}\n"
+        f"Кнопок: {len(post.get('buttons', []))}\n"
+        f"Авто-удаление предыдущего: {'вкл' if post.get('auto_delete_prev') else 'выкл'}\n\n"
+        f"📝 Текст:\n{preview}"
+    )
+
+def post_settings_kb(pid):
+    data = db_get("autopost", {"posts": []})
+    post = next((p for p in data.get("posts", []) if p["id"] == pid), None)
+    chat_id = str(post.get("chat_id")) if post else "-1004374303475"
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    if not post:
+        kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:chat:{chat_id}"))
+        return kb
+    kb.add(
+        types.InlineKeyboardButton(f"{'✅' if post.get('enabled') else '❌'} Включен", callback_data=f"ap:toggle:{pid}"),
+        types.InlineKeyboardButton(f"🗑 Автоудаление: {'вкл' if post.get('auto_delete_prev') else 'выкл'}", callback_data=f"ap:autodel:{pid}")
+    )
+    kb.add(
+        types.InlineKeyboardButton("⏱ Интервал", callback_data=f"ap:int_menu:{pid}"),
+        types.InlineKeyboardButton("🕑 Время", callback_data=f"ap:time_menu:{pid}")
+    )
+    kb.add(
+        types.InlineKeyboardButton("📅 Дата старта", callback_data=f"ap:date_menu:{pid}"),
+        types.InlineKeyboardButton("🖼 Фото", callback_data=f"ap:photo_menu:{pid}")
+    )
+    kb.add(
+        types.InlineKeyboardButton("📝 Текст", callback_data=f"ap:text:{pid}"),
+        types.InlineKeyboardButton(f"🔘 Кнопки ({len(post.get('buttons', []))})", callback_data=f"ap:btns_menu:{pid}")
+    )
+    kb.add(
+        types.InlineKeyboardButton("🚀 Отправить сейчас", callback_data=f"ap:send:{pid}"),
+        types.InlineKeyboardButton("👁 Превью", callback_data=f"ap:preview:{pid}")
+    )
+    kb.add(types.InlineKeyboardButton("« Назад к списку", callback_data=f"ap:chat:{chat_id}"))
+    return kb
+
+def build_post_user_kb(post):
+    buttons = post.get("buttons") or []
+    if not buttons: return None
+    kb = types.InlineKeyboardMarkup(row_width=max((len(r) for r in buttons), default=1))
+    for row in buttons:
+        btn_row = []
+        for btn in row:
+            text = btn.get("text", "Кнопка")
+            if btn.get("url"):
+                btn_row.append(types.InlineKeyboardButton(text, url=btn["url"]))
+            elif btn.get("command"):
+                btn_row.append(types.InlineKeyboardButton(text, callback_data=f"cmd_exec_{btn['command']}"))
+            elif btn.get("callback_data"):
+                btn_row.append(types.InlineKeyboardButton(text, callback_data=btn["callback_data"]))
+        if btn_row: kb.row(*btn_row)
+    return kb
+
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
@@ -1786,79 +1903,4 @@ def text_handler(m):
                         with state_lock:
                             data = db_get("autopost", {"posts": []})
                             for p in data["posts"]:
-                                if p["id"] == pid: p["daily_time"] = t
-                            db_set("autopost", data)
-                        return bot.reply_to(m, "🕑 Время сохранено", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Формат: ЧЧ:ММ (12:00)")
-
-                elif action == "date":
-                    if re.match(r'^\d{4}-\d{2}-\d{2}$', t):
-                        with state_lock:
-                            data = db_get("autopost", {"posts": []})
-                            for p in data["posts"]:
-                                if p["id"] == pid: p["start_date"] = t
-                            db_set("autopost", data)
-                        return bot.reply_to(m, "📅 Дата сохранена", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Формат: ГГГГ-ММ-ДД (2026-10-01)")
-
-        with state_lock: is_safe_active = cid in active_safes
-        if is_safe_active and re.fullmatch(r'\d{3}', t):
-            with state_lock:
-                if cid in active_safes and t == active_safes[cid]["code"]:
-                    del active_safes[cid]
-                    ldrs = db_get("safe_leaders", {})
-                    ldrs.setdefault(str(uid), {"name": m.from_user.first_name, "wins": 0})["wins"] += 1
-                    db_set("safe_leaders", ldrs)
-                    msg = bot.send_message(cid, f"🎉 СЕЙФ ВЗЛОМАН\nМастер {get_user_mention(m.from_user)} подобрал код: {t}", parse_mode='HTML')
-                    auto_del(msg, 180)
-            return
-
-        with state_lock: is_words_active = cid in active_word_games
-        if is_words_active and CYRILLIC_WORD_RE.match(t):
-            executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t)
-
-        if m.chat.type in ['group', 'supergroup'] and not boss:
-            if any(bad_word in t_lower for bad_word in MUTES):
-                try: bot.delete_message(cid, m.message_id)
-                except: pass
-                issue_warn(cid, m.chat.title, uid, fname, BOT_ID, "Автомодератор", "Автомодерация: нецензурная лексика", None)
-                return
-
-            def threat_check():
-                try:
-                    if is_threat(m.text):
-                        until = int(time.time()) + 300
-                        bot.restrict_chat_member(cid, uid, until_date=until, permissions=ChatPermissions(can_send_messages=False))
-                        mention = get_user_mention(m.from_user)
-                        bosses_ping = " ".join([f"<a href='tg://user?id={b}'>⚠️</a>" for b in BOSSES])
-                        alert_msg = f"{bosses_ping} 🛡 Обнаружена угроза от {mention}. Пользователь автоматически заглушен на 5 минут для проверки."
-                        bot.send_message(cid, alert_msg, parse_mode='HTML')
-                except Exception as e: logging.error(f"[THREAT ACTION] {e}", exc_info=True)
-            executor.submit(threat_check)
-
-        direct = m.chat.type == 'private' or (m.reply_to_message and m.reply_to_message.from_user.id == BOT_ID) or "лиза" in t_lower or f"@{BOT_USER}" in t_lower
-        if direct or any(w in t_lower for w in CONFL):
-            with state_lock: cities_running = cid in active_word_games
-            if cities_running: return  
-            if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
-            prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (any(w in t_lower for w in CONFL) and m.reply_to_message) else m.text
-            def ai_task():
-                try:
-                    bot.send_chat_action(cid, 'typing')
-                    ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
-                    if m.chat.type == 'private': bot.send_message(cid, ans, parse_mode='HTML')
-                    else: bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
-                except Exception as e:
-                    logging.error(f"[AI TASK] {e}", exc_info=True)
-            executor.submit(ai_task)
-    except Exception as e:
-        logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
-
-if __name__ == "__main__":
-    logging.info("Бот запущен и готов к работе!")
-    while True:
-        try: bot.infinity_polling(timeout=20, long_polling_timeout=10)
-        except KeyboardInterrupt: break
-        except Exception as e:
-            logging.error(f"Сбой связи: {e}", exc_info=True)
-            time.sleep(5)
+           
