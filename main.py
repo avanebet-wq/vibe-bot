@@ -197,6 +197,44 @@ def get_user_rank_info(xp):
         else: break
     return curr_rank, xp, next_xp, next_rank
 
+# --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
+def get_user_mention(user_obj=None, user_id=None, first_name=None):
+    if user_obj: user_id, first_name = user_obj.id, user_obj.first_name
+    safe_name = html.escape(str(first_name or "User"))
+    return f'<a href="tg://user?id={user_id}">{safe_name}</a>' if user_id else safe_name
+
+def get_v(cid, k, d=False):
+    with state_lock: return db_get("settings", {}).get(str(cid), {}).get(k, d)
+
+def set_v(cid, k, val):
+    with state_lock:
+        s = db_get("settings", {})
+        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False})[k] = val
+        db_set("settings", s)
+
+def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
+    if not new_msg: return
+    with state_lock:
+        key = (chat_id, user_id, cmd_name)
+        if key in last_command_messages:
+            try: bot.delete_message(chat_id, last_command_messages[key])
+            except Exception as e:
+                if "message to delete not found" not in str(e): logging.error(f"[DEL OLD CMD] {e}")
+        last_command_messages[key] = new_msg.message_id
+
+def auto_del(msg, ttl=180):
+    if msg:
+        with state_lock: messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
+
+def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
+    if delete_user_msg and not getattr(m, "is_callback", False):
+        try: bot.delete_message(m.chat.id, m.message_id)
+        except Exception as e:
+            if "message to delete not found" not in str(e): logging.error(f"[DEL CMD:{cmd_name}] {e}")
+    if sent_msg:
+        track_and_replace_specific_cmd(m.chat.id, m.from_user.id, cmd_name, sent_msg)
+        if ttl: auto_del(sent_msg, ttl)
+
 def record_xp_and_stats(m):
     if m.chat.type not in ['group', 'supergroup']: return
     uid = m.from_user.id
@@ -332,39 +370,6 @@ def reply_no_rights(m):
     except: pass
     msg = bot.send_message(m.chat.id, "⛔ У вас нет прав на использование этой команды.", parse_mode="HTML")
     auto_del(msg, 5)
-
-# --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
-def get_v(cid, k, d=False):
-    with state_lock: return db_get("settings", {}).get(str(cid), {}).get(k, d)
-
-def set_v(cid, k, val):
-    with state_lock:
-        s = db_get("settings", {})
-        s.setdefault(str(cid), {"freq": 40, "anger": 40, "intervene": True, "del_sys": False})[k] = val
-        db_set("settings", s)
-
-def track_and_replace_specific_cmd(chat_id, user_id, cmd_name, new_msg):
-    if not new_msg: return
-    with state_lock:
-        key = (chat_id, user_id, cmd_name)
-        if key in last_command_messages:
-            try: bot.delete_message(chat_id, last_command_messages[key])
-            except Exception as e:
-                if "message to delete not found" not in str(e): logging.error(f"[DEL OLD CMD] {e}")
-        last_command_messages[key] = new_msg.message_id
-
-def auto_del(msg, ttl=180):
-    if msg:
-        with state_lock: messages_to_delete.append({"cid": msg.chat.id, "mid": msg.message_id, "time": time.time() + ttl})
-
-def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
-    if delete_user_msg and not getattr(m, "is_callback", False):
-        try: bot.delete_message(m.chat.id, m.message_id)
-        except Exception as e:
-            if "message to delete not found" not in str(e): logging.error(f"[DEL CMD:{cmd_name}] {e}")
-    if sent_msg:
-        track_and_replace_specific_cmd(m.chat.id, m.from_user.id, cmd_name, sent_msg)
-        if ttl: auto_del(sent_msg, ttl)
 
 def format_safe_leaderboard():
     with state_lock:
@@ -659,6 +664,115 @@ def resolve_is_word(raw_name, norm_name):
     if is_word: learn_word(norm_name)
     return is_word
 
+# --- ЛОББИ ИГРЫ «СЛОВА» ---
+def build_lobby_text(lobby):
+    remaining = max(0, int(lobby["end_time"] - time.time()))
+    mins, secs = remaining // 60, remaining % 60
+    players = lobby["players"]
+    plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for i, (u, n) in enumerate(players.items(), 1)) or "Пока никто не записался."
+    seed_line = f"\n🎯 Первое слово: <b>{html.escape(lobby['seed'])}</b>" if lobby.get("seed") else ""
+    return (
+        "━━━━━━━VIBE━━━━━━━\n"
+        "🔤 <b>ИГРА «СЛОВА»</b> 🌟\n\n"
+        "<i>Правила: по очереди называем слова на русском языке. "
+        "Слово должно начинаться на ту букву, которой закончилось предыдущее. "
+        "Повторяться нельзя! За каждое слово — +1 балл!</i>\n"
+        f"{seed_line}\n\n"
+        f"⏳ <b>До старта:</b> {mins}м {secs}с\n"
+        f"👥 <b>Участники ({len(players)}):</b>\n{plist}\n"
+        "━━━━━━━VIBE━━━━━━━"
+    )
+
+def lobby_kb(cid):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton("📝 Записаться на игру", url=f"https://t.me/{BOT_USERNAME}?start=regword_{cid}"))
+    kb.add(types.InlineKeyboardButton("❌ Отменить регистрацию", url=f"https://t.me/{BOT_USERNAME}?start=unregword_{cid}"))
+    kb.add(types.InlineKeyboardButton("🚀 Начать сейчас", callback_data="wg:startnow"))
+    return kb
+
+def handle_word_game_registration(m, payload):
+    uid, fname = m.from_user.id, m.from_user.first_name
+    try:
+        action, cid_str = payload.split("_", 1)
+        cid = int(cid_str)
+    except: return bot.send_message(m.chat.id, "⚠️ Некорректная ссылка.")
+
+    with state_lock:
+        lobby = pending_word_lobbies.get(cid)
+        if not lobby or lobby.get("started"): outcome = "closed"
+        elif action == "regword":
+            outcome = "already" if uid in lobby["players"] else "registered"
+            if outcome == "registered": lobby["players"][uid] = fname
+        elif action == "unregword":
+            outcome = "removed" if lobby["players"].pop(uid, None) is not None else "not_in"
+        else: outcome = "unknown"
+
+    if outcome == "closed": bot.send_message(m.chat.id, "⏳ Регистрация закрыта.")
+    elif outcome == "already": bot.send_message(m.chat.id, f"Ты уже записан(а), {fname}! Жди начала! 🍀")
+    elif outcome == "registered":
+        bot.send_message(m.chat.id, f"✅ Готово, {fname}! Жди начала игры! 🍀")
+        repost_lobby(cid)
+    elif outcome == "removed":
+        bot.send_message(m.chat.id, "❌ Вычеркнула тебя из списка.")
+        repost_lobby(cid)
+    elif outcome == "not_in": bot.send_message(m.chat.id, "Ты и не был(а) записан(а).")
+
+def start_word_game_now(cid):
+    with state_lock:
+        lobby = pending_word_lobbies.pop(cid, None)
+        if not lobby or lobby.get("started"): return
+        lobby["started"] = True
+        players = dict(lobby["players"])
+        reg_msg_id = lobby.get("reg_msg_id")
+        seed = lobby.get("seed")
+
+    if reg_msg_id:
+        try: bot.edit_message_caption("✅ Регистрация закрыта — игра начинается!", cid, reg_msg_id)
+        except:
+            try: bot.edit_message_text("✅ Регистрация закрыта — игра начинается!", cid, reg_msg_id)
+            except: pass
+
+    if not players:
+        try: bot.send_message(cid, "😔 Никто не успел записаться. Игра отменена.")
+        except: pass
+        return
+
+    if seed:
+        norm_seed = normalize_word(seed)
+        if not resolve_is_word(seed, norm_seed): seed = random.choice(list(BASE_WORDS)).title()
+    else: seed = random.choice(list(BASE_WORDS)).title()
+
+    eff = effective_last_letter(seed)
+    with state_lock:
+        active_word_games[cid] = {
+            "last_word": seed,
+            "next_letter": eff,
+            "used": {normalize_word(seed)},
+            "last_move_ts": time.time(),
+            "last_reminder_ts": time.time(),
+            "reminder_msg_id": None,
+            "hint_given": False,
+            "moves": 0,
+            "players": players,
+            "scores": {uid: 0 for uid in players},
+        }
+
+    plist = "\n".join(f"• {get_user_mention(user_id=u, first_name=n)}" for u, n in players.items())
+    try:
+        bot.send_message(
+            cid,
+            "━━━━━━━VIBE━━━━━━━\n"
+            f"🔤 <b>ИГРА «СЛОВА» НАЧАЛАСЬ!</b>\n\n"
+            f"👥 Участники:\n{plist}\n\n"
+            f"Первое слово: <b>{html.escape(seed)}</b>\n"
+            f"Следующее на букву «{eff.upper()}»\n\n"
+            f"⏱ Тайм-аут хода: 3 мин\n"
+            f"🔇 Пока идёт игра — Лиза не встревает в чат.\n"
+            "━━━━━━━VIBE━━━━━━━",
+            parse_mode='HTML'
+        )
+    except Exception as e: logging.error(f"[WORDS START] {e}", exc_info=True)
+
 # --- AI ЛОГИКА ---
 def clean_ai_response(content):
     if not content: return "Мысль потерялась, спроси по-другому..."
@@ -782,6 +896,71 @@ def process_word_guess(cid, uid, fname, raw_text):
         bot.send_message(cid, f"🥳 {mention} отгадывает слово и получает +1 балл🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»", parse_mode='HTML')
     except Exception as e: logging.error(f"[WORDS MOVE] {e}", exc_info=True)
 
+def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
+    try:
+        wait_s = DICE_ANIMATION_SECONDS.get(emoji, 4.0) + DELETE_ANIM_DELAY
+        time.sleep(wait_s)
+        try: bot.delete_message(cid, msg_id)
+        except Exception as e:
+            if "message to delete not found" not in str(e): logging.error(f"[LUCKY DEL] {e}")
+                
+        mention = get_user_mention(user_id=uid, first_name=fname)
+        if win:
+            with state_lock:
+                ldrs = db_get("lucky_leaders", {})
+                u = ldrs.setdefault(str(uid), {"name": fname, "wins": 0})
+                u["wins"] += 1
+                db_set("lucky_leaders", ldrs)
+                rank = sum(1 for v in ldrs.values() if v.get("wins",0) > u["wins"]) + 1
+            txt = f"🎉 {mention}, невероятно! Ты выиграл +1 балл!\nТвое место: #{rank}\n"
+        else:
+            txt = f"😔 {mention}, не повезло.\n"
+        
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🎲 Снова", callback_data=f"lucky:again:{uid}")) if left > 0 else None
+        if left == 0:
+            with state_lock: rem = int(lucky_limits[uid]["reset_at"] - time.time())
+            txt += f"\nПопыток больше нет😔\nНовые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
+        else:
+            txt += f"Осталось попыток: {left}\nСыграем еще?"
+            
+        msg = bot.send_message(cid, txt, reply_markup=kb, parse_mode='HTML')
+        track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
+    except Exception as e: logging.error(f"[LUCKY RESULT] {e}", exc_info=True)
+    finally:
+        with state_lock:
+            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+
+def play_lucky_game(cid, uid, fname):
+    try:
+        with state_lock:
+            lim = lucky_limits.setdefault(uid, {"left": 5, "reset_at": 0})
+            now = time.time()
+            if lim["left"] <= 0:
+                if now < lim["reset_at"]:
+                    rem = int(lim["reset_at"] - now)
+                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
+                    msg = bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True)
+                    track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
+                    if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+                    return
+                else: lim["left"] = 5
+            lim["left"] -= 1
+            if lim["left"] == 0: lim["reset_at"] = now + 1800
+        
+        emoji = random.choice(["🎯", "🎳", "🏀"])
+        try: dice = bot.send_dice(cid, emoji=emoji)
+        except Exception:
+            bot.send_message(cid, "⚠️ Нет прав на кубики.")
+            with state_lock:
+                if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+            return
+        win = (emoji in ["🎯", "🎳"] and dice.dice.value == 6) or (emoji == "🏀" and dice.dice.value in [4, 5])
+        executor.submit(lucky_game_result, cid, uid, fname, dice.message_id, win, lim["left"], emoji)
+    except Exception as e:
+        logging.error(f"[PLAY LUCKY] {e}", exc_info=True)
+        with state_lock:
+            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
@@ -806,6 +985,9 @@ def cmd_start(m):
 @bot.message_handler(commands=['setting', 'settings'])
 def cmd_settings(m):
     if not check_access(m): return
+    if m.from_user.id not in BOSSES:
+        msg = bot.send_message(m.chat.id, "⛔ Только для руководства.", parse_mode='HTML')
+        return finish_command(m, "settings", msg, ttl=15)
     msg = bot.send_message(m.chat.id, "🎛 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЛИЗОЙ</b> ✨\n\nНастрой характер и функции бота под свой чат:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
     finish_command(m, "settings", msg) 
 
