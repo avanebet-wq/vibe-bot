@@ -13,10 +13,13 @@ def format_seconds_human(secs):
     return f"{s_}с"
 
 def chats_selection_kb():
-    cache = db_get("chats_cache", {"-1004374303475": "Основная VIBE", "-1003514059820": "Вторая группа"})
+    # Список формируется из реально обнаруженных чатов, без whitelist.
+    cache = db_get("chats_cache", {})
     kb = types.InlineKeyboardMarkup(row_width=1)
     for cid_str, cname in cache.items():
         kb.add(types.InlineKeyboardButton(f"📢 {cname}", callback_data=f"ap:chat:{cid_str}"))
+    if not cache:
+        kb.add(types.InlineKeyboardButton("ℹ️ Сначала добавьте Лизу в группу", callback_data="noop"))
     return kb
 
 def main_kb(cid, is_pv):
@@ -85,7 +88,7 @@ def post_text_view(pid):
 def post_settings_kb(pid):
     data = db_get("autopost", {"posts": []})
     post = next((p for p in data.get("posts", []) if p["id"] == pid), None)
-    chat_id = str(post.get("chat_id")) if post else "-1004374303475"
+    chat_id = str(post.get("chat_id")) if post else ""
     kb = types.InlineKeyboardMarkup(row_width=2)
     if not post:
         kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:chat:{chat_id}"))

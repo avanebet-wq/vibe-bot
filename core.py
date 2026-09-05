@@ -180,7 +180,7 @@ def issue_warn(cid, chat_title, target_uid, target_name, admin_uid, admin_name, 
 def register_chat(chat):
     if chat.type in ['group', 'supergroup', 'channel']:
         with state_lock:
-            cache = db_get("chats_cache", {"-1004374303475": "Основная VIBE", "-1003514059820": "Вторая группа"})
+            cache = db_get("chats_cache", {})
             cid_str = str(chat.id)
             cname = chat.title or f"Чат {cid_str}"
             if cache.get(cid_str) != cname:
@@ -202,20 +202,20 @@ def check_access(m):
                 auto_del(warn, 5)
                 return False
     if m.chat.type == 'private':
-        if uid not in BOSSES:
-            try: bot.delete_message(cid, m.message_id)
-            except: pass
-            msg = bot.send_message(cid, "⛔ У вас нет прав на использование этой команды.", parse_mode='HTML')
-            auto_del(msg, 5)
-            return False
-        return True
-    register_chat(m.chat)
-    if str(cid).replace("-100", "").replace("-", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
+        cmd_word = ""
+        if m.text:
+            parts_ = m.text.split()
+            if parts_: cmd_word = parts_[0].lstrip("/").split("@")[0].lower()
+        if cmd_word in ("start", "settings"):
+            return True
         try: bot.delete_message(cid, m.message_id)
         except: pass
-        msg = bot.send_message(cid, "⛔ Чат не авторизован.", parse_mode='HTML')
+        msg = bot.send_message(cid, "⛔ В личных сообщениях доступны только /start и /settings.", parse_mode='HTML')
         auto_del(msg, 5)
         return False
+    # Лиза доступна в любой группе/супергруппе, куда её добавили.
+    # Никаких заранее прописанных chat_id больше нет.
+    register_chat(m.chat)
     return True
 
 def reply_no_rights(m):

@@ -26,13 +26,40 @@ def handle_system_messages(m):
     try:
         if getattr(m, "new_chat_members", None):
             for new_user in m.new_chat_members:
+                if new_user.id == BOT_ID:
+                    register_chat(m.chat)
+                    try:
+                        bot.send_message(
+                            m.chat.id,
+                            "🎉 <b>Лиза установлена!</b>\n\n"
+                            "Выдайте мне права администратора, чтобы я могла полноценно работать.\n"
+                            "После этого используйте <code>+Правила</code>, <code>+Приветствие</code>, <code>Настройки</code> или <code>Триггеры</code>.",
+                            parse_mode="HTML"
+                        )
+                    except Exception as e:
+                        logging.error(f"[INSTALL] {e}", exc_info=True)
+                    continue
+                if new_user.is_bot:
+                    continue
                 _record_join(m.chat.id, new_user)
                 welcome = _get_chat_setting(m.chat.id, "welcome", "")
-                if welcome and not new_user.is_bot:
-                    try:
-                        bot.send_message(m.chat.id, _render_template(welcome, new_user), parse_mode="HTML")
-                    except Exception as e:
-                        logging.error(f"[WELCOME] {e}")
+                if welcome:
+                    # Iris-style: приветствуем только впервые увиденного участника.
+                    data = db_get("chat_activity", {})
+                    row = data.setdefault(str(m.chat.id), {}).setdefault(str(new_user.id), {})
+                    already_greeted = bool(row.get("greeted", False))
+                    if not already_greeted:
+                        try:
+                            rendered = _render_template(welcome, new_user)
+                            msg = bot.send_message(m.chat.id, rendered, parse_mode="HTML")
+                            row["greeted"] = True
+                            row["last_greet_message_id"] = msg.message_id
+                            db_set("chat_activity", data)
+                            ttl = int(_get_chat_setting(m.chat.id, "welcome_delete_after", 0) or 0)
+                            if ttl > 0:
+                                auto_del(msg, min(ttl, 86400))
+                        except Exception as e:
+                            logging.error(f"[WELCOME] {e}", exc_info=True)
         if getattr(m, "left_chat_member", None):
             u=m.left_chat_member
             if u and not u.is_bot:
@@ -59,29 +86,63 @@ def cmd_start(m):
     payload = None
     if m.text:
         text_parts = m.text.split(maxsplit=1)
-        if len(text_parts) > 1: payload = text_parts[1].strip()
+        if len(text_parts) > 1:
+            payload = text_parts[1].strip()
 
     if payload and (payload.startswith("regword_") or payload.startswith("unregword_")):
         return handle_word_game_registration(m, payload)
 
-    if not check_access(m): return
-    if m.chat.type == 'private' and m.from_user.id in BOSSES and m.text and "settings" in m.text:
-        msg = bot.reply_to(m, "📢 Выберите группу:", reply_markup=chats_selection_kb())
-        return finish_command(m, "start", msg)
-    kb = types.InlineKeyboardMarkup(row_width=1).add(types.InlineKeyboardButton("Что ты умеешь?", callback_data="what_can_i_do"))
-    if m.chat.type == 'private' and m.from_user.id in BOSSES: kb.add(types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_main_settings"))
-    txt = (
-        f"👋 Привет, {get_user_mention(m.from_user)}!\n"
-        "Я <b>Лиза</b> 🌿 — слежу за порядком и веселю чат.\n\n"
-        "💭 Наш чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n"
-        "🛒 Наш бот: @vibe_247top_bot\n"
-        "🎁 События: /events"
-    )
-    msg = bot.send_message(m.chat.id, txt, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
-    finish_command(m, "start", msg, ttl=180 if m.chat.type != 'private' else None)
+    if not check_access(m):
+        return
+
+    if m.chat.type == "private":
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton("➕ Добавить Лизу в группу", url=f"https://t.me/{BOT_USERNAME}?startgroup=true"))
+        kb.add(types.InlineKeyboardButton("📖 Базовая настройка", callback_data="liza_setup_help"))
+        txt = (
+            "👋 <b>Привет!</b>\n\n"
+            "Я <b>Лиза</b> 🌿 — чат-менеджер для Telegram.\n"
+            "Чтобы установить меня, нажми кнопку ниже, выбери группу и обязательно выдай мне права администратора.\n\n"
+            "После установки настрой приветствие, правила и нужные функции прямо в группе."
+        )
+        msg = bot.send_message(m.chat.id, txt, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+        finish_command(m, "start", msg, ttl=180)
+        return
+
+    # /start в группе — подтверждение установки в стиле Iris.
+    register_chat(m.chat)
+    try:
+        member = bot.get_chat_member(m.chat.id, BOT_ID)
+        status = member.status
+    except Exception:
+        status = "unknown"
+    if status not in ("administrator", "creator"):
+        txt = (
+            "🌿 <b>Лиза ещё не установлена полностью.</b>\n\n"
+            "Назначьте меня администратором группы и выдайте необходимые права — "
+            "это нужно для приветствий, модерации, закрепов и очистки чата."
+        )
+    else:
+        txt = (
+            "🎉 <b>Лиза установлена!</b>\n\n"
+            "Теперь можно настроить:\n"
+            "• <code>+Правила</code>\n"
+            "• <code>+Приветствие</code>\n"
+            "• <code>Настройки</code>\n"
+            "• <code>Триггеры</code>\n\n"
+            "Все команды можно писать с префиксом <code>!</code>, <code>.</code>, <code>/</code> "
+            "или со словом «Лиза»."
+        )
+    msg = bot.send_message(m.chat.id, txt, parse_mode="HTML")
+    finish_command(m, "start", msg, ttl=180)
 
 def cmd_settings(m):
     if not check_access(m): return
+    if m.chat.type == "private":
+        if m.from_user.id not in BOSSES:
+            return reply_no_rights(m)
+    elif get_admin_rank(m.chat.id, m.from_user.id) < 5:
+        return reply_no_rights(m)
     msg = bot.send_message(m.chat.id, "🎛 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЛИЗОЙ</b> ✨\n\nНастрой характер и функции бота под свой чат:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
     finish_command(m, "settings", msg)
 
@@ -232,9 +293,6 @@ def cb_handler(c):
                 elif cmd in ["/farm", "/фарм"]: cmd_farm(fake)
             return bot.answer_callback_query(c.id)
 
-        if not is_pv and str(cid).replace("-100", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
-            return bot.answer_callback_query(c.id, "⛔ Неразрешенный чат.", show_alert=True)
-
         if action == "lucky" and parts[1] == "again":
             target_uid = int(parts[2])
             if uid != target_uid: return bot.answer_callback_query(c.id, "⛔ Не твоя игра!", show_alert=True)
@@ -280,10 +338,28 @@ def cb_handler(c):
             )
             return bot.edit_message_text(back_txt, cid, c.message.message_id, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
 
+        if d == "liza_setup_help":
+            bot.answer_callback_query(c.id)
+            txt = ("⚙️ <b>УСТАНОВКА ЛИЗЫ</b>\n\n"
+                   "1. Нажми «Добавить Лизу в группу».\n"
+                   "2. Выбери нужную группу.\n"
+                   "3. Назначь Лизу администратором и не отключай выданные права.\n"
+                   "4. В группе используй <code>+Правила</code>, <code>+Приветствие</code> и <code>Настройки</code>.\n\n"
+                   "Лиза работает в любой группе, куда её добавили.")
+            return bot.edit_message_text(txt, cid, c.message.message_id, parse_mode="HTML",
+                                         reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
+        if d == "noop":
+            return bot.answer_callback_query(c.id, "ℹ️ Добавьте Лизу хотя бы в одну группу.", show_alert=True)
+
         if d == "open_main_settings":
-            if uid not in BOSSES: return bot.answer_callback_query(c.id, "⛔ У вас нет прав.", show_alert=True)
+            if (is_pv and uid not in BOSSES) or (not is_pv and get_admin_rank(cid, uid) < 5):
+                return bot.answer_callback_query(c.id, "⛔ Только создатель чата может менять базовые настройки.", show_alert=True)
             bot.answer_callback_query(c.id)
             return bot.edit_message_text("🎛 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЛИЗОЙ</b> ✨\n\nНастрой характер и функции бота под свой чат:", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv), parse_mode='HTML')
+
+        if d.startswith("m:") or action == "s":
+            if (is_pv and uid not in BOSSES) or (not is_pv and get_admin_rank(cid, uid) < 5):
+                return bot.answer_callback_query(c.id, "⛔ Только создатель чата может менять эти настройки.", show_alert=True)
 
         if d == "m:toggle_intervene":
             set_v(cid, "intervene", not get_v(cid, "intervene", True))
@@ -365,7 +441,7 @@ def cb_handler(c):
                 pid = parts[2]
                 with state_lock:
                     data = db_get("autopost", {"posts": []})
-                    c_str = next((str(p.get("chat_id")) for p in data["posts"] if p["id"] == pid), "-1004374303475")
+                    c_str = next((str(p.get("chat_id")) for p in data["posts"] if p["id"] == pid), str(cid))
                     data["posts"] = [p for p in data["posts"] if p["id"] != pid]
                     db_set("autopost", data)
                 bot.answer_callback_query(c.id, "🗑 Пост удалён")
@@ -445,7 +521,7 @@ def cb_handler(c):
                     post = next((p for p in data["posts"] if p["id"] == pid), None)
                 if post:
                     try:
-                        send_specific_post(int(post.get("chat_id", -1004374303475)), post)
+                        send_specific_post(int(post.get("chat_id", cid)), post)
                         with state_lock:
                             fresh = db_get("autopost", {"posts": []})
                             for p in fresh.get("posts", []):
@@ -491,7 +567,15 @@ def on_photo(m):
 
 def text_handler(m):
     try:
+        # Нормализация Iris-style префиксов до разбора команд.
         if m.text:
+            raw = m.text.strip()
+            first, *rest = raw.split(maxsplit=1)
+            if first.startswith(("!", ".", "/")) and len(first) > 1 and not first.startswith("//"):
+                raw = first[1:] + ((" " + rest[0]) if rest else "")
+            elif first.lower() == "лиза":
+                raw = rest[0].strip() if rest else "помощь"
+            m.text = raw
             _tr=handle_trigger_command(m)
             if _tr is not None: return
         if not check_access(m): return
@@ -499,6 +583,15 @@ def text_handler(m):
             _ac=_handle_advanced_cleanup(m)
             if _ac: return
         uid, cid, t = m.from_user.id, m.chat.id, (m.text or "").strip()
+        # Iris-style command prefixes and обращение к Лизе:
+        # !команда, .команда, /команда и «Лиза команда» работают одинаково.
+        if t:
+            first, *rest = t.split(maxsplit=1)
+            if first.startswith(("!", ".", "/")) and len(first) > 1 and not first.startswith("//"):
+                first = first[1:]
+                t = first + ((" " + rest[0]) if rest else "")
+            elif first.lower() == "лиза":
+                t = rest[0].strip() if rest else "помощь"
         fname, uname = m.from_user.first_name, m.from_user.username
         boss = uid in BOSSES
 
@@ -509,9 +602,21 @@ def text_handler(m):
 
         t_lower = t.lower()
         # --- Настройка чата / правила / приветствие ---
-        if t_lower == "правила":
+        if t_lower in ("правила", "правила помощь"):
+            if t_lower == "правила помощь":
+                txt = ("📜 <b>ЛИЗА — ПРАВИЛА</b>\n\n"
+                       "<code>+Правила</code>\nТекст правил со следующей строки\n\n"
+                       "<code>Правила</code> — показать\n"
+                       "<code>-Правила</code> или <code>Правила удалить</code> — удалить.")
+                return finish_command(m, "rules_help", bot.send_message(cid, txt, parse_mode="HTML"), ttl=120)
             rules = _get_chat_setting(cid, "rules", "")
-            txt = "📜 <b>ПРАВИЛА VIBE</b>\n\n" + (html.escape(rules) if rules else "Правила ещё не установлены.")
+            if rules:
+                try:
+                    link = _get_chat_setting(cid, "chat_link", "")
+                    rules = rules.replace("{ссылка}", link or "ссылка не установлена")
+                except Exception:
+                    pass
+            txt = "📜 <b>ПРАВИЛА ЛИЗЫ</b>\n\n" + (html.escape(rules) if rules else "Правила ещё не установлены.")
             return finish_command(m, "rules", bot.send_message(cid, txt, parse_mode="HTML"), ttl=180)
         if t_lower == "приветствие":
             welcome = _get_chat_setting(cid, "welcome", "")
@@ -529,14 +634,48 @@ def text_handler(m):
             if not body: return finish_command(m, "welcome_err", bot.send_message(cid, "⚠️ После +приветствие укажи текст."), ttl=10)
             _save_welcome(cid, body)
             return finish_command(m, "welcome_set", bot.send_message(cid, "✅ Приветствие VIBE сохранено."))
-        if t_lower == "-правила":
+        if t_lower in ("-правила", "правила удалить"):
             if not _cleanup_dk_allowed(cid, uid, "правила"): return reply_no_rights(m)
             _set_chat_rules(cid, "")
-            return finish_command(m, "rules_off", bot.send_message(cid, "🗑 Правила VIBE удалены."))
-        if t_lower == "-приветствие":
+            return finish_command(m, "rules_off", bot.send_message(cid, "🗑 Правила Лизы удалены."))
+        if t_lower in ("-приветствие", "приветствие удалить"):
             if not _cleanup_dk_allowed(cid, uid, "приветствие"): return reply_no_rights(m)
             _save_welcome(cid, "")
-            return finish_command(m, "welcome_off", bot.send_message(cid, "🗑 Приветствие VIBE удалено."))
+            return finish_command(m, "welcome_off", bot.send_message(cid, "🗑 Приветствие Лизы удалено."))
+        if t_lower in ("приветствие помощь", "приветствие?"):
+            txt = ("👋 <b>ЛИЗА — ПРИВЕТСТВИЕ</b>\n\n"
+                   "<code>+Приветствие</code>\nТекст приветствия со следующей строки\n\n"
+                   "<code>Приветствие</code> — показать\n"
+                   "<code>Приветствие удалить</code> — удалить\n"
+                   "<code>+Автоудаление приветствий 10 минут</code> — автоудаление.")
+            return finish_command(m, "welcome_help", bot.send_message(cid, txt, parse_mode="HTML"), ttl=120)
+        if t_lower.startswith("+автоудаление приветствий"):
+            if not _cleanup_dk_allowed(cid, uid, "приветствие"): return reply_no_rights(m)
+            period = _parse_period_words(t_lower) or 300
+            period = max(5, min(period, 86400))
+            set_chat_setting(cid, "welcome_delete_after", period)
+            return finish_command(m, "welcome_delete_on", bot.send_message(cid, f"🧹 Автоудаление приветствий: <b>{period//60} мин.</b>", parse_mode="HTML"), ttl=10)
+        if t_lower == "-автоудаление приветствий":
+            if not _cleanup_dk_allowed(cid, uid, "приветствие"): return reply_no_rights(m)
+            set_chat_setting(cid, "welcome_delete_after", 0)
+            return finish_command(m, "welcome_delete_off", bot.send_message(cid, "🧹 Автоудаление приветствий выключено."), ttl=10)
+        if t_lower in ("приветствуй", "поприветствуй") or t_lower.startswith(("приветствуй ", "поприветствуй ")):
+            welcome = _get_chat_setting(cid, "welcome", "")
+            if not welcome:
+                return finish_command(m, "welcome_missing", bot.send_message(cid, "⚠️ Сначала установите приветствие: <code>+Приветствие</code>.", parse_mode="HTML"), ttl=15)
+            target = m.reply_to_message.from_user if m.reply_to_message else None
+            if target is None:
+                return finish_command(m, "welcome_target", bot.send_message(cid, "⚠️ Используйте команду ответом на сообщение пользователя.", parse_mode="HTML"), ttl=15)
+            rendered = _render_template(welcome, target)
+            msg = bot.send_message(cid, rendered, parse_mode="HTML")
+            return finish_command(m, "welcome_manual", msg, ttl=180)
+        if t_lower in ("приветствуй всех снова", "приветствуй снова", "приветствуй всех по новой"):
+            with state_lock:
+                data = db_get("chat_activity", {})
+                chat = data.setdefault(str(cid), {})
+                for row in chat.values(): row["greeted"] = False
+                db_set("chat_activity", data)
+            return finish_command(m, "welcome_reset", bot.send_message(cid, "♻️ История приветствий Лизы сброшена."))
 
         # --- Закреп / откреп ---
         if t_lower in ["!закреп", "закреп", "!пин", "пин", "/pin"]:
@@ -579,6 +718,44 @@ def text_handler(m):
             try: bot.set_chat_description(cid, "")
             except Exception: pass
             return finish_command(m, "desc_off", bot.send_message(cid, "🗑 Описание VIBE удалено."), ttl=15)
+
+        # --- Чат-ссылка в стиле Iris ---
+        if t_lower in ("+чат ссылка по заявкам", "чат ссылка по заявкам"):
+            if not _cleanup_dk_allowed(cid, uid, "чат ссылка"): return reply_no_rights(m)
+            try:
+                link = bot.create_chat_invite_link(cid, name="Лиза — заявки", creates_join_request=True)
+                set_chat_setting(cid, "chat_link", link.invite_link)
+                return finish_command(m, "chat_link_requests", bot.send_message(cid, f"🔗 <b>Ссылка по заявкам Лизы:</b>\n{html.escape(link.invite_link)}", parse_mode="HTML"), ttl=120)
+            except Exception:
+                return finish_command(m, "chat_link_err", bot.send_message(cid, "⚠️ Не удалось создать ссылку по заявкам. Проверь права Лизы."), ttl=15)
+        if t_lower in ("+чат ссылка", "чат ссылка"):
+            if not _cleanup_dk_allowed(cid, uid, "чат ссылка"): return reply_no_rights(m)
+            try:
+                link = bot.create_chat_invite_link(cid, name="Лиза")
+                set_chat_setting(cid, "chat_link", link.invite_link)
+                return finish_command(m, "chat_link", bot.send_message(cid, f"🔗 <b>Ссылка Лизы:</b>\n{html.escape(link.invite_link)}", parse_mode="HTML"), ttl=120)
+            except Exception:
+                return finish_command(m, "chat_link_err", bot.send_message(cid, "⚠️ Не удалось создать ссылку. Проверь права Лизы."), ttl=15)
+        if t_lower == "-чат ссылка":
+            if not _cleanup_dk_allowed(cid, uid, "чат ссылка"): return reply_no_rights(m)
+            link = _get_chat_setting(cid, "chat_link", "")
+            if link:
+                try: bot.revoke_chat_invite_link(cid, link)
+                except Exception: pass
+            set_chat_setting(cid, "chat_link", "")
+            return finish_command(m, "chat_link_off", bot.send_message(cid, "🗑 Ссылка чата удалена из настроек Лизы."), ttl=10)
+        if t_lower in ("базовая настройка", "настройки помощь", "помощь настройки"):
+            txt = ("⚙️ <b>БАЗОВАЯ НАСТРОЙКА ЛИЗЫ</b>\n\n"
+                   "<code>+Правила</code> / <code>+Приветствие</code>\n"
+                   "<code>+Чат ссылка</code>\n"
+                   "<code>+модер 1-5</code>\n"
+                   "<code>ДК команда ранг</code>\n"
+                   "<code>+Триггер событие ранг</code>\n"
+                   "<code>+Автокик молчунов 7 дней</code>\n"
+                   "<code>Кик неактив 2 месяца</code>\n"
+                   "<code>+Ссылки</code> / <code>-Ссылки</code>\n\n"
+                   "Все команды поддерживают !, . и /.")
+            return finish_command(m, "setup_help", bot.send_message(cid, txt, parse_mode="HTML"), ttl=180)
 
         # --- Дополнительные настройки чата ---
         if t_lower.startswith("+автокик") or t_lower=="-автокик" or t_lower.startswith("-автокик"):
@@ -685,6 +862,16 @@ def text_handler(m):
             try: bot.delete_message(cid, m.message_id)
             except: pass
             return
+
+        # Текстовый аналог /settings.
+        if t_lower in ("настройки", "настройка"):
+            if m.chat.type == "private":
+                return reply_no_rights(m)
+            if get_admin_rank(cid, uid) < 5:
+                return reply_no_rights(m)
+            msg = bot.send_message(cid, "🎛 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЛИЗОЙ</b> ✨\n\nНастрой характер и функции бота под свой чат:",
+                                   reply_markup=main_kb(cid, False), parse_mode="HTML")
+            return finish_command(m, "settings", msg)
 
         # --- ДОСТУП КОМАНД (IRIS-STYLE) ---
         if cmd == "мой" and len(parts) >= 3 and parts[1].lower() == "доступ" and parts[2].lower() in ["команд", "команды"]:

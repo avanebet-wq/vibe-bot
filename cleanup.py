@@ -52,10 +52,24 @@ def _set_chat_rules(cid, text):
 def _get_chat_setting(cid, key, default=""):
     return db_get("chat_settings", {}).get(str(cid), {}).get(key, default)
 
-def _render_template(text, user):
-    if not text: return ""
+def _render_template(text, user, plural=False):
+    """Рендер шаблонов Лизы: {имя}, {ж|м|мн} и простые {ж|м} окончания."""
+    if not text:
+        return ""
     name = html.escape((user.first_name or "участник") + ((" " + user.last_name) if user.last_name else ""))
-    return text.replace("{имя}", name)
+    out = text.replace("{имя}", name)
+    # Telegram не передаёт боту пол пользователя. Поэтому одиночное обращение
+    # по умолчанию использует мужскую форму, а множественная форма доступна
+    # при обработке нескольких вступивших.
+    def gender_repl(match):
+        vals = [v.strip() for v in match.group(1).split("|")]
+        if len(vals) >= 3:
+            return vals[2] if plural else vals[1]
+        if len(vals) == 2:
+            return vals[1]
+        return vals[0] if vals else ""
+    out = re.sub(r"\{([^{}|]+\|[^{}]+)\}", gender_repl, out)
+    return out
 
 def _save_welcome(cid, text):
     data = db_get("chat_settings", {})

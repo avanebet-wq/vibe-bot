@@ -51,7 +51,14 @@ def handle_trigger_command(m):
         if low=="-капс" or low.startswith("-капс "):
             q=low.split(); pct=int(q[1]) if len(q)>1 and q[1].isdigit() else 80; ln=int(q[2]) if len(q)>2 and q[2].isdigit() else 5; set_chat_setting(cid,"caps_percent",max(1,min(100,pct))); set_chat_setting(cid,"caps_min_length",max(1,ln)); return bot.reply_to(m,f"🔠 Антикапс: <b>{pct}%</b> при длине от <b>{ln}</b> символов.",parse_mode="HTML")
         if low=="+капс": set_chat_setting(cid,"caps_percent",101); return bot.reply_to(m,"🔠 Антикапс выключен.")
-    if low=="триггер помощь":return bot.reply_to(m,"⚙️ <b>VIBE-ТРИГГЕРЫ</b>\n\n<code>+триггер маты 1</code>\n<code>Мут 10 минут / Маты запрещены</code>\n\nСобытия: маты, ссылки, стикеры, капс, варнлимит, дуэль, кубы, русская рулетка.\nДо 3 действий на событие.\n<code>Триггеры</code> — список\n<code>Триггер маты</code> — детали\n<code>-Триггер маты</code> — удалить",parse_mode="HTML")
+    if low in ("триггер помощь", "триггеры помощь", "триги помощь"):
+        return bot.reply_to(m,"⚙️ <b>ЛИЗА — ТРИГГЕРЫ</b>\n\n"
+            "<code>+Триггер (событие) (приоритет)</code>\n"
+            "<code>Мут 10 минут / Причина</code>\n\n"
+            "События: маты, ссылки, стикеры, капс, варнлимит, дуэль, кубы, русская рулетка.\n"
+            "До 3 автоматических действий на событие.\n\n"
+            "<code>Триггеры</code> — список\n<code>Триггер маты</code> — детали\n"
+            "<code>-Триггер маты</code> — удалить.",parse_mode="HTML")
     if low in ("триггеры","триги"):
         d=get_chat_triggers(cid);return bot.reply_to(m,"🧩 <b>VIBE-ТРИГГЕРЫ</b>\n"+("Пока ничего не настроено." if not d else "\n".join(f"• <b>{html.escape(v['event'])}</b> — {len(v.get('actions',[]))} действий" for v in d.values())),parse_mode="HTML")
     if low.startswith("триггер "):

@@ -12,9 +12,9 @@ BOSSES = [int(x.strip()) for x in BOSSES_STR.split(",") if x.strip().isdigit()]
 
 # Константы
 AI_MODEL = "inclusionai/ling-3.0-flash-fin:free"
-ALLOWED_GROUPS_RAW = ["4374303475", "3514059820"]
-ALLOWED_GROUPS = [4374303475, -4374303475, -1004374303475, 3514059820, -3514059820, -1003514059820]
-DENIED_MSG = "🚫 Я работаю только в группе VIBE, у групах з мого списку та в особистих чатах зі своїми творцями."
+ALLOWED_GROUPS_RAW = []  # Доступ разрешён во всех группах, куда добавлена Лиза.
+ALLOWED_GROUPS = []
+DENIED_MSG = ""
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 # ИИ Промпт
