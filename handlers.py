@@ -457,6 +457,8 @@ def cmd_words_status(m):
 
 def cb_handler(c):
     try:
+        if _economy_named_check_callback(c): return
+        if _economy_check_callback(c): return
         if c.data.startswith("giveaway:join:"):
             try:
                 _,_,cid_s,gid=c.data.split(":",3); cid=int(cid_s); uid=c.from_user.id
@@ -864,6 +866,30 @@ def _entertainment_command(m, t_lower):
             return bot.send_message(cid,"🛑 Предложение дуэли отменено.")
         return bot.send_message(cid,"ℹ️ Активного предложения дуэли нет.")
 
+    if t_lower in ("дуэли стата", "стата дуэлей"):
+        stats=db_get("duel_stats",{}).get(str(cid),{}) or {}
+        rows=[]
+        for sid,row in stats.items():
+            wins=int(row.get("wins",0)); draws=int(row.get("draws",0)); losses=int(row.get("losses",0))
+            rows.append((wins,draws,losses,int(sid)))
+        rows.sort(key=lambda x:(x[0],-x[2]), reverse=True)
+        lines=[f"{i}. {get_user_mention(user_id=sid)} — 🏆 {w} / 🤝 {d} / 💥 {l}" for i,(w,d,l,sid) in enumerate(rows[:20],1)]
+        return bot.send_message(cid,"⚔️ <b>СТАТИСТИКА ДУЭЛЕЙ</b>\n\n"+("\n".join(lines) if lines else "Дуэлей пока не было."),parse_mode="HTML")
+
+    if t_lower in ("!дуэли сброс", "сброс дуэлей"):
+        if get_admin_rank(cid,uid)<3: return reply_no_rights(m)
+        stats=db_get("duel_stats",{}) or {}; stats.pop(str(cid),None); db_set("duel_stats",stats)
+        return bot.send_message(cid,"🧹 Статистика дуэлей чата сброшена.")
+
+    if t_lower.startswith("дуэли исход"):
+        if get_admin_rank(cid,uid)<3: return reply_no_rights(m)
+        value=t_lower.split(None,2)[-1].strip() if len(t_lower.split())>=3 else "0"
+        allowed=("0","кик","бан минута","бан 10 минут","бан час","бан сутки","бан навсегда")
+        if value not in allowed:
+            return bot.send_message(cid,"⚠️ Варианты: <code>0</code>, <code>кик</code>, <code>бан минута</code>, <code>бан 10 минут</code>, <code>бан час</code>, <code>бан сутки</code>, <code>бан навсегда</code>.",parse_mode="HTML")
+        set_chat_setting(cid,"duel_outcome",value)
+        return bot.send_message(cid,f"⚔️ Исход дуэлей установлен: <b>{html.escape(value)}</b>",parse_mode="HTML")
+
     if t_lower.startswith("кубы ") or t_lower == "кубы да":
         if not command_allowed_by_dk(cid, uid, "кубы"):
             return reply_no_rights(m)
@@ -896,6 +922,55 @@ def _entertainment_command(m, t_lower):
         a,b=(0,nums[0]) if len(nums)==1 else (nums[0],nums[1])
         if a>b: a,b=b,a
         return bot.send_message(cid,f"🎲 Случайное число: <b>{random.randint(a,b)}</b>",parse_mode="HTML")
+
+    # Iris-style simple random utilities. They intentionally require no external API.
+    if t_lower.startswith(("инфа ", "!инфа ")):
+        if not command_allowed_by_dk(cid, uid, "инфа"): return reply_no_rights(m)
+        text=m.text.split(None,1)[1].strip()
+        return bot.send_message(cid, f"🔮 Шанс: <b>{random.randint(0,100)}%</b>\n\n{html.escape(text)}", parse_mode="HTML")
+
+    if t_lower.startswith(("выбери ", "!выбери ")):
+        if not command_allowed_by_dk(cid, uid, "выбери"): return reply_no_rights(m)
+        raw=m.text.split(None,1)[1].strip()
+        options=[x.strip() for x in re.split(r"\s+(?:или|либо)\s+|\s*\|\s*", raw, flags=re.I) if x.strip()]
+        if len(options)<2:
+            return bot.send_message(cid,"⚠️ Формат: <code>Выбери чай или кофе</code>",parse_mode="HTML")
+        return bot.send_message(cid, f"🎯 Я выбираю: <b>{html.escape(random.choice(options))}</b>", parse_mode="HTML")
+
+    if t_lower.startswith(("данет ", "!данет ")):
+        if not command_allowed_by_dk(cid, uid, "данет"): return reply_no_rights(m)
+        question=m.text.split(None,1)[1].strip()
+        answer=random.choice(("Да", "Нет", "Неопределённо"))
+        return bot.send_message(cid, f"🔮 {html.escape(question)}\n\n<b>{answer}</b>", parse_mode="HTML")
+
+    if t_lower.startswith(("жребий ", "!жребий ")):
+        raw=m.text.split(None,1)[1].strip()
+        parts=[x for x in raw.split() if x]
+        targets=[]
+        for part in parts:
+            if part.startswith("@"):
+                targets.append(part)
+        if len(targets)<2:
+            return bot.send_message(cid,"⚠️ Укажи минимум двух участников через @username.")
+        return bot.send_message(cid, f"🎲 Жребий выбрал: <b>{html.escape(random.choice(targets))}</b>", parse_mode="HTML")
+
+    if t_lower.startswith(("кто ", "!кто ")):
+        question=m.text.split(None,1)[1].strip()
+        members=db_get("chat_members",{}).get(str(cid),{}) or {}
+        candidates=[]
+        for sid,info in members.items():
+            try: suid=int(sid)
+            except Exception: continue
+            if suid!=uid and isinstance(info,dict) and not info.get("is_bot",False):
+                candidates.append((suid,info.get("name","Участник")))
+        if candidates:
+            chosen=random.choice(candidates)
+            return bot.send_message(cid, f"👀 {html.escape(question)} — {get_user_mention(user_id=chosen[0], first_name=chosen[1])}", parse_mode="HTML")
+        return bot.send_message(cid, f"👀 {html.escape(question)} — {get_user_mention(m.from_user)}", parse_mode="HTML")
+
+    if t_lower in ("пинг", "кинг", "пиу", "бот"):
+        replies={"пинг":"🏓 Понг!", "кинг":"👑 Конг!", "пиу":"🔫 Пау!", "бот":"🤖 Я на месте!"}
+        return bot.send_message(cid, replies[t_lower])
 
     if t_lower.startswith("!скажи") or t_lower.startswith("скажи"):
         text=m.text.split(None,1)[1] if len(m.text.split(None,1))>1 else ""
@@ -945,7 +1020,17 @@ def _duel_accept(m):
     if not d or d["to"]!=uid: return bot.send_message(cid,"⚠️ Для тебя нет активного предложения дуэли.")
     state.pop(key,None); _save_fun_state(state)
     winner,loser=(d["from"],uid) if random.choice([True,False]) else (uid,d["from"])
-    try: bot.ban_chat_member(cid,loser); bot.unban_chat_member(cid,loser,only_if_banned=True)
+    stats=db_get("duel_stats",{}) or {}; chat=stats.setdefault(str(cid),{})
+    for sid in (d["from"], uid):
+        chat.setdefault(str(sid), {"wins":0,"draws":0,"losses":0})
+    chat[str(winner)]["wins"] += 1; chat[str(loser)]["losses"] += 1
+    db_set("duel_stats",stats)
+    outcome=get_v(cid,"duel_outcome","кик") or "кик"
+    try:
+        if outcome != "0":
+            bot.ban_chat_member(cid,loser)
+            if outcome != "бан навсегда":
+                bot.unban_chat_member(cid,loser,only_if_banned=True)
     except Exception: pass
     return bot.send_message(cid,f"⚔️ Дуэль окончена! Победитель: {get_user_mention(user_id=winner)}\n💥 Проигравший: {get_user_mention(user_id=loser)}")
 
@@ -1056,6 +1141,64 @@ def _notes_timers_command(m, t_lower, t):
 # ============================================================
 
 
+def _economy_named_check_callback(call):
+    try:
+        if not call or not getattr(call, "data", "").startswith("iris_named_check:"): return False
+        code=call.data.split(":",1)[1]
+        checks=db_get("iriski_named_checks",{}) or {}; item=checks.get(code)
+        if not item: bot.answer_callback_query(call.id,"Именной чек недоступен.",show_alert=True); return True
+        uid=call.from_user.id
+        if int(item.get("to_uid",0)) != uid:
+            bot.answer_callback_query(call.id,"Этот чек предназначен другому пользователю.",show_alert=True); return True
+        if item.get("claimed"):
+            bot.answer_callback_query(call.id,"Чек уже активирован.",show_alert=True); return True
+        balances=db_get("iriski_balances",{}) or {}; row=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
+        amount=int(item.get("amount",0)); row["balance"]+=amount; row["earned"]+=amount
+        item.update({"claimed":True,"claimed_by":uid,"claimed_at":int(time.time())}); checks[code]=item
+        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
+        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"именной чек","peer_id":int(item.get("from_uid",0)),"peer_name":"чек "+code,"ts":int(time.time())}
+        db_set("iriski_named_checks",checks); db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
+        bot.answer_callback_query(call.id,f"Получено {amount} ирисок!",show_alert=True)
+        try: bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
+        except Exception: pass
+        return True
+    except Exception as e:
+        logging.error(f"[NAMED CHECK CALLBACK] {e}",exc_info=True)
+        try: bot.answer_callback_query(call.id,"Не удалось активировать чек.",show_alert=True)
+        except Exception: pass
+        return True
+
+
+def _economy_check_callback(call):
+    try:
+        if not call or not getattr(call, "data", "").startswith("iris_check:"): return False
+        code=call.data.split(":",1)[1]; checks=db_get("iriski_checks",{}) or {}; item=checks.get(code)
+        if not item: bot.answer_callback_query(call.id,"Чек уже недоступен.",show_alert=True); return True
+        uid=call.from_user.id
+        if uid==int(item.get("from_uid",0)): bot.answer_callback_query(call.id,"Нельзя активировать собственный чек.",show_alert=True); return True
+        if item.get("claimed"):
+            bot.answer_callback_query(call.id,"Этот чек уже забрали.",show_alert=True); return True
+        if int(item.get("created",0))+7*86400 < int(time.time()):
+            bot.answer_callback_query(call.id,"Срок действия чека истёк.",show_alert=True); return True
+        balances=db_get("iriski_balances",{}) or {}; row=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
+        amount=int(item.get("amount",0)); row["balance"]=int(row.get("balance",0))+amount; row["earned"]=int(row.get("earned",0))+amount
+        item.update({"claimed":True,"claimed_by":uid,"claimed_at":int(time.time())}); checks[code]=item
+        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
+        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"получение чека","peer_id":int(item.get("from_uid",0)),"peer_name":"чек "+code,"ts":int(time.time())}
+        if len(tx)>5000:
+            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+        db_set("iriski_checks",checks); db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
+        bot.answer_callback_query(call.id,f"Получено {amount} ирисок!",show_alert=True)
+        try: bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
+        except Exception: pass
+        return True
+    except Exception as e:
+        logging.error(f"[ECONOMY CHECK] {e}",exc_info=True)
+        try: bot.answer_callback_query(call.id,"Не удалось активировать чек.",show_alert=True)
+        except Exception: pass
+        return True
+
+
 def _economy_command(m, t_lower, t):
     """Функциональная локальная валюта: баланс, ежедневный бонус, переводы и топ."""
     cid, uid = m.chat.id, m.from_user.id
@@ -1064,7 +1207,64 @@ def _economy_command(m, t_lower, t):
     row = balances.setdefault(key, {"balance": 0, "daily": 0, "earned": 0, "spent": 0})
     row.setdefault("balance", 0); row.setdefault("daily", 0); row.setdefault("earned", 0); row.setdefault("spent", 0)
 
-    if t_lower in ("баланс", "мой баланс", "ириски", "мои ириски", "монеты"):
+    if t_lower in ("история ирисок", "история монет", "транзакции"):
+        tx = db_get("iriski_transactions", {}) or {}
+        own = [v for v in tx.values() if int(v.get("uid", 0)) == uid]
+        own.sort(key=lambda x: int(x.get("ts", 0)), reverse=True)
+        lines=[]
+        for item in own[:10]:
+            sign = "+" if item.get("direction") == "in" else "-"
+            peer = item.get("peer_name") or "пользователь"
+            dt = datetime.fromtimestamp(int(item.get("ts",0)), KYIV_TZ).strftime("%d.%m %H:%M")
+            lines.append(f"{sign}{int(item.get('amount',0))} — {html.escape(str(item.get('kind','операция')))} — {html.escape(peer)} <i>{dt}</i>")
+        txt="💰 <b>ИСТОРИЯ ИРИСОК</b>\n\n"+("\n".join(lines) if lines else "Операций пока нет.")
+        return finish_command(m,"economy_history",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
+
+    if t_lower in ("бкоин", "бкоины", "мой бкоин", "мои бкоины"):
+        gold = db_get("iris_gold", {}) or {}
+        amount = int(gold.get(str(uid), 0) or 0)
+        return finish_command(m, "bcoin", bot.send_message(cid, f"🪙 У тебя <b>{amount}</b> Бкоинов.", parse_mode="HTML"), ttl=15)
+
+    # Локальный обмен валют: 100 ирисок = 1 Бкоин. Обратный обмен запрещён,
+    # чтобы Бкоин оставался отдельной редкой валютой без бесконечной инфляции.
+    if t_lower in ("курс бкоина", "курс бкоин", "обмен", "обмен валют"):
+        return finish_command(m, "bcoin_rate", bot.send_message(cid, "🪙 <b>КУРС БКОИНА</b>\n\n100 ирисок → 1 Бкоин.\nКоманда: <code>Обмен 100 ирисок</code>", parse_mode="HTML"), ttl=20)
+
+    if t_lower.startswith("обмен "):
+        import re as _re
+        mm=_re.fullmatch(r"обмен\s+(\d+)\s*(ирисок|ириска|ириски|бкоинов|бкоин)?", t_lower)
+        if mm:
+            amount=max(0,int(mm.group(1))); unit=(mm.group(2) or "ирисок")
+            if amount <= 0:
+                return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Сумма должна быть больше нуля."),ttl=10)
+            if unit.startswith("бкоин"):
+                return finish_command(m,"exchange_info",bot.send_message(cid,"🪙 Обратный обмен Бкоинов в ириски отключён."),ttl=15)
+            if amount % 100:
+                return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Обмен идёт кратно 100 ирискам: <code>Обмен 500 ирисок</code>.",parse_mode="HTML"),ttl=15)
+            bcoins=amount//100
+            if int(row.get("balance",0)) < amount:
+                return finish_command(m,"exchange_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Нужно <b>{amount}</b>.",parse_mode="HTML"),ttl=15)
+            gold=db_get("iris_gold",{}) or {}
+            gold[key]=int(gold.get(key,0) or 0)+bcoins
+            row["balance"]-=amount; row["spent"]=int(row.get("spent",0) or 0)+amount
+            balances[key]=row
+            tx=db_get("iriski_transactions",{}) or {}; now=int(time.time()); stamp=str(time.time_ns())
+            tx[stamp]={"uid":uid,"amount":amount,"direction":"out","kind":"обмен на Бкоины","peer_id":0,"peer_name":f"+{bcoins} Бкоин","ts":now}
+            if len(tx)>5000:
+                tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+            db_set("iriski_balances",balances); db_set("iris_gold",gold); db_set("iriski_transactions",tx)
+            return finish_command(m,"exchange_ok",bot.send_message(cid,f"🪙 Обмен выполнен: <b>-{amount}</b> ирисок → <b>+{bcoins}</b> Бкоин.\n💰 Остаток: <b>{row['balance']}</b>",parse_mode="HTML"),ttl=20)
+
+    # Баланс конкретного пользователя: «Ириски @user» / «Баланс @user» или reply.
+    if t_lower.startswith(("ириски @", "баланс @", "монеты @")) or (m.reply_to_message and t_lower in ("ириски", "баланс", "монеты")):
+        parts=t.split()
+        target_uid,target_name,_args=extract_target_and_args(m,parts)
+        if target_uid:
+            target=balances.get(str(target_uid),{"balance":0}) or {"balance":0}
+            mention=get_user_mention(user_id=target_uid, first_name=target_name or "пользователь")
+            return finish_command(m,"balance_user",bot.send_message(cid,f"💰 {mention}: <b>{int(target.get('balance',0))}</b> ирисок.",parse_mode="HTML"),ttl=15)
+
+    if t_lower in ("баланс", "мой баланс", "ириски", "мои ириски", "монеты", "мой кошелёк", "мой кошелек", "кошелёк", "кошелек"):
         return finish_command(m, "balance", bot.send_message(cid, f"💰 У тебя <b>{int(row['balance'])}</b> ирисок.", parse_mode="HTML"), ttl=15)
 
     if t_lower in ("бонус", "ежедневный бонус", "бонус дня"):
@@ -1075,7 +1275,12 @@ def _economy_command(m, t_lower, t):
         import random
         amount=random.randint(20,50)
         row["balance"] += amount; row["earned"] += amount; row["daily"] = now
-        balances[key]=row; db_set("iriski_balances",balances)
+        balances[key]=row
+        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
+        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"ежедневный бонус","peer_id":0,"peer_name":"Лиза","ts":now}
+        if len(tx)>5000:
+            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+        db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
         return finish_command(m,"daily_bonus",bot.send_message(cid,f"🎁 Ежедневный бонус: <b>+{amount}</b> ирисок!\n💰 Баланс: <b>{row['balance']}</b>",parse_mode="HTML"),ttl=20)
 
     if t_lower in ("топ ирисок", "топ монет", "топ баланса"):
@@ -1091,13 +1296,63 @@ def _economy_command(m, t_lower, t):
         txt="💰 <b>ТОП ИРИСОК</b>\n\n"+("\n".join(lines) if lines else "Пока никто не накопил ириски.")
         return finish_command(m,"economy_top",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
 
-    if t_lower.startswith(("передать ириски ", "перевести ириски ", "дать ириски ")):
+    if t_lower in ("мои чеки", "мои чеки активные", "активные чеки"):
+        checks=db_get("iriski_checks",{}) or {}
+        now=int(time.time())
+        own=[(code,v) for code,v in checks.items() if int(v.get("from_uid",0))==uid and not v.get("claimed") and int(v.get("created",0))+7*86400>=now]
+        own.sort(key=lambda x:int(x[1].get("created",0)), reverse=True)
+        if not own:
+            txt="🎁 <b>МОИ ЧЕКИ</b>\n\nАктивных чеков нет."
+        else:
+            lines=[]
+            for code,v in own[:20]:
+                left=max(0,int(v.get("created",0))+7*86400-now)
+                lines.append(f"• <code>{html.escape(code)}</code> — <b>{int(v.get('amount',0))}</b> ирисок, ещё {left//86400}д {(left%86400)//3600}ч")
+            txt="🎁 <b>МОИ ЧЕКИ</b>\n\n"+"\n".join(lines)
+        return finish_command(m,"checks_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
+
+    if t_lower in ("где мои ириски", "куда пропали мои ириски", "!история ирисок", "!путешествие ирисок"):
+        tx=db_get("iriski_transactions",{}) or {}; own=[v for v in tx.values() if int(v.get("uid",0))==uid]
+        own.sort(key=lambda x:int(x.get("ts",0)), reverse=True)
+        lines=[]
+        for item in own[:15]:
+            sign="+" if item.get("direction")=="in" else "-"
+            dt=datetime.fromtimestamp(int(item.get("ts",0)), KYIV_TZ).strftime("%d.%m %H:%M")
+            lines.append(f"{sign}{int(item.get('amount',0))} — {html.escape(str(item.get('kind','операция')))} — {html.escape(str(item.get('peer_name') or 'Лиза'))} <i>{dt}</i>")
+        txt="🚀 <b>ГДЕ МОИ ИРИСКИ</b>\n\n"+("\n".join(lines) if lines else "История пока пуста.")
+        return finish_command(m,"iris_travel",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
+
+    if t_lower.startswith(("запретить переводы ", "разрешить переводы ")) or t_lower in ("разрешить переводы всем", "запретить переводы всем"):
+        deny=db_get("iriski_transfer_denies",{}) or {}; parts=t.split()
+        if t_lower.endswith("всем"):
+            if t_lower.startswith("запретить"):
+                deny[str(uid)]={"all":True,"users":deny.get(str(uid),{}).get("users",{})}
+                msg="🚫 Теперь тебе запрещены переводы ирисок от всех пользователей."
+            else:
+                deny.pop(str(uid),None); msg="✅ Переводы ирисок от всех пользователей разрешены."
+        else:
+            target_uid,target_name,_=extract_target_and_args(m,parts)
+            if not target_uid: return finish_command(m,"transfer_rule_err",bot.send_message(cid,"⚠️ Укажи пользователя или используй «... переводов всем»."),ttl=10)
+            rowdeny=deny.setdefault(str(uid),{"all":False,"users":{}}); users=rowdeny.setdefault("users",{})
+            if t_lower.startswith("запретить"):
+                users[str(target_uid)]=True; msg=f"🚫 Переводы от {get_user_mention(user_id=target_uid,first_name=target_name or 'пользователь')} запрещены."
+            else:
+                users.pop(str(target_uid),None)
+                if not rowdeny.get("all") and not users: deny.pop(str(uid),None)
+                msg=f"✅ Переводы от {get_user_mention(user_id=target_uid,first_name=target_name or 'пользователь')} разрешены."
+        db_set("iriski_transfer_denies",deny)
+        return finish_command(m,"transfer_rules",bot.send_message(cid,msg,parse_mode="HTML"),ttl=15)
+
+    if t_lower.startswith(("передать ириски ", "перевести ириски ", "дать ириски ", "подарить ириски ")):
         parts=t.split()
         target_uid,target_name,args=extract_target_and_args(m,parts)
         if not target_uid:
             return finish_command(m,"transfer_err",bot.send_message(cid,"⚠️ Укажи пользователя: <code>Передать ириски @user 50</code> или ответь на его сообщение.",parse_mode="HTML"),ttl=15)
         if target_uid==uid:
             return finish_command(m,"transfer_err",bot.send_message(cid,"⚠️ Нельзя переводить ириски самому себе."),ttl=10)
+        deny=db_get("iriski_transfer_denies",{}) or {}; policy=deny.get(str(target_uid),{}) or {}
+        if policy.get("all") or bool((policy.get("users") or {}).get(str(uid))):
+            return finish_command(m,"transfer_err",bot.send_message(cid,"🚫 Этот пользователь запретил получать от тебя переводы ирисок."),ttl=15)
         try: amount=int(args[-1])
         except Exception: amount=0
         if amount<=0 or amount>1000000:
@@ -1107,12 +1362,193 @@ def _economy_command(m, t_lower, t):
             return finish_command(m,"transfer_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Баланс: {row['balance']}"),ttl=10)
         row["balance"]-=amount; row["spent"]+=amount
         target["balance"]+=amount; target["earned"]+=amount
-        db_set("iriski_balances",balances)
+        tx=db_get("iriski_transactions",{}) or {}
+        stamp=str(time.time_ns())
+        peer_name=target_name or "пользователь"
+        tx[stamp+"o"]={"uid":uid,"amount":amount,"direction":"out","kind":"перевод","peer_id":target_uid,"peer_name":peer_name,"ts":int(time.time())}
+        tx[stamp+"i"]={"uid":target_uid,"amount":amount,"direction":"in","kind":"перевод","peer_id":uid,"peer_name":m.from_user.first_name or "пользователь","ts":int(time.time())}
+        if len(tx)>5000:
+            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+        db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
         mention=get_user_mention(user_id=target_uid,first_name=target_name or "пользователь")
         return finish_command(m,"transfer",bot.send_message(cid,f"💸 Передано <b>{amount}</b> ирисок → {mention}.\n💰 Твой баланс: <b>{row['balance']}</b>",parse_mode="HTML"),ttl=20)
+    if t_lower.startswith(("+именной чек ", "именной чек ")):
+        parts=t.split(); target_uid,target_name,args=extract_target_and_args(m,parts)
+        if not target_uid:
+            return finish_command(m,"named_check_err",bot.send_message(cid,"⚠️ Формат: <code>+Именной чек 100 @user</code> или ответом на сообщение.",parse_mode="HTML"),ttl=10)
+        try: amount=int(args[0]) if args else int(parts[2])
+        except Exception: amount=0
+        if amount<=0 or amount>1000000 or int(row.get("balance",0))<amount:
+            return finish_command(m,"named_check_err",bot.send_message(cid,"⚠️ Проверь сумму и свой баланс."),ttl=10)
+        import secrets
+        code=secrets.token_hex(6).upper(); checks=db_get("iriski_named_checks",{}) or {}; now=int(time.time())
+        row["balance"]-=amount; row["spent"]+=amount
+        checks[code]={"amount":amount,"from_uid":uid,"to_uid":target_uid,"to_name":target_name or "пользователь","created":now,"claimed":False}
+        tx=db_get("iriski_transactions",{}) or {}; tx[str(time.time_ns())]={"uid":uid,"amount":amount,"direction":"out","kind":"именной чек","peer_id":target_uid,"peer_name":target_name or "пользователь","ts":now}
+        db_set("iriski_balances",balances); db_set("iriski_named_checks",checks); db_set("iriski_transactions",tx)
+        kb=types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton(f"🎁 Забрать {amount} ирисок",callback_data=f"iris_named_check:{code}"))
+        mention=get_user_mention(user_id=target_uid,first_name=target_name or "пользователь")
+        return finish_command(m,"named_check_create",bot.send_message(cid,f"🛡 <b>ИМЕННОЙ ЧЕК</b>\nПолучатель: {mention}\nСумма: <b>{amount}</b> ирисок\nКод: <code>{code}</code>",parse_mode="HTML",reply_markup=kb),ttl=30)
+
+    if t_lower.startswith(("чек ", "создать чек ", "чек на ")):
+        try: amount=int(t.split()[-1])
+        except Exception: amount=0
+        if amount<=0 or amount>1000000: return finish_command(m,"check_err",bot.send_message(cid,"⚠️ Укажи сумму: <code>Чек 100</code>",parse_mode="HTML"),ttl=10)
+        if int(row.get("balance",0))<amount: return finish_command(m,"check_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Баланс: {row['balance']}"),ttl=10)
+        import secrets
+        code=secrets.token_hex(4).upper(); checks=db_get("iriski_checks",{}) or {}
+        while code in checks: code=secrets.token_hex(4).upper()
+        now=int(time.time())
+        row["balance"]-=amount; row["spent"]+=amount; balances[key]=row
+        checks[code]={"amount":amount,"from_uid":uid,"created":now,"claimed":False}
+        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
+        tx[stamp]={"uid":uid,"amount":amount,"direction":"out","kind":"создание чека","peer_id":0,"peer_name":"чек "+code,"ts":now}
+        if len(tx)>5000:
+            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+        db_set("iriski_balances",balances); db_set("iriski_checks",checks); db_set("iriski_transactions",tx)
+        kb=types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton(f"🎁 Забрать {amount} ирисок",callback_data=f"iris_check:{code}"))
+        return finish_command(m,"check_create",bot.send_message(cid,f"🎁 <b>ЧЕК</b>\nСумма: <b>{amount}</b> ирисок\nКод: <code>{code}</code>\nСрок действия: 7 дней",parse_mode="HTML",reply_markup=kb),ttl=30)
+    if t_lower.startswith("отменить чек ") or t_lower.startswith("удалить чек "):
+        code=t.split()[-1].upper(); checks=db_get("iriski_checks",{}) or {}; item=checks.get(code)
+        if not item or int(item.get("from_uid",0))!=uid or item.get("claimed"):
+            return finish_command(m,"check_cancel_err",bot.send_message(cid,"⚠️ Чек не найден или уже использован."),ttl=10)
+        amount=int(item.get("amount",0)); row["balance"]+=amount; row["spent"]=max(0,int(row.get("spent",0))-amount)
+        checks.pop(code,None)
+        tx=db_get("iriski_transactions",{}) or {}
+        stamp=str(time.time_ns())
+        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"отмена чека","peer_id":0,"peer_name":"чек "+code,"ts":int(time.time())}
+        if len(tx)>5000:
+            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+        db_set("iriski_checks",checks); db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
+        return finish_command(m,"check_cancel",bot.send_message(cid,f"↩️ Чек <code>{html.escape(code)}</code> отменён. Возвращено <b>{amount}</b> ирисок.",parse_mode="HTML"),ttl=15)
     return None
 
 
+
+
+def _exchange_command(m, t_lower, t):
+    """Локальная мини-биржа Лизы: Ирис-голд и лимитные/рыночные заявки."""
+    cid, uid = m.chat.id, m.from_user.id
+    if not (t_lower == "биржа" or t_lower.startswith("биржа ")):
+        return None
+    gold = db_get("iris_gold", {}) or {}
+    balances = db_get("iriski_balances", {}) or {}
+    orders = db_get("iris_exchange_orders", {}) or {}
+    history = db_get("iris_exchange_history", []) or []
+    key = str(uid)
+    wallet = balances.setdefault(key, {"balance": 0, "daily": 0, "earned": 0, "spent": 0})
+    wallet.setdefault("balance", 0)
+    gold[key] = int(gold.get(key, 0) or 0)
+
+    def save():
+        db_set("iris_gold", gold); db_set("iriski_balances", balances)
+        db_set("iris_exchange_orders", orders); db_set("iris_exchange_history", history[-500:])
+
+    def price_now():
+        prices=[]
+        for o in orders.values():
+            if o.get("status") == "open" and int(o.get("price",0))>0:
+                prices.append(int(o["price"]))
+        if prices: return max(1, sum(prices)//len(prices))
+        return 10
+
+    def book_lines():
+        buys=sorted([o for o in orders.values() if o.get("status")=="open" and o.get("side")=="buy"], key=lambda o:(-int(o["price"]), int(o["created"])))
+        sells=sorted([o for o in orders.values() if o.get("status")=="open" and o.get("side")=="sell"], key=lambda o:(int(o["price"]), int(o["created"])))
+        lines=["🟢 <b>ПОКУПКА</b>"]
+        lines += [f"{int(o['price'])} 🪙 × {int(o['qty'])}" for o in buys[:5]] or ["—"]
+        lines += ["", "🔴 <b>ПРОДАЖА</b>"]
+        lines += [f"{int(o['price'])} 🪙 × {int(o['qty'])}" for o in sells[:5]] or ["—"]
+        return "\n".join(lines)
+
+    if t_lower == "биржа" or t_lower == "биржа стакан":
+        return finish_command(m,"exchange_book",bot.send_message(cid,
+            f"📈 <b>ИРИС-БИРЖА</b>\n\nКурс: <b>{price_now()}</b> ирисок за 🪙\n\n{book_lines()}",parse_mode="HTML"),ttl=30)
+
+    if t_lower in ("биржа клава", "биржа клавиатура"):
+        return finish_command(m,"exchange_help",bot.send_message(cid,
+            "📈 <b>ИРИС-БИРЖА</b>\n\n"
+            "<code>Биржа купить 10 12</code> — заявка на покупку\n"
+            "<code>Биржа продать 10 15</code> — заявка на продажу\n"
+            "<code>Биржа купить по рынку 10</code>\n"
+            "<code>Биржа продать по рынку 10</code>\n"
+            "<code>Биржа мои заявки</code>\n<code>Биржа отменить CODE</code>\n<code>Биржа график</code>",parse_mode="HTML"),ttl=30)
+
+    if t_lower == "биржа мои заявки":
+        own=[(oid,o) for oid,o in orders.items() if int(o.get("uid",0))==uid and o.get("status")=="open"]
+        if not own: txt="📋 <b>МОИ ЗАЯВКИ</b>\n\nОткрытых заявок нет."
+        else:
+            lines=[f"• <code>{oid}</code> — {'покупка' if o['side']=='buy' else 'продажа'} {o['qty']} 🪙 по {o['price']}" for oid,o in own[:20]]
+            txt="📋 <b>МОИ ЗАЯВКИ</b>\n\n"+"\n".join(lines)
+        return finish_command(m,"exchange_orders",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
+
+    if t_lower.startswith("биржа отменить "):
+        oid=t.split()[-1].upper(); o=orders.get(oid)
+        if not o or int(o.get("uid",0))!=uid or o.get("status")!="open":
+            return finish_command(m,"exchange_cancel_err",bot.send_message(cid,"⚠️ Заявка не найдена."),ttl=10)
+        qty=int(o["qty"]); price=int(o["price"])
+        if o["side"]=="buy":
+            wallet["balance"] += qty*price
+        else:
+            gold[key] += qty
+        o["status"]="cancelled"; save()
+        return finish_command(m,"exchange_cancel",bot.send_message(cid,f"↩️ Заявка <code>{oid}</code> отменена.",parse_mode="HTML"),ttl=15)
+
+    if t_lower in ("биржа график", "биржа график 7", "биржа график 14", "биржа график 30") or t_lower.startswith("биржа график "):
+        days=7
+        try: days=max(1,min(90,int(t.split()[-1])))
+        except: pass
+        now=int(time.time()); cutoff=now-days*86400
+        vals=[(int(x.get("ts",0)),int(x.get("price",0))) for x in history if int(x.get("ts",0))>=cutoff and int(x.get("price",0))>0]
+        if vals:
+            lo=min(v for _,v in vals); hi=max(v for _,v in vals); last=vals[-1][1]
+            txt=f"📊 <b>ГРАФИК ИРИС-ГОЛД</b> за {days} дн.\n\nМин.: <b>{lo}</b>\nМакс.: <b>{hi}</b>\nТекущий: <b>{last}</b>"
+        else: txt=f"📊 За последние {days} дн. сделок ещё нет. Текущий курс: <b>{price_now()}</b>"
+        return finish_command(m,"exchange_chart",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
+
+    # Market order: immediate matching, remainder is not placed in book.
+    market = re.match(r"^биржа\s+(купить|продать)\s+по\s+рынку\s+(\d+)$", t_lower)
+    if market:
+        side="buy" if market.group(1)=="купить" else "sell"; qty=int(market.group(2))
+        if qty<=0 or qty>100000: return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Некорректное количество."),ttl=10)
+        opposite=sorted([(oid,o) for oid,o in orders.items() if o.get("status")=="open" and o.get("side")!=side], key=lambda x:(int(x[1]["price"]),int(x[1]["created"])))
+        if side=="sell": opposite.reverse()
+        remaining=qty; spent=0; got=0
+        for oid,o in opposite:
+            if remaining<=0: break
+            take=min(remaining,int(o["qty"])); p=int(o["price"]); total=take*p
+            if side=="buy" and wallet["balance"]<total: break
+            if side=="sell" and gold[key]<take: break
+            buyer=uid if side=="buy" else int(o["uid"]); seller=int(o["uid"]) if side=="buy" else uid
+            b=balances.setdefault(str(buyer),{"balance":0,"daily":0,"earned":0,"spent":0}); b.setdefault("balance",0)
+            gold.setdefault(str(seller),0); gold.setdefault(str(buyer),0)
+            b["balance"]-=total; balances[str(buyer)]=b
+            sb=balances.setdefault(str(seller),{"balance":0,"daily":0,"earned":0,"spent":0}); sb.setdefault("balance",0); sb["balance"]+=total; balances[str(seller)]=sb
+            gold[str(buyer)]+=take; gold[str(seller)]-=take
+            o["qty"]-=take; remaining-=take; spent+=total; got+=take
+            if o["qty"]<=0: o["status"]="filled"
+            history.append({"ts":int(time.time()),"price":p,"qty":take,"buyer":buyer,"seller":seller})
+        save()
+        if got==0: return finish_command(m,"exchange_empty",bot.send_message(cid,"⚠️ Подходящих заявок на рынке нет."),ttl=10)
+        return finish_command(m,"exchange_market",bot.send_message(cid,f"✅ Исполнено: <b>{got}</b> 🪙 на сумму <b>{spent}</b> ирисок.",parse_mode="HTML"),ttl=20)
+
+    limit=re.match(r"^биржа\s+(купить|продать)\s+(\d+)\s+(\d+)$", t_lower)
+    if limit:
+        side="buy" if limit.group(1)=="купить" else "sell"; qty=int(limit.group(2)); price=int(limit.group(3))
+        if qty<=0 or qty>100000 or price<=0 or price>1000000:
+            return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Проверь количество и цену."),ttl=10)
+        oid=secrets.token_hex(4).upper()
+        if side=="buy":
+            total=qty*price
+            if int(wallet["balance"])<total: return finish_command(m,"exchange_err",bot.send_message(cid,f"⚠️ Нужно {total} ирисок, у тебя {wallet['balance']}.") ,ttl=10)
+            wallet["balance"]-=total
+        else:
+            if gold[key]<qty: return finish_command(m,"exchange_err",bot.send_message(cid,f"⚠️ Недостаточно 🪙. Баланс: {gold[key]}") ,ttl=10)
+            gold[key]-=qty
+        orders[oid]={"uid":uid,"side":side,"qty":qty,"price":price,"created":int(time.time()),"status":"open"}
+        save()
+        return finish_command(m,"exchange_limit",bot.send_message(cid,f"📌 Заявка <code>{oid}</code> создана: {'покупка' if side=='buy' else 'продажа'} {qty} 🪙 по {price}.",parse_mode="HTML"),ttl=20)
+    return None
 
 def _vip_catalog_command(m, t_lower, t):
     """Functional local VIP/catalog module. No external payments or purchase links."""
@@ -1158,7 +1594,11 @@ def _vip_catalog_command(m, t_lower, t):
         bal["balance"]-=cost; bal["spent"]=int(bal.get("spent",0))+cost
         balances[str(uid)]=bal
         vips[str(uid)]={"until":until,"name":m.from_user.first_name or "Пользователь"}
-        db_set("iriski_balances",balances); db_set("user_vip",vips)
+        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
+        tx[stamp]={"uid":uid,"amount":cost,"direction":"out","kind":"покупка VIP","peer_id":uid,"peer_name":"VIP","ts":now}
+        if len(tx)>5000:
+            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+        db_set("iriski_balances",balances); db_set("user_vip",vips); db_set("iriski_transactions",tx)
         return finish_command(m,"vip_buy",bot.send_message(cid,f"💎 VIP куплен на <b>{days} дней</b> за <b>{cost}</b> ирисок.\nДо: <b>{datetime.fromtimestamp(until,KYIV_TZ).strftime('%d.%m.%Y %H:%M')}</b>",parse_mode="HTML"),ttl=25)
 
     if t_lower in ("кто вип", "кто випы", "випы"):
@@ -1170,6 +1610,42 @@ def _vip_catalog_command(m, t_lower, t):
         rows.sort(reverse=True)
         lines=[f"• {get_user_mention(user_id=u,first_name=n)} — до {datetime.fromtimestamp(until,KYIV_TZ).strftime('%d.%m.%Y %H:%M')}" for until,u,n in rows[:20]]
         return finish_command(m,"vip_list",bot.send_message(cid,"💎 <b>VIP УЧАСТНИКИ</b>\n\n"+("\n".join(lines) if lines else "Активных VIP нет."),parse_mode="HTML"),ttl=60)
+
+    # Подарить VIP другому участнику за свои ириски.
+    if t_lower.startswith(("подарить vip ", "подарить вип ", "vip подарок ", "вип подарок ")):
+        parts=t.split()
+        target_uid,target_name,args=extract_target_and_args(m,parts)
+        if not target_uid:
+            return finish_command(m,"vip_gift_err",bot.send_message(cid,"⚠️ Укажи пользователя через @username или reply."),ttl=10)
+        if target_uid==uid:
+            return finish_command(m,"vip_gift_err",bot.send_message(cid,"⚠️ VIP самому себе дарить не нужно — можно купить его обычной командой."),ttl=10)
+        try: days=int(args[-1]) if args and args[-1].isdigit() else 7
+        except Exception: days=7
+        prices={7:200,30:650}
+        if days not in prices:
+            return finish_command(m,"vip_gift_err",bot.send_message(cid,"⚠️ Подарить можно VIP на 7 или 30 дней."),ttl=10)
+        cost=prices[days]
+        bal=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
+        if int(bal.get("balance",0))<cost:
+            return finish_command(m,"vip_gift_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Нужно <b>{cost}</b>, у тебя <b>{int(bal.get('balance',0))}</b>.",parse_mode="HTML"),ttl=15)
+        old=vip_until(target_uid); until=max(now,old)+days*86400
+        bal["balance"]-=cost; bal["spent"]=int(bal.get("spent",0))+cost
+        balances[str(uid)]=bal; vips[str(target_uid)]={"until":until,"name":target_name or "Пользователь"}
+        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
+        tx[stamp]={"uid":uid,"amount":cost,"direction":"out","kind":"подарок VIP","peer_id":target_uid,"peer_name":target_name or "пользователь","ts":now}
+        if len(tx)>5000:
+            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
+        db_set("iriski_balances",balances); db_set("user_vip",vips); db_set("iriski_transactions",tx)
+        mention=get_user_mention(user_id=target_uid,first_name=target_name or "пользователь")
+        msg = (f"🎁 {mention} подарен VIP на <b>{days} дней</b>.\n"
+               f"💎 Действует до: <b>{datetime.fromtimestamp(until,KYIV_TZ).strftime('%d.%m.%Y %H:%M')}</b>\n"
+               f"💰 Списано: <b>{cost}</b> ирисок.")
+        return finish_command(m,"vip_gift",bot.send_message(cid,msg,parse_mode="HTML"),ttl=25)
+
+    if t_lower in ("моя экономика", "экономика", "статистика ирисок"):
+        balrow = balances.get(str(uid), {}) or {}
+        return finish_command(m,"economy_info",bot.send_message(cid,
+            f"💰 <b>ТВОЯ ЭКОНОМИКА</b>\n\nБаланс: <b>{int(balrow.get('balance',0))}</b> ирисок\nПолучено: <b>{int(balrow.get('earned',0))}</b>\nПотрачено: <b>{int(balrow.get('spent',0))}</b>", parse_mode="HTML"),ttl=20)
 
     if t_lower.startswith("+vip ") or t_lower.startswith("+вип ") or t_lower.startswith("-vip ") or t_lower.startswith("-вип "):
         if get_admin_rank(cid,uid)<4: return reply_no_rights(m)
@@ -1407,7 +1883,15 @@ def _bookmarks_command(m, t_lower, t):
             lines=[]
             for i,b in enumerate(data,1):
                 title=html.escape(b.get("title") or "Сообщение")
-                lines.append(f"<b>{i}</b>. {title} — <code>{b.get('chat_id')}</code>/{b.get('message_id')}")
+                chat_id = int(b.get("chat_id", 0) or 0)
+                message_id = int(b.get("message_id", 0) or 0)
+                # Для супергрупп Telegram поддерживает внутреннюю ссылку вида t.me/c/... .
+                if chat_id < 0 and message_id:
+                    internal_id = str(abs(chat_id)).replace("100", "", 1) if str(abs(chat_id)).startswith("100") else str(abs(chat_id))
+                    jump = f"https://t.me/c/{internal_id}/{message_id}"
+                    lines.append(f"<b>{i}</b>. <a href=\"{jump}\">{title}</a>")
+                else:
+                    lines.append(f"<b>{i}</b>. {title} — <code>{chat_id}</code>/{message_id}")
             txt="🔖 <b>Твои закладки</b>\n\n"+"\n".join(lines)
         return finish_command(m,"bookmarks_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
     if re.fullmatch(r"(?:удалить|удали) закладку \d+",t_lower):
@@ -1674,6 +2158,21 @@ def _reports_command(m, t_lower, t):
     return None
 
 def text_handler(m):
+    t=(m.text or "").strip(); t_lower=t.lower()
+    if t_lower in ("позвать всех","тегнуть всех","упомянуть всех","массовое упоминание"):
+        cid,uid=m.chat.id,m.from_user.id
+        if get_admin_rank(cid,uid)<3: return reply_no_rights(m)
+        members=db_get("chat_members",{}) or {}; chat=members.get(str(cid),{}) if isinstance(members,dict) else {}
+        ids=[]
+        for suid,data in chat.items() if isinstance(chat,dict) else []:
+            try: x=int(suid)
+            except Exception: continue
+            if x!=uid: ids.append((x,(data or {}).get("name","пользователь") if isinstance(data,dict) else "пользователь"))
+        ids=ids[:30]
+        if not ids: return finish_command(m,"mass_mention_empty",bot.send_message(cid,"ℹ️ Нет сохранённых участников для упоминания."),ttl=15)
+        mentions=" ".join(get_user_mention(user_id=x,first_name=name) for x,name in ids)
+        suffix="" if len(ids)<30 else "\n\n⚠️ Показаны первые 30 участников."
+        return finish_command(m,"mass_mention",bot.send_message(cid,"📣 <b>Созыв участников</b>\n\n"+mentions+suffix,parse_mode="HTML"),ttl=30)
     try:
         if m.text:
             fun_result = _entertainment_command(m, m.text.lower().strip())
@@ -1731,6 +2230,71 @@ def text_handler(m):
             if value.isdigit() and value not in [str(x) for x in ids]: ids.append(value)
             set_chat_setting(cid,"antispam_ids",ids)
             return finish_command(m,"antispam_add",bot.send_message(cid,"🛡 Пользователь добавлен в локальную базу антиспама."),ttl=15)
+
+        # --- IRIS: завещание и внутренняя передача создателя ---
+        # В Telegram бот не может сам передать реального владельца чата.
+        # Поэтому эти команды управляют именно внутренним 5 рангом Лизы.
+        if t_lower.startswith(("+завещание ", "+наследство ")):
+            if get_admin_rank(cid, uid) <= 0:
+                return reply_no_rights(m)
+            target_uid, target_name, _ = extract_target_and_args(m, parts)
+            if not target_uid or int(target_uid) == uid:
+                return finish_command(m, "will_err", bot.send_message(cid, "⚠️ Укажи другого пользователя ответом, @username или ID."), ttl=10)
+            wills = db_get("wills", {}) or {}
+            wills[str(uid)] = {"beneficiary_id": int(target_uid), "beneficiary_name": target_name or "Пользователь", "created": int(time.time())}
+            db_set("wills", wills)
+            return finish_command(m, "will_set", bot.send_message(cid, f"📜 Завещание сохранено. Наследник: {get_user_mention(user_id=target_uid, first_name=target_name)}.", parse_mode="HTML"), ttl=20)
+
+        if t_lower in ("моё завещание", "мое завещание", "моё наследство", "мое наследство"):
+            will = (db_get("wills", {}) or {}).get(str(uid))
+            if not will:
+                return finish_command(m, "will_none", bot.send_message(cid, "📜 Завещание не оформлено."), ttl=15)
+            dt = datetime.fromtimestamp(int(will.get("created", 0)), KYIV_TZ).strftime("%d.%m.%Y %H:%M")
+            return finish_command(m, "will_view", bot.send_message(cid, f"📜 <b>ТВОЁ ЗАВЕЩАНИЕ</b>\n\nНаследник: {get_user_mention(user_id=int(will['beneficiary_id']), first_name=will.get('beneficiary_name','Пользователь'))}\nОформлено: {dt}", parse_mode="HTML"), ttl=30)
+
+        if t_lower in ("-завещание", "-наследство"):
+            wills = db_get("wills", {}) or {}
+            if str(uid) not in wills:
+                return finish_command(m, "will_none", bot.send_message(cid, "ℹ️ Завещание уже отсутствует."), ttl=10)
+            wills.pop(str(uid), None); db_set("wills", wills)
+            return finish_command(m, "will_delete", bot.send_message(cid, "🗑 Завещание аннулировано."), ttl=15)
+
+        if t_lower.startswith(("вступить в наследство ", "принять наследство ")):
+            target_uid, target_name, _ = extract_target_and_args(m, parts)
+            if not target_uid or int(target_uid) == uid:
+                return finish_command(m, "inherit_err", bot.send_message(cid, "⚠️ Укажи пользователя, оставившего завещание."), ttl=10)
+            wills = db_get("wills", {}) or {}
+            will = wills.get(str(target_uid))
+            if not will or int(will.get("beneficiary_id", 0)) != uid:
+                return finish_command(m, "inherit_denied", bot.send_message(cid, "⚠️ Для тебя нет действующего завещания от этого пользователя."), ttl=15)
+            # Стоимость вступления по модели Iris: 50 ирисок.
+            balances = db_get("iriski_balances", {}) or {}
+            row = balances.setdefault(str(uid), {"balance": 0, "daily": 0, "earned": 0, "spent": 0})
+            row.setdefault("balance", 0); row.setdefault("earned", 0); row.setdefault("spent", 0)
+            if int(row.get("balance", 0)) < 50:
+                return finish_command(m, "inherit_money", bot.send_message(cid, "💰 Для вступления в наследство нужно 50 ирисок."), ttl=15)
+            row["balance"] -= 50; row["spent"] += 50; balances[str(uid)] = row
+            tx = db_get("iriski_transactions", {}) or {}; stamp = str(time.time_ns()); now = int(time.time())
+            tx[stamp] = {"uid": uid, "amount": 50, "direction": "out", "kind": "вступление в наследство", "peer_id": int(target_uid), "peer_name": target_name or will.get("beneficiary_name", "наследодатель"), "ts": now}
+            db_set("iriski_balances", balances); db_set("iriski_transactions", tx)
+            set_admin_rank(cid, uid, 5)
+            wills.pop(str(target_uid), None); db_set("wills", wills)
+            return finish_command(m, "inherit_ok", bot.send_message(cid, f"👑 Наследство принято. Внутренний ранг Лизы восстановлен до <b>5 — Создатель</b>.\n💰 Списано: 50 ирисок.\n\n⚠️ Реального владельца Telegram-чата эта команда не передаёт.", parse_mode="HTML"), ttl=30)
+
+        if t_lower in ("!передать создателя", "передать создателя", "!передать владельца", "передать владельца"):
+            if get_admin_rank(cid, uid) < 5:
+                return reply_no_rights(m)
+            target_uid, target_name, _ = extract_target_and_args(m, parts)
+            if not target_uid:
+                return finish_command(m, "transfer_creator_err", bot.send_message(cid, "⚠️ Укажи нового создателя ответом, @username или ID."), ttl=10)
+            if int(target_uid) == uid:
+                return finish_command(m, "transfer_creator_err", bot.send_message(cid, "⚠️ Ты уже являешься создателем."), ttl=10)
+            set_admin_rank(cid, uid, 4)
+            set_admin_rank(cid, target_uid, 5)
+            transfer = db_get("creator_transfers", {}) or {}
+            transfer[str(cid)] = {"from_id": uid, "to_id": int(target_uid), "to_name": target_name or "Пользователь", "date": int(time.time())}
+            db_set("creator_transfers", transfer)
+            return finish_command(m, "transfer_creator", bot.send_message(cid, f"👑 Внутренний создатель Лизы передан: {get_user_mention(user_id=target_uid, first_name=target_name)}.\n\n⚠️ Для передачи реального владельца Telegram-чата используй штатную функцию Telegram.", parse_mode="HTML"), ttl=30)
 
         # --- Дополнительные команды Iris: модерация и управление доступом ---
         # Эти команды обрабатываются до общего диспетчера, чтобы поддерживать
@@ -2102,6 +2666,46 @@ def text_handler(m):
             except Exception:
                 return finish_command(m, "chat_lock_err", bot.send_message(cid, "⚠️ Не удалось изменить режим чата. Проверь права бота."), ttl=15)
 
+        # --- Доп. Telegram/форумные настройки ---
+        if t_lower in ("!ветка", "ветка", "топик инфо", "ветка инфо"):
+            thread_id=getattr(m,"message_thread_id",None)
+            if not thread_id:
+                return finish_command(m,"topic_info",bot.send_message(cid,"🧵 Команда работает внутри форумной ветки/топика."),ttl=15)
+            try:
+                topic=bot.get_forum_topic(cid, thread_id)
+                title=getattr(topic,"name",None) or "Без названия"
+            except Exception:
+                title="Текущая ветка"
+            return finish_command(m,"topic_info",bot.send_message(cid,f"🧵 <b>ВЕТКА</b>\nНазвание: <b>{html.escape(str(title))}</b>\nID: <code>{thread_id}</code>",parse_mode="HTML"),ttl=30)
+
+        if t_lower in ("+тг тег", "-тг тег", "тг тег") or t_lower.startswith("+тг тег ") or t_lower.startswith("-тг тег "):
+            if not _cleanup_dk_allowed(cid,uid,"настройки"): return reply_no_rights(m)
+            if t_lower == "тг тег":
+                tag=get_v(cid,"tg_tag","") or ""
+                return finish_command(m,"tg_tag",bot.send_message(cid,f"🏷 Тег чата: <b>{html.escape(tag)}</b>" if tag else "🏷 Тег чата не задан.",parse_mode="HTML"),ttl=20)
+            if t_lower == "-тг тег":
+                set_chat_setting(cid,"tg_tag","")
+                return finish_command(m,"tg_tag_off",bot.send_message(cid,"🏷 Тег чата очищен."),ttl=15)
+            tag=t.split(" ",2)[2].strip() if len(t.split(" ",2))>=3 else ""
+            tag=tag[:64]
+            if not tag:
+                return finish_command(m,"tg_tag_err",bot.send_message(cid,"⚠️ Формат: <code>+Тг тег Название</code>",parse_mode="HTML"),ttl=15)
+            set_chat_setting(cid,"tg_tag",tag)
+            return finish_command(m,"tg_tag_set",bot.send_message(cid,f"🏷 Тег чата установлен: <b>{html.escape(tag)}</b>",parse_mode="HTML"),ttl=15)
+
+        if t_lower in ("инвайты", "инвайты чат", "кто приглашал"):
+            invites=db_get("chat_invites",{}) or {}
+            chat_inv=invites.get(str(cid),{}) or {}
+            rows=[]
+            for target,data in chat_inv.items():
+                rows.append((int(data.get("date",0)),target,data))
+            rows.sort(reverse=True)
+            lines=[]
+            for ts,target,data in rows[:20]:
+                inv=get_user_mention(user_id=int(data.get("inviter_id",0)),first_name=data.get("inviter_name") or "пользователь")
+                lines.append(f"• {inv} → <code>{target}</code>")
+            return finish_command(m,"invites",bot.send_message(cid,"📨 <b>ПОСЛЕДНИЕ ИНВАЙТЫ</b>\n\n"+("\n".join(lines) if lines else "История приглашений пока пуста."),parse_mode="HTML"),ttl=45)
+
         # --- IRIS: форумные топики, короткие списки и анти-рейд ---
         if t_lower in ("антирейд", "антирейд помощь") or t_lower.startswith(("+антирейд", "-антирейд")):
             if not _cleanup_dk_allowed(cid, uid, "антирейд"):
@@ -2288,13 +2892,115 @@ def text_handler(m):
             set_personal_dk(cid, target_uid, code, enabled)
             return finish_command(m, "ldk", bot.send_message(cid, f"👤 <b>Личный доступ</b>\n{get_user_mention(user_id=target_uid, first_name=target_name)}: <code>{html.escape(code)}</code> — {'разрешено' if enabled else 'запрещено'}.", parse_mode="HTML"))
 
+        # Импорт/расширенный просмотр доступа команд (локальная реализация Iris-style).
+        if t_lower.startswith("импорт команд ") or t_lower.startswith("импорт дк "):
+            if get_admin_rank(cid, uid) < 5:
+                return reply_no_rights(m)
+            try:
+                source_id = int(t.split(None, 2)[2].strip())
+            except Exception:
+                return finish_command(m, "dk_import_err", bot.send_message(cid, "⚠️ Формат: <code>Импорт команд ID_чата</code>.", parse_mode="HTML"), ttl=15)
+            if source_id == cid:
+                return finish_command(m, "dk_import_err", bot.send_message(cid, "⚠️ Нельзя импортировать настройки из этого же чата."), ttl=10)
+            all_access = db_get("command_access", {})
+            source = all_access.get(str(source_id))
+            if source is None:
+                return finish_command(m, "dk_import_err", bot.send_message(cid, "⚠️ Для указанного чата нет сохранённых пользовательских настроек ДК."), ttl=15)
+            old = dict(all_access.get(str(cid), {}))
+            all_access[str(cid)] = dict(source)
+            db_set("command_access", all_access)
+            save_dk_log(cid, uid, fname, "*import*", len(old), len(source))
+            return finish_command(m, "dk_import", bot.send_message(cid, f"📥 <b>ДК импортирован</b>\nСкопировано настроек: <b>{len(source)}</b>.\nИсточник: <code>{source_id}</code>", parse_mode="HTML"), ttl=20)
+
+        # Лог ДК: фильтрация по команде/автору, как в Iris.
+        if t_lower.startswith("лог дк") or t_lower.startswith("лог доступа"):
+            if get_admin_rank(cid, uid) < 5:
+                return reply_no_rights(m)
+            q = t.split(None, 2)[2].strip().lower() if len(t.split(None, 2)) >= 3 else ""
+            rows = db_get("dk_log", {}).get(str(cid), [])
+            if q:
+                if q.startswith("@"): q = q[1:]
+                rows = [r for r in rows if q in str(r.get("command", "")).lower() or q in str(r.get("name", "")).lower() or q == str(r.get("uid", ""))]
+            rows = rows[-50:]
+            if not rows:
+                text = "⚙️ <b>ЛОГ ДК</b>\n\nЗаписей не найдено."
+            else:
+                lines=[]
+                for r in reversed(rows):
+                    dt=datetime.fromtimestamp(float(r.get("date",0)),KYIV_TZ).strftime("%d.%m %H:%M")
+                    lines.append(f"• {dt} — {html.escape(str(r.get('name','Пользователь')))}: <code>{html.escape(str(r.get('command','?')))}</code> {r.get('old','?')} → {r.get('new','?')}")
+                text="⚙️ <b>ЛОГ ДК</b>\n\n"+"\n".join(lines)
+            return finish_command(m,"dk_log_filter",bot.send_message(cid,text,parse_mode="HTML"),ttl=90)
+
+        # Просмотр пользователей, которым выдано исключение для конкретной команды.
+        if t_lower.startswith("лдк ") and len(t.split()) >= 2 and not t_lower.startswith(("лдк помощь",)):
+            words=t.split()
+            if len(words) == 2 and words[1].lower() not in ("@",):
+                if get_admin_rank(cid, uid) < 5:
+                    return reply_no_rights(m)
+                code=DK_ALIASES.get(words[1].lower(), words[1].lower())
+                pdata=db_get("personal_command_access", {}).get(str(cid), {})
+                rows=[]
+                for suid, rules in pdata.items():
+                    if code in rules:
+                        rows.append(f"• <code>{suid}</code> — {'разрешено' if rules[code] else 'запрещено'}")
+                text=f"👤 <b>ЛДК: {html.escape(code)}</b>\n\n"+("\n".join(rows[:100]) if rows else "Исключений для этой команды нет.")
+                return finish_command(m,"ldk_command_users",bot.send_message(cid,text,parse_mode="HTML"),ttl=60)
+
         # Проверка ДК для известных команд выполняется до их обработчика.
         dk_code = DK_ALIASES.get(cmd, DK_COMMANDS.get(cmd))
         if dk_code and not command_allowed_by_dk(cid, uid, dk_code):
             return reply_no_rights(m)
 
+        # Дополнительные Iris-команды управления доступом.
+        if cmd in ("!сброс команд", "сброс команд"):
+            if get_admin_rank(cid, uid) < 5: return reply_no_rights(m)
+            data=db_get("command_access", {}); old=data.pop(str(cid), {})
+            db_set("command_access", data)
+            save_dk_log(cid, uid, fname, "*", len(old), 0)
+            return finish_command(m,"dk_reset",bot.send_message(cid,"♻️ Настройки доступа команд сброшены к значениям по умолчанию."),ttl=20)
+
+        if cmd in ("+команды", "-команды"):
+            if get_admin_rank(cid, uid) < 5: return reply_no_rights(m)
+            enabled=cmd=="+команды"; set_chat_setting(cid,"dk_notifications",enabled)
+            return finish_command(m,"dk_notifications",bot.send_message(cid,f"🔔 Оповещения о доступности команд {'включены' if enabled else 'выключены'}."),ttl=15)
+
+        if cmd in ("+рп", "-рп", "+браки", "-браки"):
+            if get_admin_rank(cid, uid) < 5: return reply_no_rights(m)
+            key="rp_enabled" if cmd.endswith("рп") else "marriages_enabled"
+            enabled=cmd.startswith("+"); set_chat_setting(cid,key,enabled)
+            label="РП-команды" if key=="rp_enabled" else "Браки"
+            return finish_command(m,"module_toggle",bot.send_message(cid,f"⚙️ {label} {'включены' if enabled else 'выключены'}."),ttl=15)
+
+        if cmd in ("+дк в лс", "-дк в лс"):
+            if get_admin_rank(cid, uid) < 5: return reply_no_rights(m)
+            enabled=cmd.startswith("+"); set_chat_setting(cid,"dk_in_private",enabled)
+            return finish_command(m,"dk_private",bot.send_message(cid,f"💬 Редактирование ДК через ЛС {'разрешено' if enabled else 'запрещено'}."),ttl=15)
+
+        if cmd.startswith("лдк ") and cmd not in ("лдк помощь",):
+            parts2=t.split()
+            if len(parts2)==2:
+                target_uid,target_name,_=extract_target_and_args(m,parts2)
+                if target_uid:
+                    rows=get_personal_dk(cid,target_uid)
+                    lines=[f"• <code>{html.escape(str(k))}</code> — {'разрешено' if v else 'запрещено'}" for k,v in rows.items()]
+                    text=f"👤 <b>ЛИЧНЫЙ ДОСТУП</b> {get_user_mention(user_id=target_uid,first_name=target_name)}\n\n"+("\n".join(lines) if lines else "Исключений нет.")
+                    return finish_command(m,"ldk_view",bot.send_message(cid,text,parse_mode="HTML"),ttl=30)
+
+        if cmd in ("все лдк", "!сброс всех лдк"):
+            if get_admin_rank(cid, uid) < 5: return reply_no_rights(m)
+            data=db_get("personal_command_access", {})
+            if cmd=="!сброс всех лдк":
+                data.pop(str(cid),None); db_set("personal_command_access",data)
+                return finish_command(m,"ldk_reset_all",bot.send_message(cid,"♻️ Все личные доступы команд сброшены."),ttl=15)
+            users=data.get(str(cid),{})
+            if not users: text="👤 Личных исключений нет."
+            else:
+                text="👤 <b>ВСЕ ЛИЧНЫЕ ДОСТУПЫ</b>\n\n"+"\n".join(f"• <code>{u}</code>: {len(v)} настроек" for u,v in list(users.items())[:50])
+            return finish_command(m,"ldk_all",bot.send_message(cid,text,parse_mode="HTML"),ttl=30)
+
         # --- СИСТЕМА АДМИНИСТРИРОВАНИЯ ---
-        if cmd in ["+модер", "!модер", "+админ", "повысить", "понизить", "разжаловать", "снять", "снять всех", "пред", "варн", "/warn", "предупреждение", "варны", "мои варны", "варнлист", "снять варны", "снять все варны", "снять варн", "/unwarn", "мут", "/mute", "муты", "проверить мут", "снять мут", "/unmute", "бан", "/ban", "банлист", "разбан", "вернуть", "снятьбан", "/unban", "причина", "кик", "/kick", "кик тихо", "амнистия", "кто", "кто админ", "админы", "кто назначил", "созвать модеров", "позвать модеров", "модер лог", "мой модер лог", "права", "/rank_perms", "rank_perms", "дк", "/дк", "!дк", ".дк", "доступ", "мой дк", "мдк", "мой доступ команд", "доступ команд", "+дк", "-дк", "+лдк", "-лдк", "лог дк", "твой модер лог", "модер лог от"]:
+        if cmd in ["+модер", "!модер", "+админ", "повысить", "понизить", "разжаловать", "снять", "снять всех", "пред", "варн", "/warn", "предупреждение", "варны", "мои варны", "варнлист", "снять варны", "снять все варны", "снять варн", "/unwarn", "мут", "/mute", "муты", "проверить мут", "снять мут", "/unmute", "бан", "/ban", "банлист", "разбан", "вернуть", "снятьбан", "/unban", "причина", "кик", "/kick", "кик тихо", "амнистия", "кто", "кто админ", "админы", "кто назначил", "созвать модеров", "позвать модеров", "модер лог", "мой модер лог", "права", "/rank_perms", "rank_perms", "дк", "/дк", "!дк", ".дк", "доступ", "мой дк", "мдк", "мой доступ команд", "доступ команд", "+дк", "-дк", "+лдк", "-лдк", "лог дк", "импорт команд", "импорт дк", "лог доступа", "твой модер лог", "модер лог от"]:
             if cmd == "кто" and len(parts) > 1 and parts[1].lower() == "админ": cmd = "кто админ"
             if cmd == "снять" and len(parts) > 1 and parts[1].lower() == "мут": cmd = "снять мут"
             elif cmd == "снять" and len(parts) > 1 and parts[1].lower() == "пред": cmd = "снять пред"
@@ -2750,6 +3456,10 @@ def text_handler(m):
         if report_result is not None:
             return report_result
 
+        exchange_result = _exchange_command(m, t_lower, t)
+        if exchange_result is not None:
+            return exchange_result
+
         economy_result = _economy_command(m, t_lower, t)
         if economy_result is not None:
             return economy_result
@@ -2864,6 +3574,43 @@ def text_handler(m):
             lines=[f"{i}. {get_user_mention(user_id=u, first_name=n)} — <b>{c}</b>" for i,(c,u,n) in enumerate(rows[:15],1)]
             txt=f"📈 <b>СТАТИСТИКА ЧАТА ЗА {days} ДН.</b>\n\nСообщений: <b>{total}</b>\n" + ("\n".join(lines) if lines else "Нет данных за этот период.")
             return finish_command(m,"chat_stats_period",bot.send_message(cid,txt,parse_mode="HTML"),ttl=90)
+        # Топ N за период — совместимый локальный вариант Iris: сутки/неделя/месяц/вся.
+        m_top_period = re.match(r"^топ\s+(\d+)(?:\s+)?(?:за\s+)?(сутки|день|неделю|неделя|месяц|всю|вся|всё|все)?$", t_lower)
+        if m_top_period:
+            limit = max(1, min(100, int(m_top_period.group(1))))
+            period_word = (m_top_period.group(2) or "вся")
+            period = 1 if period_word in ("сутки", "день") else 7 if period_word in ("неделю", "неделя") else 30 if period_word == "месяц" else 36500
+            cutoff = datetime.fromtimestamp(time.time() - period * 86400, KYIV_TZ).date()
+            activity = db_get("chat_activity", {}).get(str(cid), {})
+            rows = []
+            for suid, row in activity.items():
+                daily = row.get("daily", {}) or {}
+                count = 0
+                for day, value in daily.items():
+                    try:
+                        if datetime.strptime(day, "%Y-%m-%d").date() >= cutoff:
+                            count += int(value or 0)
+                    except Exception:
+                        continue
+                if count:
+                    rows.append((count, int(suid), row.get("name", "Участник")))
+            rows.sort(key=lambda x: x[0], reverse=True)
+            label = "сутки" if period == 1 else "неделю" if period == 7 else "месяц" if period == 30 else "всё время"
+            lines = [f"{i}. {get_user_mention(user_id=u, first_name=n)} — <b>{count}</b>" for i, (count, u, n) in enumerate(rows[:limit], 1)]
+            txt = f"🏆 <b>ТОП {limit} ЗА {label.upper()}</b>\n\n" + ("\n".join(lines) if lines else "Нет данных за этот период.")
+            return finish_command(m, "top_period", bot.send_message(cid, txt, parse_mode="HTML"), ttl=60)
+
+        if t_lower in ("бтоп стата", "большой топ стата", "бтоп"):
+            activity = db_get("chat_activity", {}).get(str(cid), {})
+            rows = []
+            for suid, row in activity.items():
+                count = int(row.get("msgs", 0) or 0)
+                if count:
+                    rows.append((count, int(suid), row.get("name", "Участник")))
+            rows.sort(key=lambda x: x[0], reverse=True)
+            lines = [f"{i}. {get_user_mention(user_id=u, first_name=n)} — <b>{count}</b>" for i, (count, u, n) in enumerate(rows[:50], 1)]
+            return finish_command(m, "big_stats_top", bot.send_message(cid, "🏆 <b>БОЛЬШОЙ ТОП СТАТИСТИКИ</b>\n\n" + ("\n".join(lines) if lines else "Нет статистики."), parse_mode="HTML"), ttl=90)
+
         if t_lower in ("стата по часам", "стата по часам я", "чат стата по часам") or t_lower.startswith("стата по часам "):
             target_uid, target_name, _ = extract_target_and_args(m, parts)
             target_uid=target_uid or uid
@@ -2948,6 +3695,49 @@ def text_handler(m):
             row=db_get("chat_activity",{}).get(str(cid),{}).get(str(uid),{})
             last=float(row.get("last_seen",0) or 0); first=float(row.get("first_seen",last) or last)
             return finish_command(m,"my_active",bot.send_message(cid,f"📈 <b>МОЙ АКТИВ</b>\n\nСообщений: <b>{int(row.get('msgs',0) or 0)}</b>\nПервое появление: <b>{datetime.fromtimestamp(first,KYIV_TZ).strftime('%d.%m.%Y %H:%M') if first else '—'}</b>\nПоследняя активность: <b>{datetime.fromtimestamp(last,KYIV_TZ).strftime('%d.%m.%Y %H:%M') if last else '—'}</b>",parse_mode="HTML"),ttl=30)
+
+        # --- IRIS: расширенные алиасы статистики ---
+        if re.fullmatch(r"(?:топ|стата)(?:\s+\d+)?(?:\s+(?:сутки|день|неделя|месяц|вся|всё))?", t_lower):
+            parts_stat=t_lower.split()
+            limit=10
+            period_word="вся"
+            for part in parts_stat[1:]:
+                if part.isdigit(): limit=max(1,min(100,int(part)))
+                elif part in ("сутки","день"): period_word="сутки"
+                elif part=="неделя": period_word="неделя"
+                elif part=="месяц": period_word="месяц"
+                elif part in ("вся","всё"): period_word="вся"
+            days={"сутки":1,"день":1,"неделя":7,"месяц":30,"вся":36500}.get(period_word,36500)
+            since=time.time()-days*86400 if days < 36500 else 0
+            activity=db_get("chat_activity",{}).get(str(cid),{})
+            rows=[]
+            for suid,row in activity.items():
+                count=0
+                daily=row.get("daily",{}) or {}
+                for k,v in daily.items():
+                    try:
+                        ts=datetime.strptime(k,"%Y-%m-%d").replace(tzinfo=KYIV_TZ).timestamp()
+                        if ts >= since: count += int(v or 0)
+                    except Exception: pass
+                if count: rows.append((count,int(suid),row.get("name","Участник")))
+            rows.sort(key=lambda x:(x[0],x[1]), reverse=True)
+            lines=[f"{i}. {get_user_mention(user_id=u,first_name=n)} — <b>{c}</b>" for i,(c,u,n) in enumerate(rows[:limit],1)]
+            return finish_command(m,"top_period",bot.send_message(cid,f"📊 <b>ТОП {limit} · {period_word.upper()}</b>\n\n"+("\n".join(lines) if lines else "Нет данных за период."),parse_mode="HTML"),ttl=60)
+
+        if t_lower in ("кто граждане","кто гражданин","все граждане"):
+            profiles=db_get("chat_profiles",{}).get(str(cid),{})
+            activity=db_get("chat_activity",{}).get(str(cid),{})
+            rows=[]
+            for suid,prof in profiles.items():
+                if isinstance(prof,dict) and prof.get("citizen"):
+                    rows.append((int(suid),activity.get(str(suid),{}).get("name","Участник")))
+            lines=[f"• {get_user_mention(user_id=u,first_name=n)}" for u,n in rows[:100]]
+            return finish_command(m,"citizens",bot.send_message(cid,"🏡 <b>ГРАЖДАНЕ ЧАТА</b>\n\n"+("\n".join(lines) if lines else "Граждан пока нет."),parse_mode="HTML"),ttl=60)
+
+        if t_lower == "+гражданство":
+            profiles=db_get("chat_profiles",{}); chat=profiles.setdefault(str(cid),{}); prof=chat.setdefault(str(uid),{})
+            prof["citizen"]=True; prof["citizen_date"]=time.time(); db_set("chat_profiles",profiles)
+            return finish_command(m,"citizenship_on",bot.send_message(cid,"🏡 Гражданство чата установлено."),ttl=15)
 
         # --- IRIS: статистика и онлайн ---
         if t_lower in ("статистика", "моя статистика", "моя стат", "стата"):
