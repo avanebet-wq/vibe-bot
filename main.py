@@ -6,7 +6,7 @@ import requests
 import html
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import telebot
 from telebot import types
 from telebot.types import ChatPermissions
@@ -104,6 +104,22 @@ RANKS = [
     (25000, "👑🔥 БОСС ШИШЕК")
 ]
 
+def pluralize_weed(n):
+    if n % 10 == 1 and n % 100 != 11:
+        return "травка"
+    elif 2 <= n % 10 <= 4 and (n % 100 < 10 or n % 100 >= 20):
+        return "травки"
+    else:
+        return "травок"
+
+def get_farm_reward():
+    r = random.random()
+    if r < 0.50: return 1, random.randint(1, 5)     # 50%
+    elif r < 0.75: return 2, random.randint(5, 15)  # 25%
+    elif r < 0.90: return 3, random.randint(15, 38) # 15%
+    elif r < 0.97: return 4, random.randint(38, 55) # 7%
+    else: return 5, random.randint(55, 100)         # 3%
+
 def get_user_rank_info(uid, xp, chat_obj=None, user_obj=None):
     if chat_obj and chat_obj.type in ['group', 'supergroup']:
         try:
@@ -144,7 +160,9 @@ def record_xp_and_stats(m):
         users = db_get("users_data", {})
         u = users.setdefault(str(uid), {
             "xp": 0, "msgs": 0, "name": fname, 
-            "uname": uname, "first_seen": time.time()
+            "uname": uname, "first_seen": time.time(),
+            "respects": 0, "given_respects": 0, "respect_reset": 0,
+            "weed": 0, "last_farm": 0
         })
         
         if uname: u["uname"] = uname
@@ -179,6 +197,8 @@ def handle_profile_request(m, target_uid, target_user=None):
     
     xp = u.get("xp", 0)
     msgs = u.get("msgs", 0)
+    respects = u.get("respects", 0)
+    weed = u.get("weed", 0)
     first_seen = u.get("first_seen", time.time())
     
     days_in_group = int((time.time() - first_seen) / 86400)
@@ -202,15 +222,15 @@ def handle_profile_request(m, target_uid, target_user=None):
         next_info = "👑 ВЫ ДОСТИГЛИ МАКСИМАЛЬНОГО РАНГА!\n━━━━━━━VIBE━━━━━━━"
     
     title = "ВАШ ПРОФИЛЬ" if target_uid == m.from_user.id else "ПРОФИЛЬ"
-    uname_text = f"@{u.get('uname')}" if u.get('uname') else "Скрыт"
     
     text = (
         "━━━━━━━VIBE━━━━━━━\n"
         f"🌿 <b>{title}:</b>\n\n"
-        f"👤 ЮЗ: {get_user_mention(user_id=target_uid, first_name=u.get('name'))}\n"
-        f"🪪 Ник: {uname_text}\n\n"
+        f"👤 Это: {get_user_mention(user_id=target_uid, first_name=u.get('name'))}\n\n"
         f"🏆 Ранг: <b>{rank}</b>\n"
         f"⭐ XP: {xp} / {next_xp if next_xp else 'MAX'}\n"
+        f"🌿 Баланс: <b>{weed}</b> {pluralize_weed(weed)}\n"
+        f"🤝 Уважение: <b>{respects}</b>\n"
         f"📊 Прогресс: {p_bar}\n\n"
         f"💬 Сообщений: {msgs}\n"
         f"🔥 Активность: {activity}\n"
@@ -221,6 +241,55 @@ def handle_profile_request(m, target_uid, target_user=None):
     )
     try: bot.send_message(m.chat.id, text, parse_mode='HTML')
     except: pass
+
+def process_farm_command(m):
+    cid = m.chat.id
+    uid = m.from_user.id
+    fname = m.from_user.first_name
+    uname = m.from_user.username
+    
+    with state_lock:
+        users = db_get("users_data", {})
+        u = users.setdefault(str(uid), {
+            "xp": 0, "msgs": 0, "name": fname, 
+            "uname": uname, "first_seen": time.time(),
+            "respects": 0, "given_respects": 0, "respect_reset": 0,
+            "weed": 0, "last_farm": 0
+        })
+        now = time.time()
+        cooldown = 4 * 3600
+        elapsed = now - u.get("last_farm", 0)
+        
+        if elapsed < cooldown:
+            rem = int(cooldown - elapsed)
+            h, rem = divmod(rem, 3600)
+            m_min, s = divmod(rem, 60)
+            time_str = f"{h}ч {m_min}м {s}с" if h > 0 else f"{m_min}м {s}с"
+            msg = bot.send_message(cid, f"❌ Вы слишком устали и не можете отправиться за травкой. 😔🌿\n\nОтдохните и попробуйте через: <b>{time_str}</b>", parse_mode='HTML')
+            finish_command(m, "farm_cd", msg, ttl=15)
+            return
+            
+        weeds, xp_gain = get_farm_reward()
+        old_xp = u["xp"]
+        u["xp"] += xp_gain
+        u["weed"] = u.get("weed", 0) + weeds
+        u["last_farm"] = now
+        
+        new_xp = u["xp"]
+        new_balance = u["weed"]
+        db_set("users_data", users)
+        
+    msg = bot.send_message(cid, f"✅ Успешный Фарм, вы получили: 🌿 {weeds} {pluralize_weed(weeds)} 😁\n🌟 Опыт: +{xp_gain} XP\n\n🌿 Ваш баланс теперь: <b>{new_balance} {pluralize_weed(new_balance)}</b>", parse_mode='HTML')
+    finish_command(m, "farm_success", msg, ttl=30)
+    
+    old_rank, _, _, _ = get_user_rank_info(uid, old_xp, m.chat, m.from_user)
+    new_rank, _, _, _ = get_user_rank_info(uid, new_xp, m.chat, m.from_user)
+    if old_rank != new_rank and new_rank not in ["💜VIBE💜", "💁‍♀️Хелпер"]:
+        try:
+            bot.send_message(cid, f"🎉 <b>ПОЗДРАВЛЯЕМ!</b>\n\n{get_user_mention(m.from_user)} достигает ранга: <b>{new_rank}</b> 🚀\nТак держать!", parse_mode='HTML')
+            try: bot.set_chat_administrator_custom_title(chat_id=cid, user_id=uid, custom_title=new_rank)
+            except: pass
+        except: pass
 
 # --- УТИЛИТЫ И БЕЗОПАСНОСТЬ ---
 def get_v(cid, k, d=False):
@@ -319,15 +388,19 @@ def check_access(m):
                 
     if m.chat.type == 'private':
         if uid not in BOSSES:
-            try: bot.reply_to(m, DENIED_MSG, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔗 Разработчик", url="https://t.me/VER_CIDE")), parse_mode='HTML')
-            except Exception as e: logging.error(f"[ACCESS ERROR] {e}")
+            try: bot.delete_message(cid, m.message_id)
+            except: pass
+            msg = bot.send_message(cid, "⛔ У вас нет прав на использование этой команды.", parse_mode='HTML')
+            auto_del(msg, 5)
             return False
         return True
         
     register_chat(m.chat)
     if str(cid).replace("-100", "").replace("-", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
-        try: bot.reply_to(m, DENIED_MSG, parse_mode='HTML')
-        except Exception as e: logging.error(f"[ACCESS ERROR] {e}")
+        try: bot.delete_message(cid, m.message_id)
+        except: pass
+        msg = bot.send_message(cid, "⛔ Чат не авторизован.", parse_mode='HTML')
+        auto_del(msg, 5)
         return False
     return True
 
@@ -357,22 +430,6 @@ def cleanup_worker():
         except Exception as e:
             logging.error(f"[CLEANUP WORKER] {e}", exc_info=True)
 threading.Thread(target=cleanup_worker, daemon=True).start()
-
-def words_turn_timeout_worker():
-    while True:
-        try:
-            time.sleep(20)
-            now, to_close = time.time(), []
-            with state_lock:
-                for cid, game in list(active_word_games.items()):
-                    if now - game["last_move_ts"] > WORDS_TURN_TIMEOUT:
-                        to_close.append((cid, game))
-                        del active_word_games[cid]
-            for cid, game in to_close:
-                try: bot.send_message(cid, f"⌛ Игра «Слова» окончена по тайм-ауту.\nНазвано: {game['moves']}. /start_words_game — начать заново\n🔊 Лиза снова на связи.")
-                except Exception as e: logging.error(f"[WORDS TIMEOUT] {e}")
-        except Exception as e: logging.error(f"[WORDS TURN WORKER] {e}", exc_info=True)
-threading.Thread(target=words_turn_timeout_worker, daemon=True).start()
 
 def send_lobby_msg(cid, lobby):
     text = build_lobby_text(lobby)
@@ -407,6 +464,78 @@ def repost_lobby(cid):
         with state_lock:
             if cid in pending_word_lobbies:
                 pending_word_lobbies[cid]["reg_msg_id"] = msg.message_id
+
+def end_word_game(cid, game, reason="timeout"):
+    try: bot.unpin_all_chat_messages(cid)
+    except: pass
+    
+    scoreboard = build_active_scoreboard(game)
+    if reason == "limit":
+        txt = f"🏁 <b>ИГРА «СЛОВА» ЗАВЕРШЕНА!</b> 🎉\nУра! Вы совместно назвали 50 слов!\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}"
+    else:
+        txt = f"⌛ <b>ИГРА «СЛОВА» ОКОНЧЕНА ПО ТАЙМ-АУТУ.</b>\nНазвано слов: {game['moves']}.\n\n📊 <b>ИТОГОВЫЙ СЧЁТ:</b>\n{scoreboard}\n\n/start_words_game — начать заново"
+    
+    try:
+        msg = bot.send_message(cid, txt, parse_mode='HTML')
+        try: bot.pin_chat_message(cid, msg.message_id, disable_notification=False)
+        except: pass
+    except: pass
+
+def word_game_active_worker():
+    while True:
+        try:
+            time.sleep(5)
+            now = time.time()
+            to_end = []
+            to_hint = []
+            to_remind = []
+            
+            with state_lock:
+                for cid, game in list(active_word_games.items()):
+                    elapsed = now - game["last_move_ts"]
+                    
+                    if elapsed > WORDS_TURN_TIMEOUT:
+                        to_end.append((cid, game))
+                        del active_word_games[cid]
+                        continue
+                        
+                    if elapsed >= 120 and not game.get("hint_given"):
+                        game["hint_given"] = True
+                        to_hint.append((cid, game))
+                        
+                    if now - game.get("last_reminder_ts", 0) >= 30:
+                        game["last_reminder_ts"] = now
+                        to_remind.append((cid, game))
+                        
+            for cid, game in to_end:
+                end_word_game(cid, game, reason="timeout")
+                
+            for cid, game in to_hint:
+                req_letter = game["next_letter"]
+                possible_words = [w for w in BASE_WORDS if w.startswith(req_letter) and w not in game["used"]]
+                if possible_words:
+                    hint_word = random.choice(possible_words)
+                    hint = hint_word[:max(1, len(hint_word)//2)] + "..."
+                    try:
+                        msg = bot.send_message(cid, f"💡 <b>ПОДСКАЗКА:</b>\nНикто не может вспомнить слово на «<b>{req_letter.upper()}</b>»?\nВот половинка: <b>{hint.upper()}</b>", parse_mode='HTML')
+                        auto_del(msg, 30)
+                    except: pass
+                    
+            for cid, game in to_remind:
+                try:
+                    if game.get("reminder_msg_id"):
+                        try: bot.delete_message(cid, game["reminder_msg_id"])
+                        except: pass
+                    req_letter = game["next_letter"]
+                    msg = bot.send_message(cid, f"💜 <b>Игра идёт!</b>\nНапиши слово на букву «<b>{req_letter.upper()}</b>» 👇", parse_mode='HTML')
+                    with state_lock:
+                        if cid in active_word_games:
+                            active_word_games[cid]["reminder_msg_id"] = msg.message_id
+                except: pass
+                
+        except Exception as e:
+            logging.error(f"[WORDS ACTIVE WORKER] {e}", exc_info=True)
+threading.Thread(target=word_game_active_worker, daemon=True).start()
 
 def word_lobby_worker():
     while True:
@@ -554,6 +683,9 @@ def start_word_game_now(cid):
             "next_letter": eff,
             "used": {normalize_word(seed)},
             "last_move_ts": time.time(),
+            "last_reminder_ts": time.time(),
+            "reminder_msg_id": None,
+            "hint_given": False,
             "moves": 0,
             "players": players,
             "scores": {uid: 0 for uid in players},
@@ -633,119 +765,6 @@ def is_threat(txt):
         return "THREAT" in ans.upper()
     except: return False
 
-# --- КЛАВИАТУРЫ ---
-def main_kb(cid, is_pv=False):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(f"⚡ Вмешательство: {'Вкл' if get_v(cid, 'intervene', True) else 'Выкл'}", callback_data="m:toggle_intervene"),
-        types.InlineKeyboardButton(f"📊 Частота ИИ: {get_v(cid, 'freq')}%", callback_data="m:freq"),
-        types.InlineKeyboardButton(f"🔥 Строгость: {get_v(cid, 'anger')}%", callback_data="m:anger"),
-        types.InlineKeyboardButton(f"🧹 Удаление сис. мусора: {'Вкл' if get_v(cid, 'del_sys', False) else 'Выкл'}", callback_data="m:toggle_sys")
-    )
-    kb.add(types.InlineKeyboardButton("📢 Автопостинг", callback_data="m:autopost_list") if is_pv else types.InlineKeyboardButton("⚙️ Настройки группы", callback_data="to_group_settings"))
-    if is_pv: kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_start"))
-    return kb
-
-def chats_selection_kb():
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    for cid, cname in db_get("chats_cache", {}).items(): kb.add(types.InlineKeyboardButton(f"📢 {cname}", callback_data=f"ap:chat:{cid}"))
-    return kb.add(types.InlineKeyboardButton("« Назад", callback_data="open_main_settings"))
-
-def autopost_list_kb(cid):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    for p in [p for p in db_get("autopost", {"posts": []}).get("posts", []) if str(p.get("chat_id")) == str(cid)]:
-        kb.add(types.InlineKeyboardButton(f"{'✅' if p.get('enabled') else '❌'} {html.escape(p.get('name', 'Пост'))}", callback_data=f"ap:select:{p['id']}"))
-    kb.add(types.InlineKeyboardButton("➕ Создать", callback_data=f"ap:create:{cid}"), types.InlineKeyboardButton("🗑 Удалить", callback_data=f"ap:delmenu:{cid}"))
-    return kb.add(types.InlineKeyboardButton("« Назад", callback_data="m:autopost_list"))
-
-def build_post_user_kb(post):
-    rows = post.get("buttons", [])
-    if not rows: return None
-    kb = types.InlineKeyboardMarkup()
-    for row in rows:
-        btns = []
-        for b in row:
-            if b.get("url"): btns.append(types.InlineKeyboardButton(b["text"], url=b["url"]))
-            elif b.get("command"): btns.append(types.InlineKeyboardButton(b["text"], callback_data=f"cmd_exec_{post['id']}_{b['command']}"))
-            elif b.get("callback_data"): btns.append(types.InlineKeyboardButton(b["text"], callback_data=b["callback_data"]))
-        if btns: kb.row(*btns)
-    return kb
-
-def post_settings_kb(pid):
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    post = next((p for p in db_get("autopost", {"posts": []}).get("posts", []) if p["id"] == pid), None)
-    if not post: return kb
-    sec = post.get("interval", 3600)
-    istr = "Выкл" if sec == 0 else (f"{sec//60}м" if sec<3600 else f"{sec//3600}ч")
-    kb.add(types.InlineKeyboardButton(f"💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}", callback_data=f"ap:toggle:{pid}"), types.InlineKeyboardButton(f"⏱ Интервал: {istr}", callback_data=f"ap:int_menu:{pid}"))
-    kb.add(types.InlineKeyboardButton(f"🕑 Время: {post.get('daily_time') or 'Выкл'}", callback_data=f"ap:time_menu:{pid}"), types.InlineKeyboardButton(f"📅 Дата: {post.get('start_date') or 'Сегодня'}", callback_data=f"ap:date_menu:{pid}"))
-    kb.add(types.InlineKeyboardButton(f"♻️ Удаление: {'Вкл' if post.get('auto_delete_prev') else 'Выкл'}", callback_data=f"ap:autodel:{pid}"), types.InlineKeyboardButton(f"🖼 Фото: {'Есть' if post.get('photo') else 'Нет'}", callback_data=f"ap:photo:{pid}"))
-    kb.add(types.InlineKeyboardButton("📝 Текст", callback_data=f"ap:text:{pid}"), types.InlineKeyboardButton(f"🔘 Кнопки ({sum(len(r) for r in post.get('buttons',[]))})", callback_data=f"ap:btns:{pid}"))
-    kb.add(types.InlineKeyboardButton("👁 Предпросмотр", callback_data=f"ap:preview:{pid}"), types.InlineKeyboardButton("🚀 Отправить", callback_data=f"ap:send:{pid}"))
-    return kb.add(types.InlineKeyboardButton("« К постам", callback_data=f"ap:chat:{post.get('chat_id', '')}"))
-
-def post_text_view(pid):
-    post = next((p for p in db_get("autopost", {"posts": []}).get("posts", []) if p["id"] == pid), None)
-    if not post: return "⚠️ Пост не найден."
-    cname = db_get("chats_cache", {}).get(str(post.get("chat_id")), str(post.get("chat_id")))
-    dt = post.get("daily_time")
-    time_str = f"Ежедневно в {dt}" if dt else "По интервалу"
-    rep_str = "Ежедневно" if dt else ("Выключено" if post.get("interval",3600)==0 else f"Каждые {post['interval']//60}м")
-    return f"🕑 Пост\n💡 Статус: {'Вкл' if post.get('enabled') else 'Выкл'}\n📢 Чат: {html.escape(str(cname))}\n🕑 Время: {time_str}\n🔁 Повтор: {rep_str}"
-
-# --- ФОНОВЫЕ ЗАДАЧИ ---
-def send_specific_post(chat_id, post):
-    try:
-        mk = build_post_user_kb(post)
-        txt = post.get("text", "")
-        if post.get("photo"): msg = bot.send_photo(chat_id, post["photo"], caption=txt, reply_markup=mk, parse_mode='HTML')
-        else: msg = bot.send_message(chat_id, txt, reply_markup=mk, parse_mode='HTML')
-        old_msg_id = None
-        with state_lock:
-            if post.get("auto_delete_prev") and post.get("last_msg_id"): old_msg_id = post["last_msg_id"]
-            post["last_msg_id"] = msg.message_id
-        if old_msg_id:
-            try: bot.delete_message(chat_id, old_msg_id)
-            except Exception as e:
-                if "message to delete not found" not in str(e): logging.error(f"[AUTOPOST DEL PREV] {e}")
-    except Exception as e: logging.error(f"[AUTOPOST SEND] {e}", exc_info=True)
-
-def autopost_worker():
-    while True:
-        try:
-            time.sleep(15)
-            now_ts = datetime.now(KYIV_TZ).timestamp()
-            td_str, curr_str = datetime.now(KYIV_TZ).strftime("%Y-%m-%d"), datetime.now(KYIV_TZ).strftime("%H:%M")
-            to_send = []
-            with state_lock:
-                data = db_get("autopost", {"posts": []})
-                updated = False
-                for p in data.get("posts", []):
-                    if not p.get("enabled") or (p.get("start_date") and td_str < p["start_date"]): continue
-                    dt = p.get("daily_time")
-                    if dt:
-                        if curr_str >= dt and p.get("last_sent_date") != td_str:
-                            p["last_post"], p["last_sent_date"], updated = now_ts, td_str, True
-                            to_send.append((p.get("chat_id"), p))
-                    elif p.get("interval", 0) > 0 and now_ts - p.get("last_post", 0) >= p["interval"]:
-                        p["last_post"], updated = now_ts, True
-                        to_send.append((p.get("chat_id"), p))
-                if updated: db_set("autopost", data)
-            for chat_id, p in to_send: send_specific_post(chat_id, p)
-            if to_send:
-                with state_lock:
-                    fresh = db_get("autopost", {"posts": []})
-                    by_id = {item["id"]: item for item in fresh.get("posts", [])}
-                    for _, sent_post in to_send:
-                        target = by_id.get(sent_post["id"])
-                        if target:
-                            target["last_msg_id"] = sent_post.get("last_msg_id")
-                            target["last_post"] = sent_post.get("last_post")
-                            if "last_sent_date" in sent_post: target["last_sent_date"] = sent_post["last_sent_date"]
-                    db_set("autopost", fresh)
-        except Exception as e: logging.error(f"[WORKER] {e}", exc_info=True)
-threading.Thread(target=autopost_worker, daemon=True).start()
-
 def build_active_scoreboard(game):
     scores = game.get("scores", {})
     players = game.get("players", {})
@@ -786,83 +805,36 @@ def process_word_guess(cid, uid, fname, raw_text):
         with state_lock:
             game = active_word_games.get(cid)
             if not game or uid not in game["players"] or (game["next_letter"] and f_letter != game["next_letter"]) or norm in game["used"]: return
+            
+            if game.get("reminder_msg_id"):
+                try: bot.delete_message(cid, game["reminder_msg_id"])
+                except: pass
+                game["reminder_msg_id"] = None
+                
             game["used"].add(norm)
             game["last_word"], game["next_letter"] = raw, eff_letter
-            game["last_move_ts"], game["moves"] = time.time(), game["moves"] + 1
+            game["last_move_ts"] = time.time()
+            game["last_reminder_ts"] = time.time()
+            game["hint_given"] = False
+            game["moves"] += 1
             game["scores"][uid] = game["scores"].get(uid, 0) + 1
-            scoreboard = build_active_scoreboard(game)
+            
+            moves_count = game["moves"]
+            
             ldrs = db_get("words_leaders", {})
             ldrs.setdefault(str(uid), {"name": fname, "wins": 0})["wins"] += 1
             db_set("words_leaders", ldrs)
 
-        mention = get_user_mention(user_id=uid, first_name=fname)
-        bot.send_message(cid, f"🥳 {mention} отгадывает слово и получает +1 балл🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»\n\n📊 Счёт игры:\n{scoreboard}", parse_mode='HTML')
-    except Exception as e: logging.error(f"[WORDS MOVE] {e}", exc_info=True)
-
-def lucky_game_result(cid, uid, fname, msg_id, win, left, emoji):
-    try:
-        wait_s = DICE_ANIMATION_SECONDS.get(emoji, 4.0) + DELETE_ANIM_DELAY
-        time.sleep(wait_s)
-        try: bot.delete_message(cid, msg_id)
-        except Exception as e:
-            if "message to delete not found" not in str(e): logging.error(f"[LUCKY DEL] {e}")
-                
-        mention = get_user_mention(user_id=uid, first_name=fname)
-        if win:
+        if moves_count >= 50:
             with state_lock:
-                ldrs = db_get("lucky_leaders", {})
-                u = ldrs.setdefault(str(uid), {"name": fname, "wins": 0})
-                u["wins"] += 1
-                db_set("lucky_leaders", ldrs)
-                rank = sum(1 for v in ldrs.values() if v.get("wins",0) > u["wins"]) + 1
-            txt = f"🎉 {mention}, невероятно! Ты выиграл +1 балл!\nТвое место: #{rank}\n"
-        else:
-            txt = f"😔 {mention}, не повезло.\n"
-        
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🎲 Снова", callback_data=f"lucky:again:{uid}")) if left > 0 else None
-        if left == 0:
-            with state_lock: rem = int(lucky_limits[uid]["reset_at"] - time.time())
-            txt += f"\nПопыток больше нет😔\nНовые через: {max(0, rem//60)}м {max(0, rem%60)}с.\n\nЗато в боте играй без ограничений😉\n🔥 @vibe_247top_bot"
-        else:
-            txt += f"Осталось попыток: {left}\nСыграем еще?"
-            
-        msg = bot.send_message(cid, txt, reply_markup=kb, parse_mode='HTML')
-        track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
-    except Exception as e: logging.error(f"[LUCKY RESULT] {e}", exc_info=True)
-    finally:
-        with state_lock:
-            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
-
-def play_lucky_game(cid, uid, fname):
-    try:
-        with state_lock:
-            lim = lucky_limits.setdefault(uid, {"left": 5, "reset_at": 0})
-            now = time.time()
-            if lim["left"] <= 0:
-                if now < lim["reset_at"]:
-                    rem = int(lim["reset_at"] - now)
-                    txt = f"{get_user_mention(user_id=uid, first_name=fname)},\nПопыток нет😔\nНовые через: {rem//60}м {rem%60}с.\n\nЗато в боте без ограничений😉\n🔥 @vibe_247top_bot"
-                    msg = bot.send_message(cid, txt, parse_mode='HTML', disable_web_page_preview=True)
-                    track_and_replace_specific_cmd(cid, uid, "lucky_game", msg)
-                    if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
-                    return
-                else: lim["left"] = 5
-            lim["left"] -= 1
-            if lim["left"] == 0: lim["reset_at"] = now + 1800
-        
-        emoji = random.choice(["🎯", "🎳", "🏀"])
-        try: dice = bot.send_dice(cid, emoji=emoji)
-        except Exception as e:
-            bot.send_message(cid, "⚠️ Нет прав на кубики.")
-            with state_lock:
-                if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+                if cid in active_word_games:
+                    game_obj = active_word_games.pop(cid)
+            end_word_game(cid, game_obj, reason="limit")
             return
-        win = (emoji in ["🎯", "🎳"] and dice.dice.value == 6) or (emoji == "🏀" and dice.dice.value in [4, 5])
-        executor.submit(lucky_game_result, cid, uid, fname, dice.message_id, win, lim["left"], emoji)
-    except Exception as e:
-        logging.error(f"[PLAY LUCKY] {e}", exc_info=True)
-        with state_lock:
-            if (cid, uid) in active_lucky_players: active_lucky_players.remove((cid, uid))
+
+        mention = get_user_mention(user_id=uid, first_name=fname)
+        bot.send_message(cid, f"🥳 {mention} отгадывает слово и получает +1 балл🔥\nСледующее слово на букву «<b>{eff_letter.upper()}</b>»", parse_mode='HTML')
+    except Exception as e: logging.error(f"[WORDS MOVE] {e}", exc_info=True)
 
 # --- ОБРАБОТЧИКИ КОМАНД ---
 @bot.message_handler(commands=['start'])
@@ -888,9 +860,6 @@ def cmd_start(m):
 @bot.message_handler(commands=['setting', 'settings'])
 def cmd_settings(m):
     if not check_access(m): return
-    if m.from_user.id not in BOSSES:
-        msg = bot.send_message(m.chat.id, "⛔ Только для руководства.", parse_mode='HTML')
-        return finish_command(m, "settings", msg, ttl=15)
     msg = bot.send_message(m.chat.id, "🎛 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЛИЗОЙ</b> ✨\n\nНастрой характер и функции бота под свой чат:", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
     finish_command(m, "settings", msg) 
 
@@ -927,7 +896,7 @@ def cmd_events(m):
 
 @bot.message_handler(commands=['start_game_safe'])
 def cmd_sgs(m):
-    if not check_access(m) or m.from_user.id not in BOSSES: return
+    if not check_access(m): return
     with state_lock:
         if m.chat.id in active_safes:
             msg = bot.send_message(m.chat.id, "⚠️ Сейф уже активирован.")
@@ -944,7 +913,7 @@ def cmd_lsg(m):
 
 @bot.message_handler(commands=['start_words_game'])
 def cmd_start_words(m):
-    if not check_access(m) or m.from_user.id not in BOSSES: return
+    if not check_access(m): return
     cid = m.chat.id
     with state_lock:
         if cid in active_word_games:
@@ -980,7 +949,7 @@ def cmd_start_words(m):
 
 @bot.message_handler(commands=['stop_words_game'])
 def cmd_stop_words(m):
-    if not check_access(m) or m.from_user.id not in BOSSES: return
+    if not check_access(m): return
     cid = m.chat.id
     with state_lock:
         game = active_word_games.pop(cid, None)
@@ -1021,6 +990,11 @@ def cmd_words_status(m):
     else: msg = bot.send_message(m.chat.id, "Игра не идёт. /start_words_game")
     finish_command(m, "words_status", msg, ttl=30)
 
+@bot.message_handler(commands=['farm', 'фарм'])
+def cmd_farm(m):
+    if not check_access(m): return
+    process_farm_command(m)
+
 @bot.callback_query_handler(func=lambda c: True)
 def cb_handler(c):
     try:
@@ -1036,6 +1010,7 @@ def cb_handler(c):
                 fake.text, fake.from_user, fake.is_callback = cmd, c.from_user, True
                 if cmd == "/lucky_game": cmd_lg(fake)
                 elif cmd == "/leaders_lucky_game": cmd_llg(fake)
+                elif cmd == "/farm" or cmd == "/фарм": cmd_farm(fake)
             return bot.answer_callback_query(c.id)
 
         if not is_pv and str(cid).replace("-100", "") not in ALLOWED_GROUPS_RAW and cid not in ALLOWED_GROUPS:
@@ -1061,7 +1036,7 @@ def cb_handler(c):
 
         if d == "what_can_i_do":
             bot.answer_callback_query(c.id)
-            return bot.edit_message_text("🔹 Общаюсь\n🔹 Слежу за матом\n🔹 Автопостинг\n🔹 Игры (/lucky_game, сейф, /start_words_game)", cid, c.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
+            return bot.edit_message_text("🔹 Общаюсь\n🔹 Слежу за матом\n🔹 Автопостинг\n🔹 Игры (/lucky_game, сейф, /start_words_game)\n🔹 Фарм травки (/farm)", cid, c.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
             
         if d == "back_to_start":
             bot.answer_callback_query(c.id)
@@ -1070,7 +1045,7 @@ def cb_handler(c):
             return bot.edit_message_text(f"Привет, {get_user_mention(c.from_user)}... Я Лиза.\n💭Чат: https://t.me/+8WZ4kwpAaZ0yZTRi\n🛒Бот: @vibe_247top_bot", cid, c.message.message_id, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
 
         if d == "open_main_settings":
-            if uid not in BOSSES: return bot.answer_callback_query(c.id, "⛔", show_alert=True)
+            if uid not in BOSSES: return bot.answer_callback_query(c.id, "⛔ У вас нет прав.", show_alert=True)
             bot.answer_callback_query(c.id)
             return bot.edit_message_text("🎛 <b>ПАНЕЛЬ УПРАВЛЕНИЯ ЛИЗОЙ</b> ✨\n\nНастрой характер и функции бота под свой чат:", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv), parse_mode='HTML')
 
@@ -1266,9 +1241,53 @@ def text_handler(m):
         boss = uid in BOSSES
 
         t_lower = t.lower()
+        
+        if t == "+" and m.reply_to_message:
+            target_uid = m.reply_to_message.from_user.id
+            if target_uid == uid:
+                auto_del(bot.reply_to(m, "Себе уважение оказывать нельзя! 😉"), 5)
+                try: bot.delete_message(cid, m.message_id)
+                except: pass
+                return
+            if m.reply_to_message.from_user.is_bot:
+                try: bot.delete_message(cid, m.message_id)
+                except: pass
+                return 
+                
+            with state_lock:
+                users = db_get("users_data", {})
+                u_giver = users.setdefault(str(uid), {"xp": 0, "msgs": 0, "name": m.from_user.first_name, "uname": m.from_user.username, "first_seen": time.time(), "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0})
+                u_target = users.setdefault(str(target_uid), {"xp": 0, "msgs": 0, "name": m.reply_to_message.from_user.first_name, "uname": m.reply_to_message.from_user.username, "first_seen": time.time(), "respects": 0, "given_respects": 0, "respect_reset": 0, "weed": 0, "last_farm": 0})
+                
+                now = time.time()
+                if now > u_giver.get("respect_reset", 0):
+                    u_giver["given_respects"] = 0
+                    n_dt = datetime.now(KYIV_TZ)
+                    n_mid = (n_dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                    u_giver["respect_reset"] = n_mid.timestamp()
+                    
+                if u_giver.get("given_respects", 0) >= 3:
+                    reset_time = datetime.fromtimestamp(u_giver["respect_reset"], KYIV_TZ).strftime('%H:%M')
+                    msg = bot.send_message(m.chat.id, f"🛑 {get_user_mention(m.from_user)}, лимит исчерпан! Вы уже передали 3 очка уважения сегодня.\nЛимит обновится в {reset_time}.", parse_mode='HTML')
+                    auto_del(msg, 10)
+                else:
+                    u_giver["given_respects"] = u_giver.get("given_respects", 0) + 1
+                    u_target["respects"] = u_target.get("respects", 0) + 1
+                    db_set("users_data", users)
+                    msg = bot.send_message(m.chat.id, f"🤝 {get_user_mention(m.from_user)} выражает уважение {get_user_mention(m.reply_to_message.from_user)}!\n<i>(Осталось на сегодня: {3 - u_giver['given_respects']})</i>", parse_mode='HTML')
+                    auto_del(msg, 15)
+            try: bot.delete_message(cid, m.message_id)
+            except: pass
+            return
+
         if t_lower == "мой профиль":
             handle_profile_request(m, uid, m.from_user)
             return
+            
+        if t_lower == "фарм" or t_lower == "/farm" or t_lower == "/фарм":
+            process_farm_command(m)
+            return
+
         if t_lower.startswith("кто ты"):
             if m.reply_to_message:
                 handle_profile_request(m, m.reply_to_message.from_user.id, m.reply_to_message.from_user)
@@ -1396,9 +1415,11 @@ def text_handler(m):
                     ans = call_ai([{"role": "system", "content": SYS_PROMPT}, {"role": "user", "content": prompt}])
                     if m.chat.type == 'private': bot.send_message(cid, ans, parse_mode='HTML')
                     else: bot.send_message(cid, f"{get_user_mention(m.from_user)}, {ans}", parse_mode='HTML')
-                except Exception as e: logging.error(f"[AI TASK] {e}", exc_info=True)
+                except Exception as e:
+                    logging.error(f"[AI TASK] {e}", exc_info=True)
             executor.submit(ai_task)
-    except Exception as e: logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
+    except Exception as e:
+        logging.error(f"[TEXT HANDLER] {e}", exc_info=True)
 
 if __name__ == "__main__":
     logging.info("Бот запущен и готов к работе!")
