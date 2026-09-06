@@ -2741,7 +2741,7 @@ except AttributeError:
 bot.register_message_handler(on_photo, content_types=["photo"])
 bot.register_message_handler(cmd_start, commands=["start"])
 bot.register_message_handler(cmd_settings, commands=["settings"])
-bot.register_message_handler(text_handler, content_types=["text"], func=lambda m: not _is_explicit_command(m))
+bot.register_message_handler(text_handler, content_types=["text"])
 
 def cb_handler(c):
     try:
