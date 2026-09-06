@@ -2,10 +2,8 @@
 """VIBE Bot — handlers module."""
 from runtime import *
 from ai import *
-from autopost import *
 from cleanup import *
 from core import *
-from games import *
 from general import *
 from triggers import *
 from ui import *
@@ -22,117 +20,6 @@ from cleanup import (
     _set_chat_rules,
 )
 
-
-# ============================================================
-# Iris-style: темы модераторов, голосования и локальный антиспам
-# ============================================================
-MOD_THEME_PRESETS = {
-    "классика": {0:"Участник",1:"Младший модератор",2:"Старший модератор",3:"Младший администратор",4:"Старший администратор",5:"Создатель"},
-    "огонь": {0:"Новичок",1:"Страж",2:"Хранитель",3:"Администратор",4:"Главный администратор",5:"Владелец"},
-    "космос": {0:"Гость",1:"Кадет",2:"Офицер",3:"Командир",4:"Капитан",5:"Командующий"},
-}
-
-def _mod_titles(cid):
-    return get_v(cid, "moderator_titles", MOD_THEME_PRESETS["классика"]) or MOD_THEME_PRESETS["классика"]
-
-def _set_mod_titles(cid, titles):
-    set_chat_setting(cid, "moderator_titles", {str(k): str(v) for k,v in titles.items()})
-
-def _format_mod_titles(cid):
-    t=_mod_titles(cid)
-    return "👑 <b>Названия рангов</b>\n\nТекущая система рангов этого чата:\n\n" + "\n".join(f"{r} — <b>{html.escape(str(t.get(str(r), t.get(r, '—'))))}</b>" for r in range(6))
-
-def _vote_store():
-    return db_get("command_votes", {})
-
-def _save_vote(votes):
-    db_set("command_votes", votes)
-
-def _vote_keyboard(vid):
-    kb=types.InlineKeyboardMarkup(row_width=2)
-    kb.add(types.InlineKeyboardButton("✅ За", callback_data=f"vote:{vid}:yes"), types.InlineKeyboardButton("❌ Против", callback_data=f"vote:{vid}:no"))
-    kb.add(types.InlineKeyboardButton("ℹ️ Инфо", callback_data=f"vote:{vid}:info"))
-    return kb
-
-def _vote_text(v):
-    return (f"🗳 <b>ГОЛОСОВАНИЕ #{v['id']}</b>\n\n"
-            f"Команда: <code>{html.escape(v['command'])}</code>\n"
-            f"Порог: <b>{v['need']}</b> голосов\n"
-            f"Минимальный ранг организатора: <b>{v['rank']}</b>\n\n"
-            f"✅ За: <b>{len(v['yes'])}</b>\n❌ Против: <b>{len(v['no'])}</b>")
-
-def _try_execute_vote(v):
-    if len(v['yes']) < v['need']:
-        return False
-    cid=v['chat_id']; organizer=v['organizer_id']; cmd=v['command']
-    try:
-        fake=types.SimpleNamespace(text=cmd, from_user=types.SimpleNamespace(id=organizer, first_name=v.get('organizer_name','Организатор'), username=None), chat=bot.get_chat(cid), message_id=v.get('message_id',0), is_callback=True)
-        text_handler(fake)
-        return True
-    except Exception as e:
-        logging.error(f"[VOTE EXEC] {e}", exc_info=True)
-        return False
-
-def _topic_command(m, t_lower):
-    cid, uid = m.chat.id, m.from_user.id
-    if not command_allowed_by_dk(cid, uid, "темы"): return reply_no_rights(m)
-    if t_lower in ("!темы", "темы", "темы модераторов"):
-        presets="\n".join(f"<b>{i}.</b> {html.escape(name)}" for i,name in enumerate(MOD_THEME_PRESETS.keys(),1))
-        return finish_command(m,"topics",bot.send_message(cid,"🎨 <b>Темы модераторов</b>\n\nВыбери готовое оформление рангов:\n\n"+presets+"\n\nПример: <code>!Темы огонь</code>",parse_mode="HTML"),ttl=120)
-    if t_lower.startswith("!темы ") or t_lower.startswith("темы "):
-        value=t_lower.split(None,1)[1].strip()
-        keys=list(MOD_THEME_PRESETS)
-        key=keys[int(value)-1] if value.isdigit() and 1 <= int(value) <= len(keys) else value
-        if key not in MOD_THEME_PRESETS:
-            return finish_command(m,"topics_err",bot.send_message(cid,"⚠️ <b>Тема не найдена</b>\nВыбери тему из списка доступных."),ttl=20)
-        _set_mod_titles(cid, MOD_THEME_PRESETS[key])
-        return finish_command(m,"topics_set",bot.send_message(cid,f"🎨 Тема модераторов установлена: <b>{html.escape(key)}</b>.",parse_mode="HTML"),ttl=20)
-    if t_lower == "модераторы названия":
-        return finish_command(m,"mod_titles",bot.send_message(cid,_format_mod_titles(cid),parse_mode="HTML"),ttl=120)
-    if t_lower.startswith("модераторы названия\n"):
-        if get_admin_rank(cid,uid)<5: return reply_no_rights(m)
-        lines=m.text.splitlines()[1:]
-        titles=dict(_mod_titles(cid))
-        for line in lines:
-            mm=re.match(r"\s*([0-5])\s+и=(.+?);",line)
-            if mm: titles[mm.group(1)]=mm.group(2).strip()
-        _set_mod_titles(cid,titles)
-        return finish_command(m,"mod_titles_set",bot.send_message(cid,"✅ <b>Названия рангов обновлены</b>\nИзменения сохранены для этого чата."),ttl=20)
-    if t_lower.startswith("+иконка модераторов ") or t_lower.startswith("+админ иконка "):
-        if get_admin_rank(cid,uid)<5: return reply_no_rights(m)
-        emoji=t_lower.split()[-1][:8]; set_chat_setting(cid,"moderator_icon",emoji)
-        return finish_command(m,"mod_icon",bot.send_message(cid,f"⭐ Иконка модераторов изменена на {html.escape(emoji)}."),ttl=15)
-    if t_lower in ("-иконка модераторов","-админ иконка"):
-        if get_admin_rank(cid,uid)<5: return reply_no_rights(m)
-        set_chat_setting(cid,"moderator_icon","⭐️"); return finish_command(m,"mod_icon_off",bot.send_message(cid,"⭐️ Иконка модераторов возвращена."),ttl=15)
-
-def _vote_command(m, t_lower):
-    cid,uid=m.chat.id,m.from_user.id
-    if t_lower.startswith("+гк "):
-        if get_admin_rank(cid,uid)<1: return reply_no_rights(m)
-        parts=m.text.split(maxsplit=3)
-        try: need=int(parts[1]); rest=parts[2:]
-        except Exception: return finish_command(m,"vote_err",bot.send_message(cid,"⚠️ Формат: +Гк 5 1 Бан @user"),ttl=20)
-        rank=0; command=rest[-1] if rest else ""
-        if len(rest)>=2 and rest[0].isdigit(): rank=int(rest[0]); command=rest[1]
-        if not command: return finish_command(m,"vote_err",bot.send_message(cid,"⚠️ <b>Не указана команда</b>\nНапиши команду, которую нужно вынести на голосование."),ttl=20)
-        vid=str(int(time.time()*1000)); votes=_vote_store(); votes[vid]={"id":vid,"chat_id":cid,"organizer_id":uid,"organizer_name":m.from_user.first_name,"need":max(1,min(100,need)),"rank":max(0,min(5,rank)),"command":command,"yes":[],"no":[],"message_id":0,"created":time.time()}; _save_vote(votes)
-        msg=bot.send_message(cid,_vote_text(votes[vid]),reply_markup=_vote_keyboard(vid),parse_mode="HTML"); votes[vid]["message_id"]=msg.message_id; _save_vote(votes)
-        return finish_command(m,"vote_start")
-    if t_lower.startswith("-гк "):
-        vid=t_lower.split()[-1]; votes=_vote_store()
-        if vid not in votes: return finish_command(m,"vote_stop_err",bot.send_message(cid,"⚠️ <b>Голосование не найдено</b>\nВозможно, оно уже завершено или отменено."),ttl=15)
-        if votes[vid]["organizer_id"]!=uid and get_admin_rank(cid,uid)<5: return reply_no_rights(m)
-        votes.pop(vid,None); _save_vote(votes); return finish_command(m,"vote_stop",bot.send_message(cid,f"🛑 <b>Голосование #{vid} отменено</b>\nНовых голосов больше не принимаю."),ttl=20)
-    if t_lower.startswith("гб "):
-        if t_lower == "гб список":
-            votes=[v for v in _vote_store().values() if v.get("chat_id")==cid and v.get("type")=="ban"]
-            txt="🗳 <b>Активные голосования за бан</b>\n\n"+"\n".join(f"#{v['id']} — {get_user_mention(user_id=v['target_id'])}: {len(v['yes'])}/{v['need']}" for v in votes) if votes else "🗳 <b>Активных голосований нет</b>\nСейчас ничего не вынесено на голосование."
-            return finish_command(m,"gb_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=60)
-        target_uid,target_name,_=extract_target_and_args(m,m.text.split())
-        if not target_uid: return finish_command(m,"gb_err",bot.send_message(cid,"⚠️ <b>Не указан пользователь</b>\nОтветь на его сообщение, укажи @username или ID."),ttl=15)
-        vid=str(int(time.time()*1000)); votes=_vote_store(); votes[vid]={"id":vid,"type":"ban","chat_id":cid,"organizer_id":uid,"target_id":target_uid,"target_name":target_name,"need":5,"rank":0,"yes":[],"no":[],"created":time.time(),"message_id":0}; _save_vote(votes)
-        msg=bot.send_message(cid,f"🗳 <b>ГОЛОСОВАНИЕ ЗА БАН #{vid}</b>\n\nПользователь: {get_user_mention(user_id=target_uid,first_name=target_name)}\nПорог: <b>5</b> голосов\n\n✅ За: <b>0</b>\n❌ Против: <b>0</b>",reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("✅ За",callback_data=f"gb:{vid}:yes"),types.InlineKeyboardButton("❌ Против",callback_data=f"gb:{vid}:no")),parse_mode="HTML"); votes[vid]["message_id"]=msg.message_id; _save_vote(votes); return finish_command(m,"gb_start")
 
 def _local_antispam_join(m,new_user):
     cid=m.chat.id
@@ -210,7 +97,7 @@ def handle_system_messages(m):
                 # Глобальный бан сетки проверяется до локальной модерации.
                 try:
                     grids = db_get("chat_grids", {}) or {}
-                    grid = next((g for g in grids.values() if cid in g.get("chats", [])), None)
+                    grid = next((g for g in grids.values() if m.chat.id in g.get("chats", [])), None)
                     if grid and str(new_user.id) in (grid.get("global_bans", {}) or {}):
                         bot.ban_chat_member(cid, new_user.id)
                         bot.unban_chat_member(cid, new_user.id, only_if_banned=True)
@@ -340,475 +227,20 @@ def cmd_settings(m):
     msg = bot.send_message(m.chat.id, "🎛 <b>Панель управления Лизой</b> ✨\n\nНастрой поведение и функции бота под свой чат. Изменения сохраняются автоматически.", reply_markup=main_kb(m.chat.id, m.chat.type == 'private'), parse_mode='HTML')
     finish_command(m, "settings", msg)
 
-def cmd_lg(m):
-    if not check_access(m): return
-    uid, cid = m.from_user.id, m.chat.id
-    finish_command(m, "lucky_game_cmd")
-    with state_lock:
-        if (cid, uid) in active_lucky_players:
-            return track_and_replace_specific_cmd(cid, uid, "lucky_game", bot.send_message(cid, "⏳ Дождись конца текущей игры!"))
-        active_lucky_players.add((cid, uid))
-    play_lucky_game(cid, uid, m.from_user.first_name)
 
-def cmd_llg(m):
-    if not check_access(m): return
-    with state_lock: ldrs = db_get("lucky_leaders", {})
-    txt = "━━━━━━━VIBE━━━━━━━\n🎲 <b>РЕЙТИНГ ВЕЗУНЧИКОВ</b>\n\n"
-    if not ldrs: txt += "Пока никого нет."
-    else: txt += "\n".join(f"{i}. {get_user_mention(user_id=int(u), first_name=info.get('name'))} — <b>{info.get('wins',0)}</b>" for i, (u, info) in enumerate(sorted(ldrs.items(), key=lambda x: x[1].get("wins",0), reverse=True)[:10], 1))
-    txt += "\n━━━━━━━VIBE━━━━━━━"
-    msg = bot.send_message(m.chat.id, txt, parse_mode='HTML')
-    finish_command(m, "leaders_lucky_game", msg, ttl=120)
 
-def cmd_events(m):
-    if not check_access(m): return
-    evs = db_get("events", [])
-    evs = evs["events"] if isinstance(evs, dict) and "events" in evs else evs
-    txt = "📅 Пока никаких событий не запланировано." if not evs else "📅 <b>БЛИЖАЙШИЕ СОБЫТИЯ</b>\n\n" + "\n".join(f"🔸 <b>{html.escape(str(e.get('date')))}</b> — {html.escape(str(e.get('info')))}" for e in evs)
-    msg = bot.send_message(m.chat.id, txt, parse_mode='HTML')
-    finish_command(m, "events", msg, ttl=180)
 
-def cmd_sgs(m):
-    if not check_access(m): return
-    caller_rank = get_admin_rank(m.chat.id, m.from_user.id)
-    if caller_rank < 1 and get_admin_rank(m.chat.id, m.from_user.id) < 5: return reply_no_rights(m)
-    with state_lock:
-        if m.chat.id in active_safes:
-            msg = bot.send_message(m.chat.id, "⚠️ <b>Сейф уже активирован</b>\nПовторно включать его не нужно.")
-            return finish_command(m, "start_game_safe", msg, ttl=30)
-        active_safes[m.chat.id] = {"code": f"{random.randint(0,999):03d}", "hint_given": False, "gid": time.time()}
-    safe_txt = (
-        "━━━━━━━VIBE━━━━━━━\n"
-        "🔐 <b>ИГРА «СЕЙФ» НАЧАЛАСЬ!</b>\n\n"
-        "<i>Бронированный сейф заблокирован 3-значным кодом.</i>\n"
-        "🔢 Пишите свои варианты прямо в чат — код от 000 до 999!\n\n"
-        "🏆 Топ взломщиков: /leaders_safe_game\n"
-        "━━━━━━━VIBE━━━━━━━"
-    )
-    msg = bot.send_message(m.chat.id, safe_txt, parse_mode='HTML')
-    finish_command(m, "start_game_safe", msg)
 
-def cmd_lsg(m):
-    if not check_access(m): return
-    msg = bot.send_message(m.chat.id, format_safe_leaderboard(), parse_mode='HTML')
-    finish_command(m, "leaders_safe_game", msg, ttl=120)
 
-def cmd_start_words(m):
-    if not check_access(m): return
-    caller_rank = get_admin_rank(m.chat.id, m.from_user.id)
-    if caller_rank < 1 and get_admin_rank(m.chat.id, m.from_user.id) < 5: return reply_no_rights(m)
-    cid = m.chat.id
-    with state_lock:
-        if cid in active_word_games:
-            msg = bot.send_message(cid, "⚠️ Игра «Слова» уже идёт.")
-            return finish_command(m, "start_words_game", msg, ttl=20)
-        if cid in pending_word_lobbies:
-            msg = bot.send_message(cid, "⚠️ Регистрация на игру уже открыта.")
-            return finish_command(m, "start_words_game", msg, ttl=20)
 
-    parts = m.text.split(maxsplit=1)
-    seed = parts[1].strip() if len(parts) > 1 else None
-    if seed and not CYRILLIC_WORD_RE.match(seed):
-        msg = bot.send_message(cid, "⚠️ Неверное стартовое слово. Пример: /start_words_game арбуз", parse_mode='HTML')
-        return finish_command(m, "start_words_game", msg, ttl=20)
 
-    with state_lock:
-        pending_word_lobbies[cid] = {
-            "creator_id": m.from_user.id, "seed": seed, "players": {}, "reg_msg_id": None,
-            "end_time": time.time() + REGISTRATION_SECONDS, "next_repost": time.time() + 60, "started": False,
-        }
-        lobby_snapshot = dict(pending_word_lobbies[cid])
 
-    sent = send_lobby_msg(cid, lobby_snapshot)
-    with state_lock:
-        if cid in pending_word_lobbies: pending_word_lobbies[cid]["reg_msg_id"] = sent.message_id if sent else None
-    finish_command(m, "start_words_game")
 
-def cmd_stop_words(m):
-    if not check_access(m): return
-    caller_rank = get_admin_rank(m.chat.id, m.from_user.id)
-    if caller_rank < 1 and get_admin_rank(m.chat.id, m.from_user.id) < 5: return reply_no_rights(m)
-    cid = m.chat.id
-    with state_lock:
-        game = active_word_games.pop(cid, None)
-        lobby = pending_word_lobbies.pop(cid, None)
-
-    if lobby and lobby.get("reg_msg_id"):
-        try: bot.edit_message_caption("🛑 Регистрация на игру отменена.", cid, lobby["reg_msg_id"])
-        except:
-            try: bot.edit_message_text("🛑 Регистрация на игру отменена.", cid, lobby["reg_msg_id"])
-            except: pass
-
-    if not game and not lobby:
-        msg = bot.send_message(cid, "🤷‍♀️ Игра сейчас не идёт.")
-        return finish_command(m, "stop_words_game", msg, ttl=20)
-    if lobby and not game:
-        msg = bot.send_message(cid, "🛑 Регистрация на игру отменена.")
-        return finish_command(m, "stop_words_game", msg, ttl=60)
-    msg = bot.send_message(cid, f"🛑 <b>Игра остановлена</b>\nНазвано слов: {game['moves']}. Последнее: «{html.escape(game['last_word'] or '—')}»\n🔊 Лиза снова на связи в чате.", parse_mode='HTML')
-    finish_command(m, "stop_words_game", msg, ttl=60)
-
-def cmd_leaders_words(m):
-    if not check_access(m): return
-    msg = bot.send_message(m.chat.id, format_words_leaderboard(), parse_mode='HTML')
-    finish_command(m, "leaders_words_game", msg, ttl=120)
-
-def cmd_words_status(m):
-    if not check_access(m): return
-    with state_lock:
-        game = active_word_games.get(m.chat.id)
-        lobby = pending_word_lobbies.get(m.chat.id)
-    if game:
-        msg = bot.send_message(m.chat.id, f"🔤 <b>Ход игры</b>\nНазвано слов: <b>{game['moves']}</b>. Нужна буква «<b>{game['next_letter'].upper()}</b>».", parse_mode='HTML')
-    elif lobby:
-        remaining = max(0, int(lobby["end_time"] - time.time()))
-        msg = bot.send_message(m.chat.id, f"📝 Идёт регистрация: {len(lobby['players'])} участник(ов). До старта ~{remaining//60}м {remaining%60}с.", parse_mode='HTML')
-    else: msg = bot.send_message(m.chat.id, "😴 <b>Игра сейчас не идёт</b>\nЗапуск: <code>/start_words_game</code>")
-    finish_command(m, "words_status", msg, ttl=30)
-
-def cb_handler(c):
-    try:
-        if _economy_named_check_callback(c): return
-        if _economy_check_callback(c): return
-        if c.data.startswith("giveaway:join:"):
-            try:
-                _,_,cid_s,gid=c.data.split(":",3); cid=int(cid_s); uid=c.from_user.id
-                store=db_get("giveaways",{}) or {}; chat=store.get(str(cid),{}); g=chat.get(gid)
-                if not g or g.get("status")!="active": return bot.answer_callback_query(c.id,"Розыгрыш завершён.",show_alert=True)
-                if uid not in g["participants"]:
-                    g["participants"].append(uid); db_set("giveaways",store)
-                bot.answer_callback_query(c.id,"🎁 Ты участвуешь!")
-                try: bot.edit_message_reply_markup(cid,c.message.message_id,reply_markup=c.message.reply_markup)
-                except Exception: pass
-            except Exception as e: logging.error(f"[GIVEAWAY CALLBACK] {e}",exc_info=True)
-            return
-        if c.data.startswith("marry:"):
-            try:
-                _,pid,action=c.data.split(":",2); pending=db_get("marriage_pending",{}); offer=pending.get(pid)
-                if not offer: return bot.answer_callback_query(c.id,"Предложение уже недействительно.")
-                if c.from_user.id != int(offer["to"]): return bot.answer_callback_query(c.id,"Принять предложение может только адресат.",show_alert=True)
-                if action=="no":
-                    pending.pop(pid,None); db_set("marriage_pending",pending); bot.answer_callback_query(c.id,"Предложение отклонено."); bot.edit_message_text("💔 Предложение брака отклонено.",c.message.chat.id,c.message.message_id); return
-                rels=db_get("relationships",{})
-                if rels.get(str(offer["from"]),{}).get("spouse_id") or rels.get(str(offer["to"]),{}).get("spouse_id"):
-                    pending.pop(pid,None); db_set("marriage_pending",pending); return bot.answer_callback_query(c.id,"Брак уже невозможен.",show_alert=True)
-                now=int(time.time()); rels[str(offer["from"])]={"spouse_id":int(offer["to"]),"since":now}; rels[str(offer["to"])]={"spouse_id":int(offer["from"]),"since":now}; db_set("relationships",rels)
-                pending.pop(pid,None); db_set("marriage_pending",pending); bot.answer_callback_query(c.id,"💍 Брак заключён!")
-                bot.edit_message_text(f"💍 Брак заключён: {get_user_mention(user_id=offer['from'],first_name=offer['from_name'])} ❤️ {get_user_mention(user_id=offer['to'],first_name=offer['to_name'])}",c.message.chat.id,c.message.message_id,parse_mode="HTML")
-            except Exception as e: logging.error(f"[MARRY CALLBACK] {e}",exc_info=True)
-            return
-        if c.data.startswith("fun_duel:"):
-            parts=c.data.split(":"); cid=int(parts[1]); target=int(parts[3])
-            if c.from_user.id!=target:
-                return bot.answer_callback_query(c.id,"⛔ Это предложение не тебе.",show_alert=True)
-            m=types.SimpleNamespace(chat=types.SimpleNamespace(id=cid),from_user=c.from_user,text="дуэль да",message_id=c.message.message_id)
-            bot.answer_callback_query(c.id,"⚔️ Дуэль принята!")
-            return _duel_accept(m)
-        if c.data.startswith("fun_dice:"):
-            parts=c.data.split(":"); cid=int(parts[1]); target=int(parts[3])
-            if c.from_user.id!=target:
-                return bot.answer_callback_query(c.id,"⛔ Это предложение не тебе.",show_alert=True)
-            m=types.SimpleNamespace(chat=types.SimpleNamespace(id=cid),from_user=c.from_user,text="кубы да",message_id=c.message.message_id)
-            bot.answer_callback_query(c.id,"🎲 Игра принята!")
-            return _dice_accept(m)
-        cid, uid, d = c.message.chat.id, c.from_user.id, c.data
-        is_pv = c.message.chat.type == 'private'
-        parts = d.split(":")
-        action = parts[0]
-
-        if action in ("vote", "gb") and len(parts) >= 3:
-            vid=parts[1]; choice=parts[2]; votes=_vote_store(); v=votes.get(vid)
-            if not v: return bot.answer_callback_query(c.id,"Голосование завершено.",show_alert=True)
-            if choice=="info": return bot.answer_callback_query(c.id,_vote_text(v).replace("<b>","").replace("</b>",""),show_alert=True)
-            if uid not in v["yes"] and uid not in v["no"]:
-                v["yes" if choice=="yes" else "no"].append(uid); _save_vote(votes)
-                try: bot.edit_message_text(_vote_text(v) if v.get("type")!="ban" else f"🗳 <b>ГОЛОСОВАНИЕ ЗА БАН #{vid}</b>\n\nПользователь: {get_user_mention(user_id=v['target_id'],first_name=v.get('target_name'))}\nПорог: <b>{v['need']}</b> голосов\n\n✅ За: <b>{len(v['yes'])}</b>\n❌ Против: <b>{len(v['no'])}</b>", cid, v["message_id"], reply_markup=c.message.reply_markup, parse_mode="HTML")
-                except Exception: pass
-            if len(v["yes"])>=v["need"]:
-                if v.get("type")=="ban":
-                    try: bot.ban_chat_member(cid,v["target_id"])
-                    except Exception as e: logging.warning(f"[GB BAN] {e}")
-                else: _try_execute_vote(v)
-                votes.pop(vid,None); _save_vote(votes)
-                try: bot.edit_message_text("✅ <b>Голосование завершено.</b> Решение принято.",cid,v["message_id"],parse_mode="HTML")
-                except Exception: pass
-            return bot.answer_callback_query(c.id,"Голос принят.")
-
-        if d.startswith("cmd_exec_"):
-            cmd = d.split("_", 2)[2]
-            if cmd.startswith("/"):
-                fake = c.message
-                fake.text, fake.from_user, fake.is_callback = cmd, c.from_user, True
-                if cmd == "/lucky_game": cmd_lg(fake)
-                elif cmd == "/leaders_lucky_game": cmd_llg(fake)
-            return bot.answer_callback_query(c.id)
-
-        if action == "lucky" and parts[1] == "again":
-            target_uid = int(parts[2])
-            if uid != target_uid: return bot.answer_callback_query(c.id, "⛔ Не твоя игра!", show_alert=True)
-            try: bot.delete_message(cid, c.message.message_id)
-            except Exception as e:
-                if "message to delete not found" not in str(e): logging.error(f"[LUCKY AGAIN DEL] {e}")
-            bot.answer_callback_query(c.id)
-            return play_lucky_game(cid, uid, c.from_user.first_name)
-
-        if action == "wg" and len(parts) >= 2 and parts[1] == "startnow":
-            with state_lock: lobby = pending_word_lobbies.get(cid)
-            if not lobby: return bot.answer_callback_query(c.id, "Лобби не найдено.", show_alert=True)
-            if uid != lobby["creator_id"] and get_admin_rank(cid, uid) < 5 and get_admin_rank(cid, uid) < 3:
-                return bot.answer_callback_query(c.id, "⛔ Только создатель или админ могут начать игру раньше.", show_alert=True)
-            if len(lobby["players"]) < MIN_WORD_PLAYERS:
-                return bot.answer_callback_query(c.id, f"⚠️ Нужно минимум {MIN_WORD_PLAYERS} участника, чтобы начать игру.", show_alert=True)
-            bot.answer_callback_query(c.id, "🚀 Запускаю игру!")
-            executor.submit(start_word_game_now, cid)
-            return
-
-        if d == "what_can_i_do":
-            bot.answer_callback_query(c.id)
-            txt_can_do = (
-                "✨ <b>ЧТО Я УМЕЮ</b>\n\n"
-                "🔹 Общаюсь и поддерживаю беседу\n"
-                "🔹 Слежу за порядком и матом в чате\n"
-                "🔹 Автопостинг по расписанию\n"
-                "🔹 Игры: /lucky_game, сейф, /start_words_game\n"
-                "🔹 Иногда сама встреваю в чат и ставлю реакции 🔥"
-            )
-            return bot.edit_message_text(txt_can_do, cid, c.message.message_id, parse_mode='HTML', reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
-            
-        if d == "back_to_start":
-            bot.answer_callback_query(c.id)
-            kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Что ты умеешь?", callback_data="what_can_i_do"))
-            if get_admin_rank(cid, uid) >= 5: kb.add(types.InlineKeyboardButton("⚙️ Настройки", callback_data="open_main_settings"))
-            back_txt = (
-                f"👋 Привет, {get_user_mention(c.from_user)}!\n"
-                "Я <b>Лиза</b> 🌿 — слежу за порядком и веселю чат.\n\n"
-            )
-            return bot.edit_message_text(back_txt, cid, c.message.message_id, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
-
-        if d == "liza_setup_help":
-            bot.answer_callback_query(c.id)
-            txt = ("⚙️ <b>УСТАНОВКА ЛИЗЫ</b>\n\n"
-                   "1. Нажми «Добавить Лизу в группу».\n"
-                   "2. Выбери нужную группу.\n"
-                   "3. Назначь Лизу администратором и не отключай выданные права.\n"
-                   "4. В группе используй <code>+Правила</code>, <code>+Приветствие</code> и <code>Настройки</code>.\n\n"
-                   "Лиза работает в любой группе, куда её добавили.")
-            return bot.edit_message_text(txt, cid, c.message.message_id, parse_mode="HTML",
-                                         reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data="back_to_start")))
-        if d == "noop":
-            return bot.answer_callback_query(c.id, "ℹ️ Добавьте Лизу хотя бы в одну группу.", show_alert=True)
-
-        if d == "open_main_settings":
-            if (is_pv and get_admin_rank(cid, uid) < 5) or (not is_pv and get_admin_rank(cid, uid) < 5):
-                return bot.answer_callback_query(c.id, "⛔ Только создатель чата может менять базовые настройки.", show_alert=True)
-            bot.answer_callback_query(c.id)
-            return bot.edit_message_text("🎛 <b>Панель управления Лизой</b> ✨\n\nНастрой поведение и функции бота под свой чат. Изменения сохраняются автоматически.", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv), parse_mode='HTML')
-
-        if d.startswith("m:") or action == "s":
-            if (is_pv and get_admin_rank(cid, uid) < 5) or (not is_pv and get_admin_rank(cid, uid) < 5):
-                return bot.answer_callback_query(c.id, "⛔ Только создатель чата может менять эти настройки.", show_alert=True)
-
-        if d == "m:toggle_intervene":
-            set_v(cid, "intervene", not get_v(cid, "intervene", True))
-            bot.answer_callback_query(c.id)
-            return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
-            
-        if d == "m:toggle_sys":
-            set_v(cid, "del_sys", not get_v(cid, "del_sys", False))
-            bot.answer_callback_query(c.id)
-            return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
-
-        if d == "m:toggle_reactions":
-            set_v(cid, "random_reactions", not get_v(cid, "random_reactions", True))
-            bot.answer_callback_query(c.id)
-            return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
-
-        if d == "m:toggle_butt_in":
-            set_v(cid, "butt_in", not get_v(cid, "butt_in", False))
-            bot.answer_callback_query(c.id)
-            return bot.edit_message_reply_markup(cid, c.message.message_id, reply_markup=main_kb(cid, is_pv))
-
-        if d in ["m:freq", "m:anger", "m:butt_in_chance"]:
-            bot.answer_callback_query(c.id)
-            t = {"m:freq": "freq", "m:anger": "anger", "m:butt_in_chance": "butt_in_chance"}[d]
-            kb = types.InlineKeyboardMarkup(row_width=4)
-            kb.add(*[types.InlineKeyboardButton(f"{v}%", callback_data=f"s:{t}:{v}") for v in [5, 10, 15, 20, 30, 50, 70, 100]])
-            kb.add(types.InlineKeyboardButton("« Назад", callback_data="open_main_settings"))
-            labels = {"freq": "📊 Частота ответов", "anger": "😠 Токсичность", "butt_in_chance": "🎚 Шанс вмешаться в диалог"}
-            return bot.edit_message_text(f"{labels[t]} — выберите значение:", cid, c.message.message_id, reply_markup=kb)
-
-        if action == "s":
-            t, v = parts[1], parts[2]
-            bot.answer_callback_query(c.id, "✅ Сохранено")
-            set_v(cid, t, int(v))
-            return bot.edit_message_text("🎛 <b>Панель управления Лизой</b> ✨\n\nНастрой поведение и функции бота под свой чат. Изменения сохраняются автоматически.", cid, c.message.message_id, reply_markup=main_kb(cid, is_pv), parse_mode='HTML')
-
-        if d == "to_group_settings" and get_admin_rank(cid, uid) >= 5:
-            try: bot.send_message(uid, "📢 <b>Выбор чата для автопостинга</b>\n\nВыбери группу, в которой Лиза будет публиковать посты:", reply_markup=chats_selection_kb(), parse_mode='HTML')
-            except: return bot.answer_callback_query(c.id, "⚠️ Нажми Start в ЛС с ботом.", show_alert=True)
-            return bot.answer_callback_query(c.id, "📤 Отправлено в ЛС")
-
-        if d == "m:autopost_list":
-            bot.answer_callback_query(c.id)
-            return bot.edit_message_text("📢 <b>Выбор чата для автопостинга</b>\n\nВыбери группу, в которой Лиза будет публиковать посты:", cid, c.message.message_id, reply_markup=chats_selection_kb(), parse_mode='HTML')
-
-        if action == "ap":
-            sub = parts[1]
-            if sub == "chat":
-                target_cid = parts[2]
-                bot.answer_callback_query(c.id)
-                return bot.edit_message_text("📋 <b>Посты в этой группе:</b>", cid, c.message.message_id, reply_markup=autopost_list_kb(target_cid), parse_mode='HTML')
-            elif sub == "select":
-                pid = parts[2]
-                with state_lock: active_fsm[uid] = {"action": "editing", "pid": pid}
-                bot.answer_callback_query(c.id)
-                return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid), parse_mode='HTML')
-            elif sub == "create":
-                c_str = parts[2]
-                with state_lock:
-                    data = db_get("autopost", {"posts": []})
-                    new_id = str(int(time.time()))
-                    data["posts"].append({
-                        "id": new_id, "name": f"Пост #{len([p for p in data['posts'] if str(p.get('chat_id'))==c_str])+1}",
-                        "enabled": False, "interval": 3600, "daily_time": None, "start_date": None,
-                        "auto_delete_prev": False, "last_msg_id": None, "text": "Текст...",
-                        "photo": None, "buttons": [], "last_post": 0, "chat_id": int(c_str) if c_str.lstrip('-').isdigit() else c_str
-                    })
-                    db_set("autopost", data)
-                bot.answer_callback_query(c.id, "✅ Пост создан")
-                return bot.edit_message_text("📋 <b>Посты в этой группе:</b>", cid, c.message.message_id, reply_markup=autopost_list_kb(c_str), parse_mode='HTML')
-            elif sub == "delmenu":
-                bot.answer_callback_query(c.id)
-                kb = types.InlineKeyboardMarkup(row_width=1)
-                target_chat = parts[2]
-                for p in [p for p in db_get("autopost", {"posts": []}).get("posts", []) if str(p.get("chat_id")) == target_chat]:
-                    kb.add(types.InlineKeyboardButton(trim_btn_text(f"🗑 Удалить: {p.get('name', 'Пост')}"), callback_data=f"ap:delfinal:{p['id']}"))
-                return bot.edit_message_text("🗑 <b>Какой пост удалить?</b>", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:chat:{target_chat}")), parse_mode='HTML')
-            elif sub == "delfinal":
-                pid = parts[2]
-                with state_lock:
-                    data = db_get("autopost", {"posts": []})
-                    c_str = next((str(p.get("chat_id")) for p in data["posts"] if p["id"] == pid), str(cid))
-                    data["posts"] = [p for p in data["posts"] if p["id"] != pid]
-                    db_set("autopost", data)
-                bot.answer_callback_query(c.id, "🗑 Пост удалён")
-                return bot.edit_message_text("📋 <b>Посты в этой группе:</b>", cid, c.message.message_id, reply_markup=autopost_list_kb(c_str), parse_mode='HTML')
-            elif sub in ["toggle", "autodel", "pin"]:
-                pid = parts[2]
-                with state_lock:
-                    data = db_get("autopost", {"posts": []})
-                    for p in data["posts"]:
-                        if p["id"] == pid:
-                            if sub == "toggle": p["enabled"] = not p.get("enabled", False)
-                            elif sub == "autodel": p["auto_delete_prev"] = not p.get("auto_delete_prev", False)
-                            else: p["pin_after_send"] = not p.get("pin_after_send", False)
-                    db_set("autopost", data)
-                bot.answer_callback_query(c.id, "✅")
-                return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid), parse_mode='HTML')
-            elif sub == "int_menu":
-                pid = parts[2]
-                bot.answer_callback_query(c.id)
-                kb = types.InlineKeyboardMarkup(row_width=3)
-                kb.add(types.InlineKeyboardButton("15м", callback_data=f"ap:setint:{pid}:900"), types.InlineKeyboardButton("1ч", callback_data=f"ap:setint:{pid}:3600"), types.InlineKeyboardButton("6ч", callback_data=f"ap:setint:{pid}:21600"))
-                kb.add(types.InlineKeyboardButton("Выкл", callback_data=f"ap:setint:{pid}:0"), types.InlineKeyboardButton("✏ Свое", callback_data=f"ap:custom_int:{pid}"))
-                return bot.edit_message_text("⏱ Выберите интервал:", cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-            elif sub in ["setint", "settime", "setdate", "clrbtns", "delph"]:
-                pid = parts[2]
-                with state_lock:
-                    data = db_get("autopost", {"posts": []})
-                    for p in data["posts"]:
-                        if p["id"] == pid:
-                            if sub == "setint": p["interval"], p["daily_time"] = int(parts[3]), None
-                            elif sub == "settime": p["daily_time"] = None if parts[3] == "OFF" else parts[3]
-                            elif sub == "setdate": p["start_date"] = None if parts[3] == "OFF" else parts[3]
-                            elif sub == "clrbtns": p["buttons"] = []
-                            elif sub == "delph": p["photo"] = None
-                    db_set("autopost", data)
-                bot.answer_callback_query(c.id, "✅ Сохранено")
-                return bot.edit_message_text(post_text_view(pid), cid, c.message.message_id, reply_markup=post_settings_kb(pid), parse_mode='HTML')
-            elif sub.startswith("custom_") or sub in ["text", "btns", "photo"]:
-                pid = parts[2]
-                with state_lock:
-                    if "custom_int" in d: act = "interval"
-                    elif "custom_time" in d: act = "time"
-                    elif "custom_date" in d: act = "date"
-                    elif sub == "text": act = "text"
-                    elif sub == "btns": act = "buttons"
-                    elif sub == "photo": act = "photo"
-                    else: act = None
-                    active_fsm[uid] = {"action": act, "pid": pid}
-                bot.answer_callback_query(c.id)
-                msgs = {
-                    "interval": "⏱ Отправьте интервал в формате: <b>45м</b>, <b>3ч</b> или <b>1д</b>.",
-                    "time": "🕑 Отправьте время в формате <b>ЧЧ:ММ</b>, например: <b>14:30</b>.",
-                    "date": "📅 Отправьте дату старта в формате <b>ГГГГ-ММ-ДД</b>, например: <b>2026-10-01</b>.",
-                    "text": "📝 Отправьте новый текст поста.",
-                    "buttons": (
-                        "🔘 Отправьте кнопки, каждая строка — новый ряд, кнопки через «|»:\n\n"
-                        "<code>Текст - https://ссылка.com</code>\n"
-                        "<code>Текст - cmd:/lucky_game</code>"
-                    ),
-                    "photo": "🖼 Отправьте фото в этот чат."
-                }
-                return bot.send_message(cid, msgs.get(act, "✏️ Отправьте значение:"), parse_mode='HTML')
-            elif sub in ["photo_menu", "btns_menu", "time_menu", "date_menu"]:
-                pid = parts[2]
-                bot.answer_callback_query(c.id)
-                kb = types.InlineKeyboardMarkup(row_width=1)
-                if sub == "photo_menu": kb.add(types.InlineKeyboardButton("🖼 Загрузить", callback_data=f"ap:photo:{pid}"), types.InlineKeyboardButton("🗑 Удалить", callback_data=f"ap:delph:{pid}"))
-                elif sub == "btns_menu": kb.add(types.InlineKeyboardButton("➕ Настроить", callback_data=f"ap:btns:{pid}"), types.InlineKeyboardButton("🗑 Удалить все", callback_data=f"ap:clrbtns:{pid}"))
-                elif sub == "time_menu": kb.add(types.InlineKeyboardButton("12:00", callback_data=f"ap:settime:{pid}:12:00"), types.InlineKeyboardButton("Выкл", callback_data=f"ap:settime:{pid}:OFF"), types.InlineKeyboardButton("Свое", callback_data=f"ap:custom_time:{pid}"))
-                elif sub == "date_menu": kb.add(types.InlineKeyboardButton("Сразу", callback_data=f"ap:setdate:{pid}:OFF"), types.InlineKeyboardButton("Ввести", callback_data=f"ap:custom_date:{pid}"))
-                sub_titles = {"photo_menu": "🖼 <b>Фото поста</b>", "btns_menu": "🔘 <b>Кнопки поста</b>", "time_menu": "🕑 <b>Ежедневное время</b>", "date_menu": "📅 <b>Дата старта</b>"}
-                return bot.edit_message_text(sub_titles.get(sub, "⚙️ Настройка:"), cid, c.message.message_id, reply_markup=kb.add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")), parse_mode='HTML')
-            elif sub == "send":
-                pid = parts[2]
-                with state_lock:
-                    data = db_get("autopost", {"posts": []})
-                    post = next((p for p in data["posts"] if p["id"] == pid), None)
-                if post:
-                    try:
-                        send_specific_post(int(post.get("chat_id", cid)), post)
-                        with state_lock:
-                            fresh = db_get("autopost", {"posts": []})
-                            for p in fresh.get("posts", []):
-                                if p["id"] == pid:
-                                    p["last_post"] = time.time()
-                                    p["last_msg_id"] = post.get("last_msg_id")
-                                    if "last_pinned_msg_id" in post: p["last_pinned_msg_id"] = post["last_pinned_msg_id"]
-                            db_set("autopost", fresh)
-                        return bot.answer_callback_query(c.id, "🚀 Отправлено!", show_alert=True)
-                    except Exception as e:
-                        logging.error(f"[MANUAL SEND] {e}")
-                        return bot.answer_callback_query(c.id, "⚠️ Ошибка", show_alert=True)
-            elif sub == "preview":
-                pid = parts[2]
-                bot.answer_callback_query(c.id)
-                with state_lock: post = next((p for p in db_get("autopost", {"posts": []}).get("posts", []) if p["id"] == pid), None)
-                if post:
-                    mk = build_post_user_kb(post)
-                    bot.send_message(cid, "👁 <b>Предпросмотр поста</b>\n\nТак публикация будет выглядеть для участников.", parse_mode='HTML')
-                    if post.get("photo"): bot.send_photo(cid, post.get("photo"), caption=post.get("text", ""), reply_markup=mk, parse_mode='HTML')
-                    else: bot.send_message(cid, post.get("text", ""), reply_markup=mk, parse_mode='HTML')
-                    return bot.send_message(cid, "☝️ <b>Предпросмотр готов</b>\nИменно так пост увидят подписчики.", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-        bot.answer_callback_query(c.id)
-    except Exception as e: logging.error(f"[CALLBACK ERROR] {e}", exc_info=True)
 
 def on_photo(m):
     try:
         if not check_access(m): return
         uid = m.from_user.id
-        if m.chat.type == 'private' and get_admin_rank(cid, uid) >= 5:
-            with state_lock: fsm = active_fsm.get(uid)
-            if fsm and fsm.get("action") == "photo":
-                pid = fsm["pid"]
-                with state_lock:
-                    active_fsm.pop(uid, None)
-                    data = db_get("autopost", {"posts": []})
-                    for p in data["posts"]:
-                        if p["id"] == pid: p["photo"] = m.photo[-1].file_id
-                    db_set("autopost", data)
-                bot.reply_to(m, "✅ Фото сохранено!", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
         record_xp_and_stats(m)
     except Exception as e: logging.error(f"[ON PHOTO] {e}", exc_info=True)
 
@@ -818,1510 +250,108 @@ def on_photo(m):
 # шипперинг, случайные числа и повтор текста.
 # ============================================================
 
-def _fun_state():
-    return db_get("fun_state", {}) or {}
-
-def _save_fun_state(v):
-    db_set("fun_state", v)
-
-def _target_from_message(m, parts=None):
-    parts = parts or m.text.split()
-    try:
-        uid, name, rest = extract_target_and_args(m, parts)
-        return uid, name
-    except Exception:
-        return None, None
-
-def _entertainment_command(m, t_lower):
-    cid, uid = m.chat.id, m.from_user.id
-
-    # Русская рулетка. По умолчанию проигравший удаляется из чата.
-    if t_lower in ("!русская рулетка", "русская рулетка", "ирис рулетка", "!рулетка", "рулетка"):
-        if not command_allowed_by_dk(cid, uid, "русская рулетка"):
-            return reply_no_rights(m)
-        lost = random.randint(1, 6) == 1
-        if lost:
-            try:
-                bot.delete_message(cid, m.message_id)
-            except Exception:
-                pass
-            try:
-                bot.ban_chat_member(cid, uid)
-                bot.unban_chat_member(cid, uid, only_if_banned=True)
-                return bot.send_message(cid, f"🔫 {get_user_mention(m.from_user)} проиграл(а) в русскую рулетку и был(а) удалён(а) из чата!")
-            except Exception:
-                return bot.send_message(cid, f"💥 {get_user_mention(m.from_user)} проиграл(а) в русскую рулетку!")
-        return bot.send_message(cid, f"😮‍💨 {get_user_mention(m.from_user)} выжил(а) в русской рулетке.")
-
-    # Дуэль: предложение пользователю, принятие через кнопку.
-    if t_lower.startswith("дуэль ") or t_lower == "дуэль да":
-        if not command_allowed_by_dk(cid, uid, "дуэль"):
-            return reply_no_rights(m)
-        if t_lower == "дуэль да":
-            return _duel_accept(m)
-        target_uid, target_name = _target_from_message(m)
-        if not target_uid or target_uid == uid:
-            return bot.send_message(cid, "⚠️ <b>Нужен другой участник</b>\nОтветь на его сообщение или укажи @username.")
-        state=_fun_state(); key=f"duel:{cid}"
-        if key in state:
-            return bot.send_message(cid,"⚠️ <b>В чате уже есть активная дуэль</b>\nСначала заверши или отмени текущее предложение.")
-        state[key]={"chat_id":cid,"from":uid,"to":target_uid,"from_name":m.from_user.first_name,"to_name":target_name,"created":time.time()}; _save_fun_state(state)
-        kb=types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("⚔️ Принять дуэль",callback_data=f"fun_duel:{cid}:{uid}:{target_uid}"))
-        return bot.send_message(cid,f"⚔️ {get_user_mention(m.from_user)} вызывает {get_user_mention(user_id=target_uid,first_name=target_name)} на дуэль!",reply_markup=kb)
-
-    if t_lower in ("дуэль отмена", "-дуэль"):
-        state=_fun_state(); key=f"duel:{cid}"
-        d=state.get(key)
-        if d and (d["from"]==uid or get_admin_rank(cid,uid)>=5):
-            state.pop(key,None); _save_fun_state(state)
-            return bot.send_message(cid,"🛑 <b>Предложение дуэли отменено</b>\nНовая дуэль доступна в любой момент.")
-        return bot.send_message(cid,"ℹ️ <b>Активной дуэли нет</b>\nСначала создай предложение о дуэли.")
-
-    if t_lower in ("выстрел", "прицелиться", "сбросить прицел"):
-        state=_fun_state(); key=f"duel:{cid}"; d=state.get(key)
-        if t_lower=="сбросить прицел":
-            state.pop(f"aim:{cid}:{uid}",None); _save_fun_state(state)
-            return bot.send_message(cid,"🎯 <b>Прицел сброшен</b>\nМожно прицелиться заново.")
-        if not d: return bot.send_message(cid,"⚠️ <b>Активной дуэли нет</b>\nСоздай дуэль и дождись согласия второго игрока.")
-        if uid not in (d.get("from"),d.get("to")): return bot.send_message(cid,"⚠️ <b>Ты не участник этой дуэли</b>\nУправлять этим матчем могут только его участники.")
-        if t_lower=="прицелиться":
-            state[f"aim:{cid}:{uid}"]=int(time.time()); _save_fun_state(state)
-            return bot.send_message(cid,"🎯 Прицел установлен. Теперь команда <b>Выстрел</b>.",parse_mode="HTML")
-        state.pop(key,None); state.pop(f"aim:{cid}:{uid}",None); _save_fun_state(state)
-        winner,loser=(uid,d["to"]) if random.randint(1,6)==1 else (d["to"] if uid==d["from"] else d["from"],uid)
-        stats=db_get("duel_stats",{}) or {}; chat=stats.setdefault(str(cid),{})
-        for sid in (d["from"],d["to"]): chat.setdefault(str(sid),{"wins":0,"draws":0,"losses":0})
-        chat[str(winner)]["wins"]+=1; chat[str(loser)]["losses"]+=1; db_set("duel_stats",stats)
-        outcome=get_v(cid,"duel_outcome","кик") or "кик"
-        if outcome!="0":
-            try:
-                bot.ban_chat_member(cid,loser)
-                if outcome!="бан навсегда": bot.unban_chat_member(cid,loser,only_if_banned=True)
-            except Exception: pass
-        return bot.send_message(cid,f"💥 Выстрел! Победитель: {get_user_mention(user_id=winner)}\n💀 Проигравший: {get_user_mention(user_id=loser)}")
-
-    if t_lower in ("дуэли стата", "стата дуэлей"):
-        stats=db_get("duel_stats",{}).get(str(cid),{}) or {}
-        rows=[]
-        for sid,row in stats.items():
-            wins=int(row.get("wins",0)); draws=int(row.get("draws",0)); losses=int(row.get("losses",0))
-            rows.append((wins,draws,losses,int(sid)))
-        rows.sort(key=lambda x:(x[0],-x[2]), reverse=True)
-        lines=[f"{i}. {get_user_mention(user_id=sid)} — 🏆 {w} / 🤝 {d} / 💥 {l}" for i,(w,d,l,sid) in enumerate(rows[:20],1)]
-        return bot.send_message(cid,"⚔️ <b>СТАТИСТИКА ДУЭЛЕЙ</b>\n\n"+("\n".join(lines) if lines else "Дуэлей пока не было."),parse_mode="HTML")
-
-    if t_lower in ("!дуэли сброс", "сброс дуэлей"):
-        if get_admin_rank(cid,uid)<3: return reply_no_rights(m)
-        stats=db_get("duel_stats",{}) or {}; stats.pop(str(cid),None); db_set("duel_stats",stats)
-        return bot.send_message(cid,"🧹 <b>Статистика дуэлей сброшена</b>\nИстория результатов для этого чата очищена.")
-
-    if t_lower.startswith("дуэли исход"):
-        if get_admin_rank(cid,uid)<3: return reply_no_rights(m)
-        value=t_lower.split(None,2)[-1].strip() if len(t_lower.split())>=3 else "0"
-        allowed=("0","кик","бан минута","бан 10 минут","бан час","бан сутки","бан навсегда")
-        if value not in allowed:
-            return bot.send_message(cid,"⚠️ Варианты: <code>0</code>, <code>кик</code>, <code>бан минута</code>, <code>бан 10 минут</code>, <code>бан час</code>, <code>бан сутки</code>, <code>бан навсегда</code>.",parse_mode="HTML")
-        set_chat_setting(cid,"duel_outcome",value)
-        return bot.send_message(cid,f"⚔️ Исход дуэлей установлен: <b>{html.escape(value)}</b>",parse_mode="HTML")
-
-    if t_lower in ("кубы стата", "стата кубов"):
-        stats=db_get("dice_stats",{}).get(str(cid),{}) or {}; rows=[]
-        for sid,row in stats.items():
-            rows.append((int(row.get("wins",0)),int(row.get("draws",0)),int(row.get("losses",0)),int(sid)))
-        rows.sort(key=lambda x:(x[0],-x[2]),reverse=True)
-        lines=[f"{i}. {get_user_mention(user_id=sid)} — 🏆 {w} / 🤝 {d} / 💥 {l}" for i,(w,d,l,sid) in enumerate(rows[:20],1)]
-        return bot.send_message(cid,"🎲 <b>СТАТИСТИКА КУБОВ</b>\n\n"+("\n".join(lines) if lines else "Игр пока не было."),parse_mode="HTML")
-
-    if t_lower in ("!кубы сброс", "сброс кубов"):
-        if get_admin_rank(cid,uid)<3: return reply_no_rights(m)
-        stats=db_get("dice_stats",{}) or {}; stats.pop(str(cid),None); db_set("dice_stats",stats)
-        return bot.send_message(cid,"🧹 <b>Статистика кубов сброшена</b>\nИстория результатов для этого чата очищена.")
-
-    if t_lower.startswith("кубы исход"):
-        if get_admin_rank(cid,uid)<3: return reply_no_rights(m)
-        value=t_lower.split(None,2)[-1].strip() if len(t_lower.split())>=3 else "0"
-        allowed=("0","кик","бан минута","бан 10 минут","бан час","бан сутки","бан навсегда")
-        if value not in allowed:
-            return bot.send_message(cid,"⚠️ Варианты: <code>0</code>, <code>кик</code>, <code>бан минута</code>, <code>бан 10 минут</code>, <code>бан час</code>, <code>бан сутки</code>, <code>бан навсегда</code>.",parse_mode="HTML")
-        set_chat_setting(cid,"dice_outcome",value)
-        return bot.send_message(cid,f"🎲 Исход кубов установлен: <b>{html.escape(value)}</b>",parse_mode="HTML")
-
-    if t_lower.startswith("кубы ") or t_lower == "кубы да":
-        if not command_allowed_by_dk(cid, uid, "кубы"):
-            return reply_no_rights(m)
-        if t_lower == "кубы да":
-            return _dice_accept(m)
-        target_uid, target_name = _target_from_message(m)
-        if not target_uid or target_uid == uid:
-            return bot.send_message(cid,"⚠️ Укажи другого участника ответом или через @username.")
-        state=_fun_state(); key=f"dice:{cid}"
-        if key in state:
-            return bot.send_message(cid,"⚠️ <b>В чате уже есть игра в кубы</b>\nСначала заверши или отмени текущую игру.")
-        state[key]={"chat_id":cid,"from":uid,"to":target_uid,"from_name":m.from_user.first_name,"to_name":target_name,"created":time.time()}; _save_fun_state(state)
-        kb=types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("🎲 Принять игру",callback_data=f"fun_dice:{cid}:{uid}:{target_uid}"))
-        return bot.send_message(cid,f"🎲 {get_user_mention(m.from_user)} предлагает {get_user_mention(user_id=target_uid,first_name=target_name)} сыграть в кубы!",reply_markup=kb)
-
-    if t_lower == "кубы отмена":
-        state=_fun_state(); key=f"dice:{cid}"; d=state.get(key)
-        if d and (d["from"]==uid or get_admin_rank(cid,uid)>=5):
-            state.pop(key,None); _save_fun_state(state); return bot.send_message(cid,"🛑 <b>Игра в кубы отменена</b>\nМожно запустить новую игру.")
-        return bot.send_message(cid,"ℹ️ <b>Активной игры в кубы нет</b>\nСоздай новое предложение, чтобы начать.")
-
-    if t_lower.startswith("рандом"):
-        parts=m.text.split()
-        nums=[]
-        for x in parts[1:3]:
-            try: nums.append(int(x))
-            except ValueError: pass
-        if not nums or len(nums)>2:
-            return bot.send_message(cid,"🎲 Формат: <code>Рандом 100</code> или <code>Рандом 10 100</code>",parse_mode="HTML")
-        a,b=(0,nums[0]) if len(nums)==1 else (nums[0],nums[1])
-        if a>b: a,b=b,a
-        return bot.send_message(cid,f"🎲 <b>Случайное число</b>: <b>{random.randint(a,b)}</b>",parse_mode="HTML")
-
-    # Iris-style simple random utilities. They intentionally require no external API.
-    if t_lower.startswith(("инфа ", "!инфа ")):
-        if not command_allowed_by_dk(cid, uid, "инфа"): return reply_no_rights(m)
-        text=m.text.split(None,1)[1].strip()
-        return bot.send_message(cid, f"🔮 <b>Шанс</b>: <b>{random.randint(0,100)}%</b>\n\n{html.escape(text)}", parse_mode="HTML")
-
-    if t_lower.startswith(("выбери ", "!выбери ")):
-        if not command_allowed_by_dk(cid, uid, "выбери"): return reply_no_rights(m)
-        raw=m.text.split(None,1)[1].strip()
-        options=[x.strip() for x in re.split(r"\s+(?:или|либо)\s+|\s*\|\s*", raw, flags=re.I) if x.strip()]
-        if len(options)<2:
-            return bot.send_message(cid,"⚠️ Формат: <code>Выбери чай или кофе</code>",parse_mode="HTML")
-        return bot.send_message(cid, f"🎯 <b>Мой выбор</b>: <b>{html.escape(random.choice(options))}</b>", parse_mode="HTML")
-
-    if t_lower.startswith(("данет ", "!данет ")):
-        if not command_allowed_by_dk(cid, uid, "данет"): return reply_no_rights(m)
-        question=m.text.split(None,1)[1].strip()
-        answer=random.choice(("Да", "Нет", "Неопределённо"))
-        return bot.send_message(cid, f"🔮 {html.escape(question)}\n\n<b>{answer}</b>", parse_mode="HTML")
-
-    if t_lower.startswith(("жребий ", "!жребий ")):
-        raw=m.text.split(None,1)[1].strip()
-        parts=[x for x in raw.split() if x]
-        targets=[]
-        for part in parts:
-            if part.startswith("@"):
-                targets.append(part)
-        if len(targets)<2:
-            return bot.send_message(cid,"⚠️ Укажи минимум двух участников через @username.")
-        return bot.send_message(cid, f"🎲 Жребий выбрал: <b>{html.escape(random.choice(targets))}</b>", parse_mode="HTML")
-
-    if t_lower.startswith(("кто ", "!кто ")):
-        question=m.text.split(None,1)[1].strip()
-        members=db_get("chat_members",{}).get(str(cid),{}) or {}
-        candidates=[]
-        for sid,info in members.items():
-            try: suid=int(sid)
-            except Exception: continue
-            if suid!=uid and isinstance(info,dict) and not info.get("is_bot",False):
-                candidates.append((suid,info.get("name","Участник")))
-        if candidates:
-            chosen=random.choice(candidates)
-            return bot.send_message(cid, f"👀 {html.escape(question)} — {get_user_mention(user_id=chosen[0], first_name=chosen[1])}", parse_mode="HTML")
-        return bot.send_message(cid, f"👀 {html.escape(question)} — {get_user_mention(m.from_user)}", parse_mode="HTML")
-
-    if t_lower in ("пинг", "кинг", "пиу", "бот"):
-        replies={"пинг":"🏓 Понг!", "кинг":"👑 Конг!", "пиу":"🔫 Пау!", "бот":"🤖 Я на месте!"}
-        return bot.send_message(cid, replies[t_lower])
-
-    if t_lower.startswith("!скажи") or t_lower.startswith("скажи"):
-        text=m.text.split(None,1)[1] if len(m.text.split(None,1))>1 else ""
-        if not text.strip(): return bot.send_message(cid,"💬 Напиши текст после команды.")
-        return bot.send_message(cid,html.escape(text),parse_mode="HTML")
-
-    if t_lower in ("шипперим","шипперим ") or t_lower.startswith("шипперим "):
-        if not command_allowed_by_dk(cid,uid,"шипперим"): return reply_no_rights(m)
-        target_uid,target_name=_target_from_message(m)
-        members=db_get("chat_members",{}).get(str(cid),{}) or {}
-        candidates=[]
-        for sid,info in members.items():
-            try: sid=int(sid)
-            except: continue
-            if sid!=uid and not (target_uid and sid!=target_uid):
-                if not info.get("is_bot",False): candidates.append((sid,info.get("name","Участник")))
-        if target_uid:
-            candidates=[(target_uid,target_name or "Участник")]
-        if not candidates: return bot.send_message(cid,"😿 Пока некого шипперить.")
-        pair=random.choice(candidates)
-        state=_fun_state(); pairs=state.setdefault(f"ships:{cid}",[])
-        pairs.append([uid,pair[0],time.time()]); _save_fun_state(state)
-        return bot.send_message(cid,f"💞 {get_user_mention(m.from_user)} × {get_user_mention(user_id=pair[0],first_name=pair[1])}\nПохоже, у этой пары есть химия! ✨")
-
-    if t_lower in ("пейринг","общий пейринг"):
-        state=_fun_state(); pairs=state.get(f"ships:{cid}",[]) or []
-        if not pairs: return bot.send_message(cid,"💞 Пейрингов пока нет.")
-        lines=[]
-        for a,b,_ in pairs[-20:]: lines.append(f"• {get_user_mention(user_id=a)} × {get_user_mention(user_id=b)}")
-        return bot.send_message(cid,"💞 <b>ПЕЙРИНГИ</b>\n\n"+"\n".join(lines),parse_mode="HTML")
-
-    if t_lower == "!сбросить пейринг":
-        state=_fun_state(); state.pop(f"ships:{cid}",None); _save_fun_state(state)
-        return bot.send_message(cid,"🧹 История пейрингов очищена.")
-
-    if t_lower in ("+шип меня","-шип меня"):
-        state=_fun_state(); key=f"shipopt:{cid}"; opts=state.get(key,{})
-        opts[str(uid)] = t_lower.startswith("+")
-        state[key]=opts; _save_fun_state(state)
-        return bot.send_message(cid,"💞 Тебя можно шипперить." if opts[str(uid)] else "🚫 Тебя больше не будут шипперить.")
-
-    return None
 
 
-def _duel_accept(m):
-    cid,uid=m.chat.id,m.from_user.id; state=_fun_state(); key=f"duel:{cid}"; d=state.get(key)
-    if not d or d["to"]!=uid: return bot.send_message(cid,"⚠️ Для тебя нет активного предложения дуэли.")
-    state.pop(key,None); _save_fun_state(state)
-    winner,loser=(d["from"],uid) if random.choice([True,False]) else (uid,d["from"])
-    stats=db_get("duel_stats",{}) or {}; chat=stats.setdefault(str(cid),{})
-    for sid in (d["from"], uid):
-        chat.setdefault(str(sid), {"wins":0,"draws":0,"losses":0})
-    chat[str(winner)]["wins"] += 1; chat[str(loser)]["losses"] += 1
-    db_set("duel_stats",stats)
-    outcome=get_v(cid,"duel_outcome","кик") or "кик"
-    try:
-        if outcome != "0":
-            bot.ban_chat_member(cid,loser)
-            if outcome != "бан навсегда":
-                bot.unban_chat_member(cid,loser,only_if_banned=True)
-    except Exception: pass
-    return bot.send_message(cid,f"⚔️ Дуэль окончена! Победитель: {get_user_mention(user_id=winner)}\n💥 Проигравший: {get_user_mention(user_id=loser)}")
 
 
-def _dice_accept(m):
-    cid,uid=m.chat.id,m.from_user.id; state=_fun_state(); key=f"dice:{cid}"; d=state.get(key)
-    if not d or d["to"]!=uid: return bot.send_message(cid,"⚠️ Для тебя нет активного предложения в кубы.")
-    state.pop(key,None); _save_fun_state(state)
-    try:
-        a=bot.send_dice(cid,emoji="🎲"); b=bot.send_dice(cid,emoji="🎲")
-        av=getattr(a.dice,"value",0); bv=getattr(b.dice,"value",0)
-        stats=db_get("dice_stats",{}) or {}; chat=stats.setdefault(str(cid),{})
-        for sid in (d["from"],uid): chat.setdefault(str(sid),{"wins":0,"draws":0,"losses":0})
-        if av==bv:
-            for sid in (d["from"],uid): chat[str(sid)]["draws"]+=1
-            db_set("dice_stats",stats)
-            return bot.send_message(cid,f"🎲 Ничья! {av} : {bv}")
-        winner,loser=(d["from"],uid) if av>bv else (uid,d["from"])
-        chat[str(winner)]["wins"]+=1; chat[str(loser)]["losses"]+=1; db_set("dice_stats",stats)
-        outcome=get_v(cid,"dice_outcome","0") or "0"
-        if outcome!="0":
-            try:
-                bot.ban_chat_member(cid,loser)
-                if outcome!="бан навсегда": bot.unban_chat_member(cid,loser,only_if_banned=True)
-            except Exception: pass
-        return bot.send_message(cid,f"🎲 Результат: {av} : {bv}\n🏆 Победитель: {get_user_mention(user_id=winner)}\n💥 Проигравший: {get_user_mention(user_id=loser)}")
-    except Exception as e:
-        logging.error(f"[DICE] {e}"); return bot.send_message(cid,"⚠️ Не удалось запустить кубы.")
+
+
+
+
+
 
 
 
 # ============================================================
 # IRIS: заметки и таймеры — реальные сохранение/доставка
 # ============================================================
-def _parse_duration(value):
-    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(с|сек|секунд[аы]?|м|мин|минут[аы]?|ч|час|часа|часов|д|дн|дня|дней)", value.strip().lower())
-    if not m:
-        return None
-    n=float(m.group(1)); unit=m.group(2)
-    mult=1 if unit in ('с','сек','секунда','секунды','секунд') else 60 if unit in ('м','мин','минута','минуты','минут') else 3600 if unit in ('ч','час','часа','часов') else 86400
-    seconds=int(n*mult)
-    return seconds if seconds>0 else None
 
-def _notes_for(uid):
-    return db_get('user_notes', {}).get(str(uid), [])
 
-def _save_notes(uid, notes):
-    data=db_get('user_notes', {}); data[str(uid)]=notes[-100:]; db_set('user_notes', data)
 
-def _timers_worker():
-    while True:
-        try:
-            timers=db_get('liza_timers', {})
-            changed=False; now=time.time()
-            for tid,t in list(timers.items()):
-                if float(t.get('due',0)) > now: continue
-                chat_id=int(t['chat_id']); uid=int(t['user_id']); text=t.get('text','⏰ Таймер сработал!')
-                try:
-                    mention=get_user_mention(user_id=uid, first_name=t.get('name','пользователь'))
-                    bot.send_message(chat_id, f"⏰ {mention}, таймер сработал!\n{text}", parse_mode='HTML')
-                except Exception as e:
-                    logging.warning(f'[TIMER SEND] {e}')
-                timers.pop(tid,None); changed=True
-            if changed: db_set('liza_timers', timers)
-        except Exception as e:
-            logging.error(f'[TIMER WORKER] {e}')
-        time.sleep(2)
 
-def _notes_timers_command(m, t_lower, t):
-    uid=m.from_user.id; cid=m.chat.id
-    # Заметка: сохранить личную заметку. Формат: Заметка текст / Заметка: текст
-    if t_lower in ('заметки','мои заметки','список заметок'):
-        notes=_notes_for(uid)
-        if not notes: txt='📝 <b>Заметки</b>\n\nУ тебя пока нет заметок.'
-        else:
-            lines=[f"<b>{i}</b>. {html.escape(n['text'])}" for i,n in enumerate(notes,1)]
-            txt='📝 <b>Твои заметки</b>\n\n'+'\n'.join(lines)
-        return finish_command(m,'notes_list',bot.send_message(cid,txt,parse_mode='HTML'),ttl=30)
-    if t_lower.startswith('заметка ') or t_lower.startswith('заметка:'):
-        value=t.split(':',1)[1].strip() if ':' in t.split(None,1)[0] else t.split(None,1)[1].strip()
-        if not value: return finish_command(m,'notes_err',bot.send_message(cid,'⚠️ Напиши текст заметки.'),ttl=10)
-        notes=_notes_for(uid); notes.append({'text':value[:2000],'created':time.time()}); _save_notes(uid,notes)
-        return finish_command(m,'note_add',bot.send_message(cid,f'✅ Заметка №{len(notes)} сохранена.'),ttl=15)
-    if re.fullmatch(r'(?:удалить|удали) заметку \d+',t_lower):
-        idx=int(t_lower.split()[-1]); notes=_notes_for(uid)
-        if idx<1 or idx>len(notes): return finish_command(m,'note_err',bot.send_message(cid,'⚠️ Такой заметки нет.'),ttl=10)
-        notes.pop(idx-1); _save_notes(uid,notes)
-        return finish_command(m,'note_del',bot.send_message(cid,'🗑 Заметка удалена.'),ttl=15)
-    if t_lower.startswith('таймеры') or t_lower=='мои таймеры':
-        timers=db_get('liza_timers',{}); own=[(k,v) for k,v in timers.items() if int(v.get('user_id',0))==uid and int(v.get('chat_id',0))==cid]
-        own.sort(key=lambda x: x[1].get('due',0))
-        if not own: txt='⏰ <b>Таймеры</b>\n\nАктивных таймеров нет.'
-        else:
-            lines=[]
-            for i,(tid,v) in enumerate(own,1):
-                left=max(0,int(v['due']-time.time())); lines.append(f"<b>{i}</b>. через {left//3600}ч {(left%3600)//60}м {left%60}с — {html.escape(v['text'])}")
-            txt='⏰ <b>Твои таймеры</b>\n\n'+'\n'.join(lines)
-        return finish_command(m,'timers_list',bot.send_message(cid,txt,parse_mode='HTML'),ttl=20)
-    if t_lower.startswith('таймер '):
-        parts0=t.split(None,2)
-        if len(parts0)<3:
-            return finish_command(m,'timer_err',bot.send_message(cid,'⚠️ Формат: <code>Таймер 10м текст</code>'),ttl=10)
-        seconds=_parse_duration(parts0[1])
-        if not seconds or seconds>30*86400:
-            return finish_command(m,'timer_err',bot.send_message(cid,'⚠️ Время: например 30с, 10м, 2ч, 1д. Максимум — 30 дней.'),ttl=10)
-        timers=db_get('liza_timers',{})
-        tid=str(max([int(x) for x in timers.keys() if str(x).isdigit()] or [0])+1)
-        timers[tid]={'chat_id':cid,'user_id':uid,'name':m.from_user.first_name or 'пользователь','due':time.time()+seconds,'text':parts0[2][:1000]}
-        db_set('liza_timers',timers)
-        return finish_command(m,'timer_add',bot.send_message(cid,f'⏰ Таймер #{tid} установлен на {parts0[1]}.'),ttl=15)
-    if re.fullmatch(r'(?:удалить|отменить) таймер \d+',t_lower):
-        idx=int(t_lower.split()[-1]); timers=db_get('liza_timers',{}); own=[(k,v) for k,v in timers.items() if int(v.get('user_id',0))==uid and int(v.get('chat_id',0))==cid]; own.sort(key=lambda x:x[1].get('due',0))
-        if idx<1 or idx>len(own): return finish_command(m,'timer_err',bot.send_message(cid,'⚠️ Такой таймер не найден.'),ttl=10)
-        timers.pop(own[idx-1][0],None); db_set('liza_timers',timers)
-        return finish_command(m,'timer_del',bot.send_message(cid,'🗑 Таймер отменён.'),ttl=15)
-    return None
 
 # ============================================================
 # IRIS: отношения и браки — функциональный модуль
 # ============================================================
 
 
-def _economy_named_check_callback(call):
-    try:
-        if not call or not getattr(call, "data", "").startswith("iris_named_check:"): return False
-        code=call.data.split(":",1)[1]
-        checks=db_get("iriski_named_checks",{}) or {}; item=checks.get(code)
-        if not item: bot.answer_callback_query(call.id,"Именной чек недоступен.",show_alert=True); return True
-        uid=call.from_user.id
-        if int(item.get("to_uid",0)) != uid:
-            bot.answer_callback_query(call.id,"Этот чек предназначен другому пользователю.",show_alert=True); return True
-        if item.get("claimed"):
-            bot.answer_callback_query(call.id,"Чек уже активирован.",show_alert=True); return True
-        balances=db_get("iriski_balances",{}) or {}; row=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
-        amount=int(item.get("amount",0)); row["balance"]+=amount; row["earned"]+=amount
-        item.update({"claimed":True,"claimed_by":uid,"claimed_at":int(time.time())}); checks[code]=item
-        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
-        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"именной чек","peer_id":int(item.get("from_uid",0)),"peer_name":"чек "+code,"ts":int(time.time())}
-        db_set("iriski_named_checks",checks); db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
-        bot.answer_callback_query(call.id,f"Получено {amount} ирисок!",show_alert=True)
-        try: bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
-        except Exception: pass
-        return True
-    except Exception as e:
-        logging.error(f"[NAMED CHECK CALLBACK] {e}",exc_info=True)
-        try: bot.answer_callback_query(call.id,"Не удалось активировать чек.",show_alert=True)
-        except Exception: pass
-        return True
-
-
-def _economy_check_callback(call):
-    try:
-        if not call or not getattr(call, "data", "").startswith("iris_check:"): return False
-        code=call.data.split(":",1)[1]; checks=db_get("iriski_checks",{}) or {}; item=checks.get(code)
-        if not item: bot.answer_callback_query(call.id,"Чек уже недоступен.",show_alert=True); return True
-        uid=call.from_user.id
-        if uid==int(item.get("from_uid",0)): bot.answer_callback_query(call.id,"Нельзя активировать собственный чек.",show_alert=True); return True
-        if item.get("claimed"):
-            bot.answer_callback_query(call.id,"Этот чек уже забрали.",show_alert=True); return True
-        if int(item.get("created",0))+7*86400 < int(time.time()):
-            bot.answer_callback_query(call.id,"Срок действия чека истёк.",show_alert=True); return True
-        balances=db_get("iriski_balances",{}) or {}; row=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
-        amount=int(item.get("amount",0)); row["balance"]=int(row.get("balance",0))+amount; row["earned"]=int(row.get("earned",0))+amount
-        item.update({"claimed":True,"claimed_by":uid,"claimed_at":int(time.time())}); checks[code]=item
-        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
-        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"получение чека","peer_id":int(item.get("from_uid",0)),"peer_name":"чек "+code,"ts":int(time.time())}
-        if len(tx)>5000:
-            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-        db_set("iriski_checks",checks); db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
-        bot.answer_callback_query(call.id,f"Получено {amount} ирисок!",show_alert=True)
-        try: bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
-        except Exception: pass
-        return True
-    except Exception as e:
-        logging.error(f"[ECONOMY CHECK] {e}",exc_info=True)
-        try: bot.answer_callback_query(call.id,"Не удалось активировать чек.",show_alert=True)
-        except Exception: pass
-        return True
-
-
-def _economy_command(m, t_lower, t):
-    """Функциональная локальная валюта: баланс, ежедневный бонус, переводы и топ."""
-    cid, uid = m.chat.id, m.from_user.id
-    balances = db_get("iriski_balances", {})
-    key = str(uid)
-    row = balances.setdefault(key, {"balance": 0, "daily": 0, "earned": 0, "spent": 0})
-    row.setdefault("balance", 0); row.setdefault("daily", 0); row.setdefault("earned", 0); row.setdefault("spent", 0)
-
-    if t_lower in ("история ирисок", "история монет", "транзакции"):
-        tx = db_get("iriski_transactions", {}) or {}
-        own = [v for v in tx.values() if int(v.get("uid", 0)) == uid]
-        own.sort(key=lambda x: int(x.get("ts", 0)), reverse=True)
-        lines=[]
-        for item in own[:10]:
-            sign = "+" if item.get("direction") == "in" else "-"
-            peer = item.get("peer_name") or "пользователь"
-            dt = datetime.fromtimestamp(int(item.get("ts",0)), KYIV_TZ).strftime("%d.%m %H:%M")
-            lines.append(f"{sign}{int(item.get('amount',0))} — {html.escape(str(item.get('kind','операция')))} — {html.escape(peer)} <i>{dt}</i>")
-        txt="💰 <b>ИСТОРИЯ ИРИСОК</b>\n\n"+("\n".join(lines) if lines else "Операций пока нет.")
-        return finish_command(m,"economy_history",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
-
-    if t_lower in ("бкоин", "бкоины", "мой бкоин", "мои бкоины") or re.fullmatch(r"бкоин\s+\d+", t_lower):
-        gold = db_get("iris_gold", {}) or {}
-        amount = int(gold.get(str(uid), 0) or 0)
-        if t_lower.startswith("бкоин "):
-            try: deposit=max(1,int(t_lower.split()[1]))
-            except Exception: deposit=0
-            if deposit > amount:
-                return finish_command(m,"bcoin_deposit_err",bot.send_message(cid,f"⚠️ У тебя только <b>{amount}</b> Бкоинов.",parse_mode="HTML"),ttl=10)
-            chatcoins=db_get("chat_bcoins",{}) or {}; chat=chatcoins.setdefault(str(cid),{"balance":0,"history":[]})
-            chat["balance"]=int(chat.get("balance",0))+deposit
-            hist=chat.setdefault("history",[]); hist.append({"uid":uid,"amount":deposit,"ts":int(time.time()),"name":m.from_user.first_name or "Участник"})
-            chat["history"]=hist[-1000:]; gold[str(uid)]=amount-deposit
-            db_set("chat_bcoins",chatcoins); db_set("iris_gold",gold)
-            return finish_command(m,"bcoin_deposit",bot.send_message(cid,f"🪙 В баланс чата внесено <b>{deposit}</b> Бкоин(ов).\n🏦 Баланс чата: <b>{chat['balance']}</b>\n🎒 Осталось у тебя: <b>{gold[str(uid)]}</b>",parse_mode="HTML"),ttl=20)
-        chat=db_get("chat_bcoins",{}).get(str(cid),{}) or {}
-        return finish_command(m, "bcoin", bot.send_message(cid, f"🪙 У тебя <b>{amount}</b> Бкоинов.\n🏦 В балансе чата: <b>{int(chat.get('balance',0))}</b>.", parse_mode="HTML"), ttl=15)
-
-    # Локальный обмен валют: 100 ирисок = 1 Бкоин. Обратный обмен запрещён,
-    # чтобы Бкоин оставался отдельной редкой валютой без бесконечной инфляции.
-    if t_lower in ("курс бкоина", "курс бкоин", "обмен", "обмен валют"):
-        return finish_command(m, "bcoin_rate", bot.send_message(cid, "🪙 <b>КУРС БКОИНА</b>\n\n100 ирисок → 1 Бкоин.\nКоманда: <code>Бкоин 1</code> — внести 1 Бкоин в баланс чата", parse_mode="HTML"), ttl=20)
-
-    if t_lower.startswith("обмен "):
-        import re as _re
-        mm=_re.fullmatch(r"обмен\s+(\d+)\s*(ирисок|ириска|ириски|бкоинов|бкоин)?", t_lower)
-        if mm:
-            amount=max(0,int(mm.group(1))); unit=(mm.group(2) or "ирисок")
-            if amount <= 0:
-                return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Сумма должна быть больше нуля."),ttl=10)
-            if unit.startswith("бкоин"):
-                return finish_command(m,"exchange_info",bot.send_message(cid,"🪙 Обратный обмен Бкоинов в ириски отключён."),ttl=15)
-            if amount % 100:
-                return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Обмен идёт кратно 100 ирискам: <code>Обмен 500 ирисок</code>.",parse_mode="HTML"),ttl=15)
-            bcoins=amount//100
-            if int(row.get("balance",0)) < amount:
-                return finish_command(m,"exchange_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Нужно <b>{amount}</b>.",parse_mode="HTML"),ttl=15)
-            gold=db_get("iris_gold",{}) or {}
-            gold[key]=int(gold.get(key,0) or 0)+bcoins
-            row["balance"]-=amount; row["spent"]=int(row.get("spent",0) or 0)+amount
-            balances[key]=row
-            tx=db_get("iriski_transactions",{}) or {}; now=int(time.time()); stamp=str(time.time_ns())
-            tx[stamp]={"uid":uid,"amount":amount,"direction":"out","kind":"обмен на Бкоины","peer_id":0,"peer_name":f"+{bcoins} Бкоин","ts":now}
-            if len(tx)>5000:
-                tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-            db_set("iriski_balances",balances); db_set("iris_gold",gold); db_set("iriski_transactions",tx)
-            return finish_command(m,"exchange_ok",bot.send_message(cid,f"🪙 Обмен выполнен: <b>-{amount}</b> ирисок → <b>+{bcoins}</b> Бкоин.\n💰 Остаток: <b>{row['balance']}</b>",parse_mode="HTML"),ttl=20)
-
-    # Баланс конкретного пользователя: «Ириски @user» / «Баланс @user» или reply.
-    if t_lower.startswith(("ириски @", "баланс @", "монеты @")) or (m.reply_to_message and t_lower in ("ириски", "баланс", "монеты")):
-        parts=t.split()
-        target_uid,target_name,_args=extract_target_and_args(m,parts)
-        if target_uid:
-            target=balances.get(str(target_uid),{"balance":0}) or {"balance":0}
-            mention=get_user_mention(user_id=target_uid, first_name=target_name or "пользователь")
-            return finish_command(m,"balance_user",bot.send_message(cid,f"💰 {mention}: <b>{int(target.get('balance',0))}</b> ирисок.",parse_mode="HTML"),ttl=15)
-
-    if t_lower in ("баланс", "мой баланс", "ириски", "мои ириски", "монеты", "мой кошелёк", "мой кошелек", "кошелёк", "кошелек"):
-        return finish_command(m, "balance", bot.send_message(cid, f"💰 У тебя <b>{int(row['balance'])}</b> ирисок.", parse_mode="HTML"), ttl=15)
-
-    if t_lower in ("бонус", "ежедневный бонус", "бонус дня"):
-        now=int(time.time()); last=int(row.get("daily",0) or 0)
-        if last and now-last < 86400:
-            left=86400-(now-last)
-            return finish_command(m,"daily_wait",bot.send_message(cid,f"🎁 Бонус уже получен. Следующий через <b>{left//3600}ч {(left%3600)//60}м</b>.",parse_mode="HTML"),ttl=15)
-        import random
-        amount=random.randint(20,50)
-        row["balance"] += amount; row["earned"] += amount; row["daily"] = now
-        balances[key]=row
-        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
-        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"ежедневный бонус","peer_id":0,"peer_name":"Лиза","ts":now}
-        if len(tx)>5000:
-            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-        db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
-        return finish_command(m,"daily_bonus",bot.send_message(cid,f"🎁 Ежедневный бонус: <b>+{amount}</b> ирисок!\n💰 Баланс: <b>{row['balance']}</b>",parse_mode="HTML"),ttl=20)
-
-    if t_lower in ("топ ирисок", "топ монет", "топ баланса"):
-        rows=[]
-        users=db_get("users_data",{})
-        for uid_s,data in balances.items():
-            amount=int(data.get("balance",0) or 0)
-            if amount<=0: continue
-            name=users.get(str(uid_s),{}).get("name",f"ID:{uid_s}")
-            rows.append((amount,name,int(uid_s)))
-        rows.sort(reverse=True,key=lambda x:x[0])
-        lines=[f"<b>{i}</b>. {get_user_mention(user_id=u, first_name=name)} — <b>{amt}</b>" for i,(amt,name,u) in enumerate(rows[:10],1)]
-        txt="💰 <b>ТОП ИРИСОК</b>\n\n"+("\n".join(lines) if lines else "Пока никто не накопил ириски.")
-        return finish_command(m,"economy_top",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
-
-    if t_lower in ("мои чеки", "мои чеки активные", "активные чеки"):
-        checks=db_get("iriski_checks",{}) or {}
-        now=int(time.time())
-        own=[(code,v) for code,v in checks.items() if int(v.get("from_uid",0))==uid and not v.get("claimed") and int(v.get("created",0))+7*86400>=now]
-        own.sort(key=lambda x:int(x[1].get("created",0)), reverse=True)
-        if not own:
-            txt="🎁 <b>МОИ ЧЕКИ</b>\n\nАктивных чеков нет."
-        else:
-            lines=[]
-            for code,v in own[:20]:
-                left=max(0,int(v.get("created",0))+7*86400-now)
-                lines.append(f"• <code>{html.escape(code)}</code> — <b>{int(v.get('amount',0))}</b> ирисок, ещё {left//86400}д {(left%86400)//3600}ч")
-            txt="🎁 <b>МОИ ЧЕКИ</b>\n\n"+"\n".join(lines)
-        return finish_command(m,"checks_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
-
-    if t_lower in ("где мои ириски", "куда пропали мои ириски", "!история ирисок", "!путешествие ирисок"):
-        tx=db_get("iriski_transactions",{}) or {}; own=[v for v in tx.values() if int(v.get("uid",0))==uid]
-        own.sort(key=lambda x:int(x.get("ts",0)), reverse=True)
-        lines=[]
-        for item in own[:15]:
-            sign="+" if item.get("direction")=="in" else "-"
-            dt=datetime.fromtimestamp(int(item.get("ts",0)), KYIV_TZ).strftime("%d.%m %H:%M")
-            lines.append(f"{sign}{int(item.get('amount',0))} — {html.escape(str(item.get('kind','операция')))} — {html.escape(str(item.get('peer_name') or 'Лиза'))} <i>{dt}</i>")
-        txt="🚀 <b>ГДЕ МОИ ИРИСКИ</b>\n\n"+("\n".join(lines) if lines else "История пока пуста.")
-        return finish_command(m,"iris_travel",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
-
-    # Безопасные переводы — режим защиты от случайных/нежелательных переводов.
-    # Включение действует для получателя; Stars/регистрация здесь трактуются как
-    # дополнительные ограничения Iris-стиля, но без внешней платёжной системы.
-    if t_lower in ("!безопасные переводы", "безопасные переводы"):
-        safe=db_get("safe_transfers",{}) or {}; cfg=safe.get(str(uid),{"enabled":False,"stars":False,"reg":False})
-        state="включены" if cfg.get("enabled") else "выключены"
-        extras=[]
-        if cfg.get("stars"): extras.append("⭐ только от пользователей со Stars")
-        if cfg.get("reg"): extras.append("🪪 только зарегистрированным")
-        txt="🛡 <b>БЕЗОПАСНЫЕ ПЕРЕВОДЫ</b>\n\n"+f"Статус: <b>{state}</b>"+("\n"+"\n".join(extras) if extras else "")+"\n\nВключить: <code>!Безопасные переводы</code>\nРежим Stars: <code>!Безопасные переводы зв</code>\nРежим регистрации: <code>!Безопасные переводы рег</code>\nВыключить: <code>-Безопасные переводы</code>"
-        return finish_command(m,"safe_transfer_info",bot.send_message(cid,txt,parse_mode="HTML"),ttl=25)
-    if t_lower in ("!безопасные переводы зв", "!безопасные переводы stars"):
-        safe=db_get("safe_transfers",{}) or {}; cfg=safe.setdefault(str(uid),{"enabled":False,"stars":False,"reg":False})
-        cfg["enabled"]=True; cfg["stars"]=not bool(cfg.get("stars")); db_set("safe_transfers",safe)
-        state="включён" if cfg["stars"] else "выключен"
-        return finish_command(m,"safe_transfer_stars",bot.send_message(cid,f"⭐ Режим Stars {state}."),ttl=15)
-    if t_lower in ("!безопасные переводы рег", "!безопасные переводы регистрация"):
-        safe=db_get("safe_transfers",{}) or {}; cfg=safe.setdefault(str(uid),{"enabled":False,"stars":False,"reg":False})
-        cfg["enabled"]=True; cfg["reg"]=not bool(cfg.get("reg")); db_set("safe_transfers",safe)
-        state="включён" if cfg["reg"] else "выключен"
-        return finish_command(m,"safe_transfer_reg",bot.send_message(cid,f"🪪 Режим регистрации {state}."),ttl=15)
-    if t_lower in ("-безопасные переводы", "безопасные переводы выкл"):
-        safe=db_get("safe_transfers",{}) or {}; safe.pop(str(uid),None); db_set("safe_transfers",safe)
-        return finish_command(m,"safe_transfer_off",bot.send_message(cid,"🛡 Безопасные переводы выключены."),ttl=15)
-
-    if t_lower.startswith(("запретить переводы ", "разрешить переводы ")) or t_lower in ("разрешить переводы всем", "запретить переводы всем"):
-        deny=db_get("iriski_transfer_denies",{}) or {}; parts=t.split()
-        if t_lower.endswith("всем"):
-            if t_lower.startswith("запретить"):
-                deny[str(uid)]={"all":True,"users":deny.get(str(uid),{}).get("users",{})}
-                msg="🚫 Теперь тебе запрещены переводы ирисок от всех пользователей."
-            else:
-                deny.pop(str(uid),None); msg="✅ Переводы ирисок от всех пользователей разрешены."
-        else:
-            target_uid,target_name,_=extract_target_and_args(m,parts)
-            if not target_uid: return finish_command(m,"transfer_rule_err",bot.send_message(cid,"⚠️ Укажи пользователя или используй «... переводов всем»."),ttl=10)
-            rowdeny=deny.setdefault(str(uid),{"all":False,"users":{}}); users=rowdeny.setdefault("users",{})
-            if t_lower.startswith("запретить"):
-                users[str(target_uid)]=True; msg=f"🚫 Переводы от {get_user_mention(user_id=target_uid,first_name=target_name or 'пользователь')} запрещены."
-            else:
-                users.pop(str(target_uid),None)
-                if not rowdeny.get("all") and not users: deny.pop(str(uid),None)
-                msg=f"✅ Переводы от {get_user_mention(user_id=target_uid,first_name=target_name or 'пользователь')} разрешены."
-        db_set("iriski_transfer_denies",deny)
-        return finish_command(m,"transfer_rules",bot.send_message(cid,msg,parse_mode="HTML"),ttl=15)
-
-    if t_lower.startswith(("передать ириски ", "перевести ириски ", "дать ириски ", "подарить ириски ")):
-        parts=t.split()
-        target_uid,target_name,args=extract_target_and_args(m,parts)
-        if not target_uid:
-            return finish_command(m,"transfer_err",bot.send_message(cid,"⚠️ Укажи пользователя: <code>Передать ириски @user 50</code> или ответь на его сообщение.",parse_mode="HTML"),ttl=15)
-        if target_uid==uid:
-            return finish_command(m,"transfer_err",bot.send_message(cid,"⚠️ Нельзя переводить ириски самому себе."),ttl=10)
-        deny=db_get("iriski_transfer_denies",{}) or {}; policy=deny.get(str(target_uid),{}) or {}
-        if policy.get("all") or bool((policy.get("users") or {}).get(str(uid))):
-            return finish_command(m,"transfer_err",bot.send_message(cid,"🚫 Этот пользователь запретил получать от тебя переводы ирисок."),ttl=15)
-        try: amount=int(args[-1])
-        except Exception: amount=0
-        if amount<=0 or amount>1000000:
-            return finish_command(m,"transfer_err",bot.send_message(cid,"⚠️ Укажи положительное количество ирисок."),ttl=10)
-        target=balances.setdefault(str(target_uid),{"balance":0,"daily":0,"earned":0,"spent":0})
-        if int(row["balance"])<amount:
-            return finish_command(m,"transfer_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Баланс: {row['balance']}"),ttl=10)
-        row["balance"]-=amount; row["spent"]+=amount
-        target["balance"]+=amount; target["earned"]+=amount
-        tx=db_get("iriski_transactions",{}) or {}
-        stamp=str(time.time_ns())
-        peer_name=target_name or "пользователь"
-        tx[stamp+"o"]={"uid":uid,"amount":amount,"direction":"out","kind":"перевод","peer_id":target_uid,"peer_name":peer_name,"ts":int(time.time())}
-        tx[stamp+"i"]={"uid":target_uid,"amount":amount,"direction":"in","kind":"перевод","peer_id":uid,"peer_name":m.from_user.first_name or "пользователь","ts":int(time.time())}
-        if len(tx)>5000:
-            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-        db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
-        mention=get_user_mention(user_id=target_uid,first_name=target_name or "пользователь")
-        return finish_command(m,"transfer",bot.send_message(cid,f"💸 Передано <b>{amount}</b> ирисок → {mention}.\n💰 Твой баланс: <b>{row['balance']}</b>",parse_mode="HTML"),ttl=20)
-    if t_lower.startswith(("+именной чек ", "именной чек ")):
-        parts=t.split(); target_uid,target_name,args=extract_target_and_args(m,parts)
-        if not target_uid:
-            return finish_command(m,"named_check_err",bot.send_message(cid,"⚠️ Формат: <code>+Именной чек 100 @user</code> или ответом на сообщение.",parse_mode="HTML"),ttl=10)
-        try: amount=int(args[0]) if args else int(parts[2])
-        except Exception: amount=0
-        if amount<=0 or amount>1000000 or int(row.get("balance",0))<amount:
-            return finish_command(m,"named_check_err",bot.send_message(cid,"⚠️ Проверь сумму и свой баланс."),ttl=10)
-        import secrets
-        code=secrets.token_hex(6).upper(); checks=db_get("iriski_named_checks",{}) or {}; now=int(time.time())
-        row["balance"]-=amount; row["spent"]+=amount
-        checks[code]={"amount":amount,"from_uid":uid,"to_uid":target_uid,"to_name":target_name or "пользователь","created":now,"claimed":False}
-        tx=db_get("iriski_transactions",{}) or {}; tx[str(time.time_ns())]={"uid":uid,"amount":amount,"direction":"out","kind":"именной чек","peer_id":target_uid,"peer_name":target_name or "пользователь","ts":now}
-        db_set("iriski_balances",balances); db_set("iriski_named_checks",checks); db_set("iriski_transactions",tx)
-        kb=types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton(f"🎁 Забрать {amount} ирисок",callback_data=f"iris_named_check:{code}"))
-        mention=get_user_mention(user_id=target_uid,first_name=target_name or "пользователь")
-        return finish_command(m,"named_check_create",bot.send_message(cid,f"🛡 <b>ИМЕННОЙ ЧЕК</b>\nПолучатель: {mention}\nСумма: <b>{amount}</b> ирисок\nКод: <code>{code}</code>",parse_mode="HTML",reply_markup=kb),ttl=30)
-
-    # Информация и активация чека кодом — не только inline-кнопкой.
-    if re.fullmatch(r"(?:чек|чек инфо|инфо чек|активировать чек)\s+[A-Za-z0-9_-]+", t_lower):
-        code=t.split()[-1].upper(); checks=db_get("iriski_checks",{}) or {}; item=checks.get(code)
-        named=db_get("iriski_named_checks",{}) or {}
-        if item is None and code in named: item=named[code]; named_item=True
-        else: named_item=False
-        if not item:
-            return finish_command(m,"check_info_none",bot.send_message(cid,"⚠️ Чек не найден или уже удалён."),ttl=10)
-        amount=int(item.get("amount",0)); claimed=bool(item.get("claimed")); created=int(item.get("created",0) or 0)
-        expired=(not named_item and created+7*86400 < int(time.time()))
-        if t_lower.startswith("активировать чек"):
-            if claimed or expired:
-                return finish_command(m,"check_activate_err",bot.send_message(cid,"⚠️ Чек уже использован или срок его действия истёк."),ttl=10)
-            if int(item.get("to_uid",0) or 0) and int(item.get("to_uid",0))!=uid:
-                return finish_command(m,"check_activate_err",bot.send_message(cid,"⛔ Этот именной чек предназначен другому пользователю."),ttl=10)
-            if not named_item and int(item.get("from_uid",0))==uid:
-                return finish_command(m,"check_activate_err",bot.send_message(cid,"⛔ Нельзя активировать собственный чек."),ttl=10)
-            balances=db_get("iriski_balances",{}) or {}; row2=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
-            row2["balance"]=int(row2.get("balance",0))+amount; row2["earned"]=int(row2.get("earned",0))+amount
-            item.update({"claimed":True,"claimed_by":uid,"claimed_at":int(time.time())})
-            if named_item: named[code]=item; db_set("iriski_named_checks",named)
-            else: checks[code]=item; db_set("iriski_checks",checks)
-            tx=db_get("iriski_transactions",{}) or {}; tx[str(time.time_ns())]={"uid":uid,"amount":amount,"direction":"in","kind":"активация чека","peer_id":int(item.get("from_uid",0) or 0),"peer_name":"чек "+code,"ts":int(time.time())}
-            db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
-            return finish_command(m,"check_activate",bot.send_message(cid,f"🎁 Чек <code>{html.escape(code)}</code> активирован. Получено <b>{amount}</b> ирисок.",parse_mode="HTML"),ttl=20)
-        status="использован" if claimed else ("истёк" if expired else "доступен")
-        recipient=(f"\nПолучатель: {get_user_mention(user_id=int(item.get('to_uid')),first_name=item.get('to_name') or 'пользователь')}" if int(item.get("to_uid",0) or 0) else "")
-        return finish_command(m,"check_info",bot.send_message(cid,f"🎁 <b>ЧЕК {html.escape(code)}</b>\n\nСумма: <b>{amount}</b> ирисок\nСтатус: <b>{status}</b>{recipient}",parse_mode="HTML"),ttl=25)
-
-    if t_lower.startswith(("чек ", "создать чек ", "чек на ")):
-        try: amount=int(t.split()[-1])
-        except Exception: amount=0
-        if amount<=0 or amount>1000000: return finish_command(m,"check_err",bot.send_message(cid,"⚠️ Укажи сумму: <code>Чек 100</code>",parse_mode="HTML"),ttl=10)
-        if int(row.get("balance",0))<amount: return finish_command(m,"check_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Баланс: {row['balance']}"),ttl=10)
-        import secrets
-        code=secrets.token_hex(4).upper(); checks=db_get("iriski_checks",{}) or {}
-        while code in checks: code=secrets.token_hex(4).upper()
-        now=int(time.time())
-        row["balance"]-=amount; row["spent"]+=amount; balances[key]=row
-        checks[code]={"amount":amount,"from_uid":uid,"created":now,"claimed":False}
-        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
-        tx[stamp]={"uid":uid,"amount":amount,"direction":"out","kind":"создание чека","peer_id":0,"peer_name":"чек "+code,"ts":now}
-        if len(tx)>5000:
-            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-        db_set("iriski_balances",balances); db_set("iriski_checks",checks); db_set("iriski_transactions",tx)
-        kb=types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton(f"🎁 Забрать {amount} ирисок",callback_data=f"iris_check:{code}"))
-        return finish_command(m,"check_create",bot.send_message(cid,f"🎁 <b>ЧЕК</b>\nСумма: <b>{amount}</b> ирисок\nКод: <code>{code}</code>\nСрок действия: 7 дней",parse_mode="HTML",reply_markup=kb),ttl=30)
-    if t_lower.startswith("отменить чек ") or t_lower.startswith("удалить чек "):
-        code=t.split()[-1].upper(); checks=db_get("iriski_checks",{}) or {}; item=checks.get(code)
-        if not item or int(item.get("from_uid",0))!=uid or item.get("claimed"):
-            return finish_command(m,"check_cancel_err",bot.send_message(cid,"⚠️ Чек не найден или уже использован."),ttl=10)
-        amount=int(item.get("amount",0)); row["balance"]+=amount; row["spent"]=max(0,int(row.get("spent",0))-amount)
-        checks.pop(code,None)
-        tx=db_get("iriski_transactions",{}) or {}
-        stamp=str(time.time_ns())
-        tx[stamp]={"uid":uid,"amount":amount,"direction":"in","kind":"отмена чека","peer_id":0,"peer_name":"чек "+code,"ts":int(time.time())}
-        if len(tx)>5000:
-            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-        db_set("iriski_checks",checks); db_set("iriski_balances",balances); db_set("iriski_transactions",tx)
-        return finish_command(m,"check_cancel",bot.send_message(cid,f"↩️ Чек <code>{html.escape(code)}</code> отменён. Возвращено <b>{amount}</b> ирисок.",parse_mode="HTML"),ttl=15)
-    return None
 
 
 
 
-def _exchange_command(m, t_lower, t):
-    """Локальная мини-биржа Лизы: Ирис-голд и лимитные/рыночные заявки."""
-    cid, uid = m.chat.id, m.from_user.id
-    if not (t_lower == "биржа" or t_lower.startswith("биржа ")):
-        return None
-    gold = db_get("iris_gold", {}) or {}
-    balances = db_get("iriski_balances", {}) or {}
-    orders = db_get("iris_exchange_orders", {}) or {}
-    history = db_get("iris_exchange_history", []) or []
-    key = str(uid)
-    wallet = balances.setdefault(key, {"balance": 0, "daily": 0, "earned": 0, "spent": 0})
-    wallet.setdefault("balance", 0)
-    gold[key] = int(gold.get(key, 0) or 0)
 
-    def save():
-        db_set("iris_gold", gold); db_set("iriski_balances", balances)
-        db_set("iris_exchange_orders", orders); db_set("iris_exchange_history", history[-500:])
 
-    def price_now():
-        prices=[]
-        for o in orders.values():
-            if o.get("status") == "open" and int(o.get("price",0))>0:
-                prices.append(int(o["price"]))
-        if prices: return max(1, sum(prices)//len(prices))
-        return 10
 
-    def book_lines():
-        buys=sorted([o for o in orders.values() if o.get("status")=="open" and o.get("side")=="buy"], key=lambda o:(-int(o["price"]), int(o["created"])))
-        sells=sorted([o for o in orders.values() if o.get("status")=="open" and o.get("side")=="sell"], key=lambda o:(int(o["price"]), int(o["created"])))
-        lines=["🟢 <b>ПОКУПКА</b>"]
-        lines += [f"{int(o['price'])} 🪙 × {int(o['qty'])}" for o in buys[:5]] or ["—"]
-        lines += ["", "🔴 <b>ПРОДАЖА</b>"]
-        lines += [f"{int(o['price'])} 🪙 × {int(o['qty'])}" for o in sells[:5]] or ["—"]
-        return "\n".join(lines)
 
-    if t_lower == "биржа" or t_lower == "биржа стакан":
-        return finish_command(m,"exchange_book",bot.send_message(cid,
-            f"📈 <b>ИРИС-БИРЖА</b>\n\nКурс: <b>{price_now()}</b> ирисок за 🪙\n\n{book_lines()}",parse_mode="HTML"),ttl=30)
 
-    if t_lower in ("биржа клава", "биржа клавиатура"):
-        return finish_command(m,"exchange_help",bot.send_message(cid,
-            "📈 <b>ИРИС-БИРЖА</b>\n\n"
-            "<code>Биржа купить 10 12</code> — заявка на покупку\n"
-            "<code>Биржа продать 10 15</code> — заявка на продажу\n"
-            "<code>Биржа купить по рынку 10</code>\n"
-            "<code>Биржа продать по рынку 10</code>\n"
-            "<code>Биржа мои заявки</code>\n<code>Биржа отменить CODE</code>\n<code>Биржа график</code>",parse_mode="HTML"),ttl=30)
 
-    if t_lower == "биржа мои заявки":
-        own=[(oid,o) for oid,o in orders.items() if int(o.get("uid",0))==uid and o.get("status")=="open"]
-        if not own: txt="📋 <b>МОИ ЗАЯВКИ</b>\n\nОткрытых заявок нет."
-        else:
-            lines=[f"• <code>{oid}</code> — {'покупка' if o['side']=='buy' else 'продажа'} {o['qty']} 🪙 по {o['price']}" for oid,o in own[:20]]
-            txt="📋 <b>МОИ ЗАЯВКИ</b>\n\n"+"\n".join(lines)
-        return finish_command(m,"exchange_orders",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
 
-    if t_lower.startswith("биржа отменить "):
-        oid=t.split()[-1].upper(); o=orders.get(oid)
-        if not o or int(o.get("uid",0))!=uid or o.get("status")!="open":
-            return finish_command(m,"exchange_cancel_err",bot.send_message(cid,"⚠️ Заявка не найдена."),ttl=10)
-        qty=int(o["qty"]); price=int(o["price"])
-        if o["side"]=="buy":
-            wallet["balance"] += qty*price
-        else:
-            gold[key] += qty
-        o["status"]="cancelled"; save()
-        return finish_command(m,"exchange_cancel",bot.send_message(cid,f"↩️ Заявка <code>{oid}</code> отменена.",parse_mode="HTML"),ttl=15)
-
-    if t_lower in ("биржа график", "биржа график 7", "биржа график 14", "биржа график 30") or t_lower.startswith("биржа график "):
-        days=7
-        try: days=max(1,min(90,int(t.split()[-1])))
-        except: pass
-        now=int(time.time()); cutoff=now-days*86400
-        vals=[(int(x.get("ts",0)),int(x.get("price",0))) for x in history if int(x.get("ts",0))>=cutoff and int(x.get("price",0))>0]
-        if vals:
-            lo=min(v for _,v in vals); hi=max(v for _,v in vals); last=vals[-1][1]
-            txt=f"📊 <b>ГРАФИК ИРИС-ГОЛД</b> за {days} дн.\n\nМин.: <b>{lo}</b>\nМакс.: <b>{hi}</b>\nТекущий: <b>{last}</b>"
-        else: txt=f"📊 За последние {days} дн. сделок ещё нет. Текущий курс: <b>{price_now()}</b>"
-        return finish_command(m,"exchange_chart",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
-
-    # Market order: immediate matching, remainder is not placed in book.
-    market = re.match(r"^биржа\s+(купить|продать)\s+по\s+рынку\s+(\d+)$", t_lower)
-    if market:
-        side="buy" if market.group(1)=="купить" else "sell"; qty=int(market.group(2))
-        if qty<=0 or qty>100000: return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Некорректное количество."),ttl=10)
-        opposite=sorted([(oid,o) for oid,o in orders.items() if o.get("status")=="open" and o.get("side")!=side], key=lambda x:(int(x[1]["price"]),int(x[1]["created"])))
-        if side=="sell": opposite.reverse()
-        remaining=qty; spent=0; got=0
-        for oid,o in opposite:
-            if remaining<=0: break
-            take=min(remaining,int(o["qty"])); p=int(o["price"]); total=take*p
-            if side=="buy" and wallet["balance"]<total: break
-            if side=="sell" and gold[key]<take: break
-            buyer=uid if side=="buy" else int(o["uid"]); seller=int(o["uid"]) if side=="buy" else uid
-            b=balances.setdefault(str(buyer),{"balance":0,"daily":0,"earned":0,"spent":0}); b.setdefault("balance",0)
-            gold.setdefault(str(seller),0); gold.setdefault(str(buyer),0)
-            b["balance"]-=total; balances[str(buyer)]=b
-            sb=balances.setdefault(str(seller),{"balance":0,"daily":0,"earned":0,"spent":0}); sb.setdefault("balance",0); sb["balance"]+=total; balances[str(seller)]=sb
-            gold[str(buyer)]+=take; gold[str(seller)]-=take
-            o["qty"]-=take; remaining-=take; spent+=total; got+=take
-            if o["qty"]<=0: o["status"]="filled"
-            history.append({"ts":int(time.time()),"price":p,"qty":take,"buyer":buyer,"seller":seller})
-        save()
-        if got==0: return finish_command(m,"exchange_empty",bot.send_message(cid,"⚠️ Подходящих заявок на рынке нет."),ttl=10)
-        return finish_command(m,"exchange_market",bot.send_message(cid,f"✅ Исполнено: <b>{got}</b> 🪙 на сумму <b>{spent}</b> ирисок.",parse_mode="HTML"),ttl=20)
-
-    limit=re.match(r"^биржа\s+(купить|продать)\s+(\d+)\s+(\d+)$", t_lower)
-    if limit:
-        side="buy" if limit.group(1)=="купить" else "sell"; qty=int(limit.group(2)); price=int(limit.group(3))
-        if qty<=0 or qty>100000 or price<=0 or price>1000000:
-            return finish_command(m,"exchange_err",bot.send_message(cid,"⚠️ Проверь количество и цену."),ttl=10)
-        oid=secrets.token_hex(4).upper()
-        if side=="buy":
-            total=qty*price
-            if int(wallet["balance"])<total: return finish_command(m,"exchange_err",bot.send_message(cid,f"⚠️ Нужно {total} ирисок, у тебя {wallet['balance']}.") ,ttl=10)
-            wallet["balance"]-=total
-        else:
-            if gold[key]<qty: return finish_command(m,"exchange_err",bot.send_message(cid,f"⚠️ Недостаточно 🪙. Баланс: {gold[key]}") ,ttl=10)
-            gold[key]-=qty
-        orders[oid]={"uid":uid,"side":side,"qty":qty,"price":price,"created":int(time.time()),"status":"open"}
-        save()
-        return finish_command(m,"exchange_limit",bot.send_message(cid,f"📌 Заявка <code>{oid}</code> создана: {'покупка' if side=='buy' else 'продажа'} {qty} 🪙 по {price}.",parse_mode="HTML"),ttl=20)
-    return None
-
-def _vip_catalog_command(m, t_lower, t):
-    """Functional local VIP/catalog module. No external payments or purchase links."""
-    cid, uid = m.chat.id, m.from_user.id
-    vips = db_get("user_vip", {}) or {}
-    balances = db_get("iriski_balances", {}) or {}
-    now = int(time.time())
-
-    def vip_until(user_id):
-        return int((vips.get(str(user_id), {}) or {}).get("until", 0) or 0)
-
-    if t_lower in ("каталог", "каталог лизы", "магазин"):
-        msg = ("🛍 <b>КАТАЛОГ ЛИЗЫ</b>\n\n"
-               "💎 <b>VIP на 7 дней</b> — 200 ирисок\n"
-               "💎 <b>VIP на 30 дней</b> — 650 ирисок\n\n"
-               "Покупка: <code>Купить VIP 7</code> или <code>Купить VIP 30</code>\n"
-               "Статус: <code>VIP</code>")
-        return finish_command(m, "catalog", bot.send_message(cid, msg, parse_mode="HTML"), ttl=30)
-
-    if t_lower in ("vip", "мой vip", "мой вип", "вип"):
-        until = vip_until(uid)
-        if until > now:
-            left = until - now
-            days = left // 86400
-            hours = (left % 86400) // 3600
-            return finish_command(m, "vip_status", bot.send_message(cid, f"💎 VIP активен ещё <b>{days} дн. {hours} ч.</b>\nДо: <b>{datetime.fromtimestamp(until, KYIV_TZ).strftime('%d.%m.%Y %H:%M')}</b>", parse_mode="HTML"), ttl=20)
-        return finish_command(m, "vip_status", bot.send_message(cid, "💎 VIP не активен. Открой <code>Каталог</code>.", parse_mode="HTML"), ttl=15)
-
-    if t_lower.startswith("купить vip ") or t_lower.startswith("купить вип "):
-        parts=t_lower.split()
-        try: days=int(parts[-1])
-        except Exception: days=0
-        prices={7:200,30:650}
-        if days not in prices:
-            return finish_command(m,"vip_buy_err",bot.send_message(cid,"⚠️ Доступно: <code>Купить VIP 7</code> или <code>Купить VIP 30</code>.",parse_mode="HTML"),ttl=15)
-        cost=prices[days]
-        bal=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
-        if int(bal.get("balance",0))<cost:
-            return finish_command(m,"vip_buy_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Нужно <b>{cost}</b>, у тебя <b>{int(bal.get('balance',0))}</b>.",parse_mode="HTML"),ttl=15)
-        old=vip_until(uid)
-        start=max(now,old)
-        until=start+days*86400
-        bal["balance"]-=cost; bal["spent"]=int(bal.get("spent",0))+cost
-        balances[str(uid)]=bal
-        vips[str(uid)]={"until":until,"name":m.from_user.first_name or "Пользователь"}
-        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
-        tx[stamp]={"uid":uid,"amount":cost,"direction":"out","kind":"покупка VIP","peer_id":uid,"peer_name":"VIP","ts":now}
-        if len(tx)>5000:
-            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-        db_set("iriski_balances",balances); db_set("user_vip",vips); db_set("iriski_transactions",tx)
-        return finish_command(m,"vip_buy",bot.send_message(cid,f"💎 VIP куплен на <b>{days} дней</b> за <b>{cost}</b> ирисок.\nДо: <b>{datetime.fromtimestamp(until,KYIV_TZ).strftime('%d.%m.%Y %H:%M')}</b>",parse_mode="HTML"),ttl=25)
-
-    if t_lower in ("кто вип", "кто випы", "випы"):
-        rows=[]
-        for suid,data in vips.items():
-            until=int(data.get("until",0) or 0)
-            if until>now:
-                rows.append((until,int(suid),data.get("name","Пользователь")))
-        rows.sort(reverse=True)
-        lines=[f"• {get_user_mention(user_id=u,first_name=n)} — до {datetime.fromtimestamp(until,KYIV_TZ).strftime('%d.%m.%Y %H:%M')}" for until,u,n in rows[:20]]
-        return finish_command(m,"vip_list",bot.send_message(cid,"💎 <b>VIP УЧАСТНИКИ</b>\n\n"+("\n".join(lines) if lines else "Активных VIP нет."),parse_mode="HTML"),ttl=60)
-
-    # Подарить VIP другому участнику за свои ириски.
-    if t_lower.startswith(("подарить vip ", "подарить вип ", "vip подарок ", "вип подарок ")):
-        parts=t.split()
-        target_uid,target_name,args=extract_target_and_args(m,parts)
-        if not target_uid:
-            return finish_command(m,"vip_gift_err",bot.send_message(cid,"⚠️ Укажи пользователя через @username или reply."),ttl=10)
-        if target_uid==uid:
-            return finish_command(m,"vip_gift_err",bot.send_message(cid,"⚠️ VIP самому себе дарить не нужно — можно купить его обычной командой."),ttl=10)
-        try: days=int(args[-1]) if args and args[-1].isdigit() else 7
-        except Exception: days=7
-        prices={7:200,30:650}
-        if days not in prices:
-            return finish_command(m,"vip_gift_err",bot.send_message(cid,"⚠️ Подарить можно VIP на 7 или 30 дней."),ttl=10)
-        cost=prices[days]
-        bal=balances.setdefault(str(uid),{"balance":0,"daily":0,"earned":0,"spent":0})
-        if int(bal.get("balance",0))<cost:
-            return finish_command(m,"vip_gift_err",bot.send_message(cid,f"⚠️ Недостаточно ирисок. Нужно <b>{cost}</b>, у тебя <b>{int(bal.get('balance',0))}</b>.",parse_mode="HTML"),ttl=15)
-        old=vip_until(target_uid); until=max(now,old)+days*86400
-        bal["balance"]-=cost; bal["spent"]=int(bal.get("spent",0))+cost
-        balances[str(uid)]=bal; vips[str(target_uid)]={"until":until,"name":target_name or "Пользователь"}
-        tx=db_get("iriski_transactions",{}) or {}; stamp=str(time.time_ns())
-        tx[stamp]={"uid":uid,"amount":cost,"direction":"out","kind":"подарок VIP","peer_id":target_uid,"peer_name":target_name or "пользователь","ts":now}
-        if len(tx)>5000:
-            tx=dict(sorted(tx.items(),key=lambda kv:int(kv[1].get("ts",0)))[-5000:])
-        db_set("iriski_balances",balances); db_set("user_vip",vips); db_set("iriski_transactions",tx)
-        mention=get_user_mention(user_id=target_uid,first_name=target_name or "пользователь")
-        msg = (f"🎁 {mention} подарен VIP на <b>{days} дней</b>.\n"
-               f"💎 Действует до: <b>{datetime.fromtimestamp(until,KYIV_TZ).strftime('%d.%m.%Y %H:%M')}</b>\n"
-               f"💰 Списано: <b>{cost}</b> ирисок.")
-        return finish_command(m,"vip_gift",bot.send_message(cid,msg,parse_mode="HTML"),ttl=25)
-
-    if t_lower in ("моя экономика", "экономика", "статистика ирисок"):
-        balrow = balances.get(str(uid), {}) or {}
-        return finish_command(m,"economy_info",bot.send_message(cid,
-            f"💰 <b>ТВОЯ ЭКОНОМИКА</b>\n\nБаланс: <b>{int(balrow.get('balance',0))}</b> ирисок\nПолучено: <b>{int(balrow.get('earned',0))}</b>\nПотрачено: <b>{int(balrow.get('spent',0))}</b>", parse_mode="HTML"),ttl=20)
-
-    if t_lower.startswith("+vip ") or t_lower.startswith("+вип ") or t_lower.startswith("-vip ") or t_lower.startswith("-вип "):
-        if get_admin_rank(cid,uid)<4: return reply_no_rights(m)
-        parts=t.split()
-        target_uid,target_name,args=extract_target_and_args(m,parts)
-        if not target_uid: return finish_command(m,"vip_admin_err",bot.send_message(cid,"⚠️ Укажи пользователя через @username или reply."),ttl=10)
-        if t_lower.startswith("-"):
-            vips.pop(str(target_uid),None); db_set("user_vip",vips)
-            return finish_command(m,"vip_remove",bot.send_message(cid,f"🗑 VIP снят с {get_user_mention(user_id=target_uid,first_name=target_name)}.",parse_mode="HTML"),ttl=15)
-        days=int(args[-1]) if args and args[-1].isdigit() else 7
-        days=max(1,min(days,3650)); until=max(now,vip_until(target_uid))+days*86400
-        vips[str(target_uid)]={"until":until,"name":target_name or "Пользователь"}; db_set("user_vip",vips)
-        return finish_command(m,"vip_grant",bot.send_message(cid,f"💎 VIP выдан {get_user_mention(user_id=target_uid,first_name=target_name)} на <b>{days} дн.</b>",parse_mode="HTML"),ttl=20)
-    return None
-
-def _clans_command(m, t_lower, t):
-    """Локальные кланы: создание, вступление, выход и управление составом."""
-    cid, uid = m.chat.id, m.from_user.id
-    if m.chat.type not in ("group", "supergroup"):
-        return None
-    if not t_lower.startswith("клан") and t_lower not in ("кланы", "мой клан"):
-        return None
-
-    clans = db_get("chat_clans", {})
-    chat_clans = clans.setdefault(str(cid), {})
-    members = db_get("clan_members", {})
-    now = int(time.time())
-
-    def save():
-        db_set("chat_clans", clans)
-        db_set("clan_members", members)
-
-    def my_clan():
-        for name, c in chat_clans.items():
-            if str(uid) in c.get("members", []):
-                return name, c
-        return None, None
-
-    if t_lower in ("кланы", "клан", "мой клан"):
-        name, c = my_clan()
-        if name:
-            return finish_command(m, "clan_info", bot.send_message(cid,
-                f"⚔️ <b>КЛАН: {html.escape(name)}</b>\n\n"
-                f"Глава: {get_user_mention(user_id=c['owner'], first_name=c.get('owner_name','Глава'))}\n"
-                f"Участников: <b>{len(c.get('members', []))}</b>\n"
-                f"Создан: <b>{datetime.fromtimestamp(c.get('created', now), KYIV_TZ).strftime('%d.%m.%Y')}</b>\n\n"
-                f"Вступление: <code>Клан вступить {html.escape(name)}</code>", parse_mode="HTML"), ttl=45)
-        names = sorted(chat_clans)
-        txt = "⚔️ <b>КЛАНЫ ЧАТА</b>\n\n" + ("\n".join(f"• <b>{html.escape(n)}</b> — {len(c.get('members', []))} чел." for n,c in chat_clans.items()) if names else "Кланов пока нет.")
-        return finish_command(m, "clans", bot.send_message(cid, txt, parse_mode="HTML"), ttl=45)
-
-    parts = t.split(maxsplit=2)
-    action = parts[1].lower() if len(parts) > 1 else ""
-    arg = parts[2].strip() if len(parts) > 2 else ""
-
-    if action in ("создать", "+создать"):
-        if not arg:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Формат: <code>Клан создать Название</code>", parse_mode="HTML"), ttl=15)
-        if my_clan()[0]:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Ты уже состоишь в клане."), ttl=15)
-        name = re.sub(r"\s+", " ", arg).strip()[:32]
-        if len(name) < 2:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Название слишком короткое."), ttl=15)
-        key = name.casefold()
-        if any(n.casefold() == key for n in chat_clans):
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Такой клан уже существует."), ttl=15)
-        chat_clans[name] = {"owner": uid, "owner_name": m.from_user.first_name or "Глава", "members": [str(uid)], "created": now}
-        members.setdefault(str(uid), {})[str(cid)] = name
-        save()
-        return finish_command(m, "clan_create", bot.send_message(cid, f"⚔️ Клан <b>{html.escape(name)}</b> создан. Ты его глава.", parse_mode="HTML"), ttl=20)
-
-    if action in ("вступить", "join"):
-        if not arg:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Формат: <code>Клан вступить Название</code>", parse_mode="HTML"), ttl=15)
-        if my_clan()[0]:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Ты уже состоишь в клане."), ttl=15)
-        target = next((n for n in chat_clans if n.casefold() == arg.casefold()), None)
-        if not target:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Такой клан не найден."), ttl=15)
-        chat_clans[target].setdefault("members", []).append(str(uid))
-        members.setdefault(str(uid), {})[str(cid)] = target
-        save()
-        return finish_command(m, "clan_join", bot.send_message(cid, f"⚔️ Ты вступил(а) в клан <b>{html.escape(target)}</b>.", parse_mode="HTML"), ttl=20)
-
-    if action in ("передать", "transfer"):
-        name, c = my_clan()
-        if not name or int(c.get("owner", 0)) != uid:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Передать клан может только его глава."), ttl=15)
-        target_uid, target_name, _ = extract_target_and_args(m, t.split())
-        if not target_uid:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Ответь на сообщение участника или укажи @username."), ttl=15)
-        target_uid = int(target_uid)
-        if target_uid == uid:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Ты уже глава этого клана."), ttl=10)
-        if str(target_uid) not in [str(x) for x in c.get("members", [])]:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Передать клан можно только его участнику."), ttl=15)
-        c["owner"] = target_uid
-        c["owner_name"] = target_name or "Глава"
-        save()
-        return finish_command(m, "clan_transfer", bot.send_message(cid, f"👑 Глава клана <b>{html.escape(name)}</b> передан {get_user_mention(user_id=target_uid, first_name=target_name)}.", parse_mode="HTML"), ttl=20)
-
-    if action in ("кик", "исключить", "remove"):
-        name, c = my_clan()
-        if not name or int(c.get("owner", 0)) != uid:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Исключать участников может только глава клана."), ttl=15)
-        target_uid, target_name, _ = extract_target_and_args(m, t.split())
-        if not target_uid:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Ответь на сообщение участника или укажи @username."), ttl=15)
-        target_uid = int(target_uid)
-        if target_uid == uid:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Себя исключить нельзя. Используй передачу главы или распускание клана."), ttl=10)
-        if str(target_uid) not in [str(x) for x in c.get("members", [])]:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Пользователь не состоит в твоём клане."), ttl=15)
-        c["members"] = [x for x in c.get("members", []) if str(x) != str(target_uid)]
-        members.setdefault(str(target_uid), {}).pop(str(cid), None)
-        save()
-        return finish_command(m, "clan_kick", bot.send_message(cid, f"🚪 {get_user_mention(user_id=target_uid, first_name=target_name)} исключён(а) из клана <b>{html.escape(name)}</b>.", parse_mode="HTML"), ttl=20)
-
-    if action in ("выйти", "leave"):
-        name, c = my_clan()
-        if not name:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Ты не состоишь в клане."), ttl=15)
-        if int(c.get("owner", 0)) == uid:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Глава не может просто выйти. Передай главу командой <code>Клан передать @user</code> или распусти клан.", parse_mode="HTML"), ttl=20)
-        c["members"] = [x for x in c.get("members", []) if x != str(uid)]
-        members.setdefault(str(uid), {}).pop(str(cid), None)
-        save()
-        return finish_command(m, "clan_leave", bot.send_message(cid, f"🚪 Ты вышел(ла) из клана <b>{html.escape(name)}</b>.", parse_mode="HTML"), ttl=20)
-
-    if action in ("участники", "состав", "members"):
-        target = arg or my_clan()[0]
-        if not target:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Укажи клан: <code>Клан участники Название</code>", parse_mode="HTML"), ttl=15)
-        real = next((n for n in chat_clans if n.casefold() == target.casefold()), None)
-        if not real:
-            return finish_command(m, "clan_err", bot.send_message(cid, "⚠️ Такой клан не найден."), ttl=15)
-        c=chat_clans[real]; lines=[]
-        for i,mid in enumerate(c.get("members", []),1):
-            u=db_get("users_data",{}).get(str(mid),{}); nm=u.get("name", f"ID:{mid}")
-            prefix="👑 " if int(mid)==int(c.get("owner",0)) else "• "
-            lines.append(f"{i}. {prefix}{get_user_mention(user_id=int(mid), first_name=nm)}")
-        return finish_command(m, "clan_members", bot.send_message(cid, f"⚔️ <b>{html.escape(real)}</b>\n\n"+"\n".join(lines), parse_mode="HTML"), ttl=60)
-
-    if action in ("распустить", "delete"):
-        name,c=my_clan()
-        if not name or int(c.get("owner",0)) != uid:
-            return finish_command(m,"clan_err",bot.send_message(cid,"⚠️ Только глава клана может его распустить."),ttl=15)
-        for mid in c.get("members",[]): members.setdefault(str(mid),{}).pop(str(cid),None)
-        chat_clans.pop(name,None); save()
-        return finish_command(m,"clan_delete",bot.send_message(cid,f"🗑 Клан <b>{html.escape(name)}</b> распущен.",parse_mode="HTML"),ttl=20)
-
-    return finish_command(m,"clan_help",bot.send_message(cid,
-        "⚔️ <b>Команды кланов</b>\n\n"
-        "⚔️ <b>КЛАНЫ</b>\n\nСоздавай команду, приглашай участников и управляй составом.\n\n<code>Клан создать Название</code>\n<code>Клан вступить Название</code>\n"
-        "<code>Клан участники</code>\n<code>Клан выйти</code>\n<code>Клан передать @user</code>\n<code>Клан кик @user</code>\n<code>Клан распустить</code>\n<code>Мой клан</code>", parse_mode="HTML"), ttl=30)
-
-def _relationships_command(m, t_lower, t):
-    cid, uid = m.chat.id, m.from_user.id
-    if t_lower in ("мои отношения", "отношения", "моя семья"):
-        rel = db_get("relationships", {}).get(str(uid), {})
-        spouse = rel.get("spouse_id")
-        if spouse:
-            u = db_get("users_data", {}).get(str(spouse), {})
-            return finish_command(m, "rel_info", bot.send_message(cid, f"💞 Твой партнёр: {get_user_mention(user_id=spouse, first_name=u.get('name','пользователь'))}", parse_mode="HTML"), ttl=20)
-        return finish_command(m, "rel_info", bot.send_message(cid, "💔 Ты сейчас ни с кем не состоишь в браке."), ttl=15)
-    if t_lower in ("развод", "развестись"):
-        rels=db_get("relationships",{}); spouse=rels.get(str(uid),{}).get("spouse_id")
-        if not spouse: return finish_command(m,"rel_err",bot.send_message(cid,"💔 Ты не состоишь в браке."),ttl=10)
-        rels.pop(str(uid),None); rels.pop(str(spouse),None); db_set("relationships",rels)
-        return finish_command(m,"divorce",bot.send_message(cid,"💔 Брак расторгнут."),ttl=15)
-    if t_lower.startswith(("жениться", "выйти замуж", "брак ", "свадьба ", "+брак ")):
-        target_uid,target_name,_=extract_target_and_args(m,t.split())
-        if not target_uid: return finish_command(m,"marry_err",bot.send_message(cid,"💍 Ответь на сообщение пользователя или укажи @username."),ttl=10)
-        if target_uid==uid: return finish_command(m,"marry_err",bot.send_message(cid,"💍 Нельзя заключить брак с самим собой."),ttl=10)
-        rels=db_get("relationships",{})
-        if rels.get(str(uid),{}).get("spouse_id") or rels.get(str(target_uid),{}).get("spouse_id"):
-            return finish_command(m,"marry_err",bot.send_message(cid,"💍 Кто-то из вас уже состоит в браке."),ttl=10)
-        pending=db_get("marriage_pending",{}) or {}
-        now=time.time()
-        # Старые предложения старше 24 часов больше не считаются активными.
-        pending={k:v for k,v in pending.items() if now-float((v or {}).get("created",now))<86400}
-        for v in pending.values():
-            if int(v.get("chat_id",0))==int(cid) and (int(v.get("from",0))==uid or int(v.get("to",0))==target_uid):
-                return finish_command(m,"marry_err",bot.send_message(cid,"💍 У тебя уже есть активное предложение брака. Дождись ответа или отмены.",parse_mode="HTML"),ttl=15)
-        pid=str(max([int(x) for x in pending if str(x).isdigit()] or [0])+1)
-        pending[pid]={"from":uid,"to":target_uid,"chat_id":cid,"from_name":m.from_user.first_name or "Пользователь","to_name":target_name or "Пользователь","created":now}; db_set("marriage_pending",pending)
-        kb=types.InlineKeyboardMarkup(row_width=2); kb.add(types.InlineKeyboardButton("💍 Согласиться",callback_data=f"marry:{pid}:yes"),types.InlineKeyboardButton("❌ Отказать",callback_data=f"marry:{pid}:no"))
-        return finish_command(m,"marry_offer",bot.send_message(cid,f"💍 {get_user_mention(user_id=uid,first_name=m.from_user.first_name)} предлагает брак {get_user_mention(user_id=target_uid,first_name=target_name)}.",parse_mode="HTML",reply_markup=kb),ttl=30)
-    return None
 
 # ============================================================
 # IRIS: репутация и закладки — функциональные модули
 # ============================================================
-def _reputation_command(m, t_lower, t):
-    uid, cid = m.from_user.id, m.chat.id
-    if m.chat.type not in ("group", "supergroup"):
-        return None
-    # Репутацию можно выдать только другому участнику, обычно ответом на сообщение.
-    positive = t_lower.startswith(("+реп", "+респект", "репутация +", "респект +"))
-    negative = t_lower.startswith(("-реп", "-респект", "репутация -", "респект -"))
-    if t_lower in ("репутация", "реп", "респект", "моя репутация", "мой респект"):
-        reps = db_get("user_reputation", {}).get(str(cid), {})
-        row = reps.get(str(uid), {"value": 0, "given": 0, "received": 0})
-        return finish_command(m, "rep_self", bot.send_message(cid, f"⭐ Репутация: <b>{int(row.get('value',0))}</b>\n👍 Получено: {int(row.get('received',0))} • Выдано: {int(row.get('given',0))}", parse_mode="HTML"), ttl=20)
-    if t_lower in ("репутация список", "топ репутации", "топ респекта"):
-        reps = db_get("user_reputation", {}).get(str(cid), {})
-        users = db_get("users_data", {})
-        rows=[]
-        for suid,r in reps.items():
-            rows.append((int(r.get("value",0)), int(suid), users.get(suid,{}).get("name","Участник")))
-        rows.sort(reverse=True)
-        lines=[f"{i}. {get_user_mention(user_id=u, first_name=n)} — <b>{v}</b>" for i,(v,u,n) in enumerate(rows[:10],1)]
-        txt="⭐ <b>ТОП РЕПУТАЦИИ</b>\n\n"+("\n".join(lines) if lines else "Пока репутация никому не выдана.")
-        return finish_command(m,"rep_top",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
-    if not (positive or negative): return None
-    target_uid=None; target_name=None
-    if m.reply_to_message and m.reply_to_message.from_user:
-        target_uid=m.reply_to_message.from_user.id; target_name=m.reply_to_message.from_user.first_name
-    else:
-        target_uid,target_name,_=extract_target_and_args(m,t.split())
-    if not target_uid:
-        return finish_command(m,"rep_err",bot.send_message(cid,"⚠️ Ответь на сообщение пользователя или укажи @username."),ttl=10)
-    if int(target_uid)==int(uid):
-        return finish_command(m,"rep_err",bot.send_message(cid,"⚠️ Себе репутацию выдавать нельзя."),ttl=10)
-    # Защита от накрутки: не более 3 изменений репутации в сутки от одного пользователя.
-    rep_limits=db_get("reputation_limits",{}) or {}
-    lim=rep_limits.setdefault(str(cid),{}).setdefault(str(uid),[])
-    now=time.time(); lim=[float(x) for x in lim if now-float(x)<86400]
-    if len(lim)>=3:
-        return finish_command(m,"rep_limit",bot.send_message(cid,"⏳ <b>Лимит репутации</b>\n\nМожно выдать не более 3 изменений репутации за сутки. Попробуй позже.",parse_mode="HTML"),ttl=20)
-    reps=db_get("user_reputation",{}); chat=reps.setdefault(str(cid),{})
-    target=chat.setdefault(str(target_uid),{"value":0,"given":0,"received":0})
-    giver=chat.setdefault(str(uid),{"value":0,"given":0,"received":0})
-    delta=1 if positive else -1
-    lim.append(now); rep_limits[str(cid)][str(uid)]=lim[-3:]
-    target["value"]=int(target.get("value",0))+delta
-    target["received"]=int(target.get("received",0))+1
-    giver["given"]=int(giver.get("given",0))+1
-    db_set("user_reputation",reps)
-    sign="+1" if delta>0 else "−1"
-    db_set("reputation_limits",rep_limits)
-    return finish_command(m,"rep_change",bot.send_message(cid,f"⭐ {get_user_mention(user_id=target_uid, first_name=target_name)} получил репутацию {sign}.\n📊 Текущее значение: <b>{target['value']}</b>",parse_mode="HTML"),ttl=20)
 
-def _bookmarks_command(m, t_lower, t):
-    uid=m.from_user.id; cid=m.chat.id
-    if t_lower in ("закладки", "мои закладки", "список закладок"):
-        data=db_get("user_bookmarks",{}).get(str(uid),[])
-        if not data: txt="🔖 <b>Закладки</b>\n\nУ тебя пока нет закладок."
-        else:
-            lines=[]
-            for i,b in enumerate(data,1):
-                title=html.escape(b.get("title") or "Сообщение")
-                chat_id = int(b.get("chat_id", 0) or 0)
-                message_id = int(b.get("message_id", 0) or 0)
-                # Для супергрупп Telegram поддерживает внутреннюю ссылку вида t.me/c/... .
-                if chat_id < 0 and message_id:
-                    internal_id = str(abs(chat_id)).replace("100", "", 1) if str(abs(chat_id)).startswith("100") else str(abs(chat_id))
-                    jump = f"https://t.me/c/{internal_id}/{message_id}"
-                    lines.append(f"<b>{i}</b>. <a href=\"{jump}\">{title}</a>")
-                else:
-                    lines.append(f"<b>{i}</b>. {title} — <code>{chat_id}</code>/{message_id}")
-            txt="🔖 <b>Твои закладки</b>\n\n"+"\n".join(lines)
-        return finish_command(m,"bookmarks_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=30)
-    if re.fullmatch(r"(?:удалить|удали) закладку \d+",t_lower):
-        idx=int(t_lower.split()[-1]); allb=db_get("user_bookmarks",{}); data=allb.get(str(uid),[])
-        if idx<1 or idx>len(data): return finish_command(m,"bookmark_err",bot.send_message(cid,"⚠️ Такой закладки нет."),ttl=10)
-        data.pop(idx-1); allb[str(uid)]=data; db_set("user_bookmarks",allb)
-        return finish_command(m,"bookmark_del",bot.send_message(cid,"🗑 Закладка удалена."),ttl=15)
-    if t_lower in ("закладка", "добавить закладку", "+закладка"):
-        msg=m.reply_to_message
-        if not msg:
-            return finish_command(m,"bookmark_err",bot.send_message(cid,"⚠️ Для закладки ответь на сообщение."),ttl=10)
-        allb=db_get("user_bookmarks",{}); data=allb.setdefault(str(uid),[])
-        title=(msg.text or msg.caption or "Сообщение").replace("\n"," ")[:100]
-        data.append({"chat_id":cid,"message_id":msg.message_id,"title":title,"created":time.time()})
-        allb[str(uid)]=data[-100:]; db_set("user_bookmarks",allb)
-        return finish_command(m,"bookmark_add",bot.send_message(cid,f"🔖 Закладка №{len(allb[str(uid)])} сохранена."),ttl=15)
-    return None
 
 
 # IRIS: награды — реальные персональные награды с хранением в БД
 
-def _awards_command(m, t_lower, t):
-    cid, uid = m.chat.id, m.from_user.id
-    if t_lower in ("награды", "мои награды", "мои награды", "награды мои"):
-        awards = db_get("user_awards", {}).get(str(uid), [])
-        if not awards:
-            msg = "🏅 <b>Твои награды</b>\n\nПока наград нет."
-        else:
-            lines=[]
-            for i,a in enumerate(awards,1):
-                title=html.escape(a.get("title") or "Награда")
-                by=html.escape(a.get("by_name") or "Администратор")
-                date=time.strftime("%d.%m.%Y", time.localtime(a.get("date", time.time())))
-                lines.append(f"<b>{i}.</b> 🏅 {title} — <i>{by}, {date}</i>")
-            msg="🏅 <b>Твои награды</b>\n\n"+"\n".join(lines)
-        return finish_command(m,"awards_list",bot.send_message(cid,msg,parse_mode="HTML"),ttl=30)
-
-    # Просмотр наград конкретного пользователя.
-    if t_lower.startswith("награды ") or t_lower.startswith("награды:"):
-        parts=t.split(maxsplit=2)
-        target_uid,target_name,args=extract_target_and_args(m, parts)
-        if target_uid is None:
-            return finish_command(m,"awards_err",bot.send_message(cid,"⚠️ Укажи пользователя: <code>Награды @username</code> или ответь на его сообщение.",parse_mode="HTML"),ttl=15)
-        awards=db_get("user_awards",{}).get(str(target_uid),[])
-        if not awards:
-            msg=f"🏅 <b>Награды {html.escape(target_name or 'пользователя')}</b>\n\nНаград пока нет."
-        else:
-            lines=[]
-            for i,a in enumerate(awards,1):
-                title=html.escape(a.get("title") or "Награда")
-                by=html.escape(a.get("by_name") or "Администратор")
-                date=time.strftime("%d.%m.%Y", time.localtime(a.get("date", time.time())))
-                lines.append(f"<b>{i}.</b> 🏅 {title} — <i>{by}, {date}</i>")
-            msg=f"🏅 <b>Награды {html.escape(target_name or 'пользователя')}</b>\n\n"+"\n".join(lines)
-        return finish_command(m,"awards_user",bot.send_message(cid,msg,parse_mode="HTML"),ttl=30)
-
-    # Выдача: Наградить @user текст / Награда @user текст.
-    if t_lower.startswith("наградить ") or t_lower.startswith("награда ") or t_lower.startswith("+награда "):
-        if get_admin_rank(cid,uid) < 3:
-            return reply_no_rights(m)
-        parts=t.split(maxsplit=2)
-        target_uid,target_name,args=extract_target_and_args(m, parts)
-        if target_uid is None:
-            return finish_command(m,"award_err",bot.send_message(cid,"⚠️ Укажи пользователя через @username, ID или ответом на сообщение."),ttl=15)
-        title=" ".join(args).strip() if args else ""
-        if not title:
-            return finish_command(m,"award_err",bot.send_message(cid,"⚠️ После пользователя укажи название награды."),ttl=15)
-        awards=db_get("user_awards",{})
-        rows=awards.setdefault(str(target_uid),[])
-        rows.append({"title":title[:120],"by_uid":uid,"by_name":m.from_user.first_name or "Администратор","chat_id":cid,"date":time.time()})
-        awards[str(target_uid)]=rows[-100:]
-        db_set("user_awards",awards)
-        mention=get_user_mention(user_id=target_uid, first_name=target_name)
-        return finish_command(m,"award_add",bot.send_message(cid,f"🏅 {mention} получил(а) награду: <b>{html.escape(title[:120])}</b>",parse_mode="HTML"),ttl=20)
-
-    # Снятие награды по номеру: -награда @user N / Снять награду @user N.
-    if t_lower.startswith("-награда ") or t_lower.startswith("снять награду "):
-        if get_admin_rank(cid,uid) < 3:
-            return reply_no_rights(m)
-        parts=t.split()
-        target_uid,target_name,args=extract_target_and_args(m, parts)
-        if target_uid is None or not args or not args[-1].isdigit():
-            return finish_command(m,"award_err",bot.send_message(cid,"⚠️ Формат: <code>-Награда @user 1</code> или ответом на сообщение.",parse_mode="HTML"),ttl=15)
-        idx=int(args[-1]); awards=db_get("user_awards",{}); rows=awards.get(str(target_uid),[])
-        if idx<1 or idx>len(rows):
-            return finish_command(m,"award_err",bot.send_message(cid,"⚠️ Такой награды нет."),ttl=15)
-        removed=rows.pop(idx-1); awards[str(target_uid)]=rows; db_set("user_awards",awards)
-        return finish_command(m,"award_del",bot.send_message(cid,f"🗑 Награда <b>{html.escape(removed.get('title','Награда'))}</b> снята.",parse_mode="HTML"),ttl=20)
-    return None
 
 
 # IRIS: круги — пользовательские сообщества внутри чата.
-def _circles_store():
-    return db_get("circles", {}) or {}
-
-def _save_circles(x):
-    db_set("circles", x)
-
-def _circles_command(m, t_lower, t):
-    cid, uid = m.chat.id, m.from_user.id
-    circles = _circles_store()
-    chat = circles.setdefault(str(cid), {})
-
-    if t_lower in ("круги", "мои круги", "круги мои"):
-        mine=[]
-        for name,c in chat.items():
-            if uid in [int(x) for x in c.get("members",[])]: mine.append(name)
-        if t_lower == "круги":
-            rows=[f"• <b>{html.escape(n)}</b> — {len(c.get('members',[]))} чел." for n,c in chat.items()]
-            msg="⭕ <b>КРУГИ</b>\n\n"+("\n".join(rows) if rows else "Кругов пока нет.")
-        else:
-            msg="⭕ <b>МОИ КРУГИ</b>\n\n"+("\n".join(f"• {html.escape(n)}" for n in mine) if mine else "Ты пока не состоишь ни в одном круге.")
-        return finish_command(m,"circles_list",bot.send_message(cid,msg,parse_mode="HTML"),ttl=30)
-
-    if t_lower.startswith("круг создать ") or t_lower.startswith("+круг "):
-        name=t.split(maxsplit=2)[2].strip() if len(t.split(maxsplit=2))>=3 else ""
-        name=name[:40]
-        if not name: return finish_command(m,"circle_err",bot.send_message(cid,"⚠️ Формат: <code>Круг создать Название</code>",parse_mode="HTML"),ttl=10)
-        key=name.casefold()
-        if key in {k.casefold() for k in chat}: return finish_command(m,"circle_err",bot.send_message(cid,"⚠️ Такой круг уже существует."),ttl=10)
-        chat[name]={"owner":uid,"owner_name":m.from_user.first_name or "Участник","members":[uid],"created":time.time()}
-        _save_circles(circles)
-        return finish_command(m,"circle_create",bot.send_message(cid,f"⭕ Круг <b>{html.escape(name)}</b> создан. Ты его создатель.",parse_mode="HTML"),ttl=20)
-
-    if t_lower.startswith("круг вступить ") or t_lower.startswith("+круг вступить "):
-        name=t.split(maxsplit=2)[2].strip() if len(t.split(maxsplit=2))>=3 else ""
-        found=next((k for k in chat if k.casefold()==name.casefold()),None)
-        if not found: return finish_command(m,"circle_err",bot.send_message(cid,"⚠️ Такой круг не найден."),ttl=10)
-        members=chat[found].setdefault("members",[])
-        if uid in [int(x) for x in members]: return finish_command(m,"circle_err",bot.send_message(cid,"Ты уже состоишь в этом круге."),ttl=10)
-        members.append(uid); _save_circles(circles)
-        return finish_command(m,"circle_join",bot.send_message(cid,f"⭕ Ты вступил(а) в круг <b>{html.escape(found)}</b>.",parse_mode="HTML"),ttl=15)
-
-    if t_lower in ("круг выйти","-круг") or t_lower.startswith("круг выйти "):
-        name=t.split(maxsplit=2)[2].strip() if len(t.split(maxsplit=2))>=3 else ""
-        found=next((k for k in chat if k.casefold()==name.casefold()),None) if name else next((k for k,c in chat.items() if uid in [int(x) for x in c.get('members',[])]),None)
-        if not found: return finish_command(m,"circle_err",bot.send_message(cid,"⚠️ Ты не состоишь в указанном круге."),ttl=10)
-        c=chat[found]
-        if int(c.get("owner"))==uid: return finish_command(m,"circle_err",bot.send_message(cid,"⚠️ Создатель не может выйти. Передай круг или удали его."),ttl=10)
-        c["members"]=[x for x in c.get("members",[]) if int(x)!=uid]; _save_circles(circles)
-        return finish_command(m,"circle_leave",bot.send_message(cid,f"Ты вышел(а) из круга <b>{html.escape(found)}</b>.",parse_mode="HTML"),ttl=15)
-
-    if t_lower.startswith("круг участники"):
-        name=t.split(maxsplit=2)[2].strip() if len(t.split(maxsplit=2))>=3 else ""
-        found=next((k for k in chat if k.casefold()==name.casefold()),None) if name else None
-        if not found: return finish_command(m,"circle_err",bot.send_message(cid,"⚠️ Формат: <code>Круг участники Название</code>",parse_mode="HTML"),ttl=10)
-        members=chat[found].get("members",[]); rows=[]
-        for x in members:
-            try: rows.append("• "+get_user_mention(user_id=int(x)))
-            except Exception: rows.append(f"• <code>{x}</code>")
-        msg=f"⭕ <b>{html.escape(found)}</b>\nСоздатель: {get_user_mention(user_id=int(chat[found]['owner']),first_name=chat[found].get('owner_name'))}\n\n"+"\n".join(rows)
-        return finish_command(m,"circle_members",bot.send_message(cid,msg,parse_mode="HTML"),ttl=60)
-
-    if t_lower.startswith("круг удалить ") or t_lower.startswith("-круг удалить "):
-        name=t.split(maxsplit=2)[2].strip() if len(t.split(maxsplit=2))>=3 else ""
-        found=next((k for k in chat if k.casefold()==name.casefold()),None)
-        if not found: return finish_command(m,"circle_err",bot.send_message(cid,"⚠️ Такой круг не найден."),ttl=10)
-        if int(chat[found].get("owner"))!=uid and get_admin_rank(cid,uid)<5: return reply_no_rights(m)
-        chat.pop(found,None); _save_circles(circles)
-        return finish_command(m,"circle_delete",bot.send_message(cid,f"🗑 Круг <b>{html.escape(found)}</b> удалён.",parse_mode="HTML"),ttl=15)
-
-    if t_lower.startswith("круг помощь") or t_lower=="круг":
-        msg=("⭕ <b>КРУГИ</b>\n\nСоздавай небольшие сообщества внутри чата и управляй их составом.\n\n<code>Круг создать Название</code>\n<code>Круг вступить Название</code>\n<code>Круг участники Название</code>\n<code>Круг выйти</code>\n<code>Круг удалить Название</code>\n<code>Мои круги</code>\n<code>Круги</code>")
-        return finish_command(m,"circle_help",bot.send_message(cid,msg,parse_mode="HTML"),ttl=30)
-    return None
 
 
-def _giveaway_command(m, t_lower, t):
-    """Functional local giveaways: create, join, status and draw."""
-    cid, uid = m.chat.id, m.from_user.id
-    if m.chat.type not in ("group", "supergroup"):
+
+
+
+
+
+def _economy_command(m, t_lower, t):
+    """Только базовая экономика: баланс, ежедневный бонус, перевод и топ."""
+    if m.chat.type not in ("group", "supergroup", "private"):
         return None
-    store = db_get("giveaways", {}) or {}
-    chat = store.setdefault(str(cid), {})
-    if t_lower in ("розыгрыш", "розыгрыш помощь", "розыгрыши"):
-        txt=("🎁 <b>РОЗЫГРЫШ</b>\n\n"
-             "<code>Розыгрыш создать N приз</code> — создать розыгрыш на N победителей\n"
-             "<code>Розыгрыш список</code> — активные розыгрыши\n"
-             "<code>Розыгрыш участвовать ID</code> — вступить\n"
-             "<code>Розыгрыш завершить ID</code> — выбрать победителей")
-        return finish_command(m,"giveaway_help",bot.send_message(cid,txt,parse_mode="HTML"),ttl=40)
-    if t_lower == "розыгрыш список":
-        rows=[]
-        for gid,g in chat.items():
-            if g.get("status")!="active": continue
-            rows.append(f"🎁 <b>#{gid}</b> — {html.escape(g['prize'])}; победителей: <b>{g['winners']}</b>; участников: <b>{len(g['participants'])}</b>")
-        txt="🎁 <b>АКТИВНЫЕ РОЗЫГРЫШИ</b>\n\n"+("\n".join(rows) if rows else "Активных розыгрышей нет.")
-        return finish_command(m,"giveaway_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=60)
-    mm=re.match(r"розыгрыш\s+создать\s+(\d+)\s+(.+)$", t_lower, re.S)
-    if mm:
-        if get_admin_rank(cid,uid)<1: return reply_no_rights(m)
-        winners=max(1,min(100,int(mm.group(1))))
-        prize=t.split(None,3)[3].strip() if len(t.split(None,3))>=4 else mm.group(2).strip()
-        gid=str(int(time.time()*1000))
-        chat[gid]={"id":gid,"creator":uid,"prize":prize,"winners":winners,"participants":[uid],"status":"active","created":time.time()}
-        db_set("giveaways",store)
-        kb=types.InlineKeyboardMarkup(); kb.add(types.InlineKeyboardButton("🎁 Участвовать",callback_data=f"giveaway:join:{cid}:{gid}"))
-        msg=bot.send_message(cid,f"🎁 <b>РОЗЫГРЫШ #{gid}</b>\n\nПриз: <b>{html.escape(prize)}</b>\nПобедителей: <b>{winners}</b>\nУчастников: <b>1</b>",parse_mode="HTML",reply_markup=kb)
-        chat[gid]["message_id"]=msg.message_id; db_set("giveaways",store)
-        return finish_command(m,"giveaway_create",msg,ttl=None)
-    mm=re.match(r"розыгрыш\s+участвовать\s+(\d+)$", t_lower)
-    if mm:
-        gid=mm.group(1); g=chat.get(gid)
-        if not g or g.get("status")!="active": return finish_command(m,"giveaway_err",bot.send_message(cid,"⚠️ Розыгрыш не найден или уже завершён."),ttl=15)
-        if uid not in g["participants"]: g["participants"].append(uid); db_set("giveaways",store)
-        return finish_command(m,"giveaway_join",bot.send_message(cid,f"🎁 Ты участвуешь в розыгрыше <b>#{gid}</b>.",parse_mode="HTML"),ttl=15)
-    mm=re.match(r"розыгрыш\s+завершить\s+(\d+)$", t_lower)
-    if mm:
-        if get_admin_rank(cid,uid)<1: return reply_no_rights(m)
-        gid=mm.group(1); g=chat.get(gid)
-        if not g or g.get("status")!="active": return finish_command(m,"giveaway_err",bot.send_message(cid,"⚠️ Активный розыгрыш не найден."),ttl=15)
-        import random
-        pool=list(dict.fromkeys(g.get("participants",[]))); random.shuffle(pool)
-        winners=pool[:min(g["winners"],len(pool))]; g["status"]="finished"; g["finished"] = time.time(); g["winner_ids"]=winners; db_set("giveaways",store)
-        if winners:
-            mentions=", ".join(get_user_mention(user_id=x) for x in winners)
-            txt=f"🏆 <b>РОЗЫГРЫШ #{gid} ЗАВЕРШЁН!</b>\n\nПриз: <b>{html.escape(g['prize'])}</b>\nПобедители: {mentions}"
-        else: txt=f"🏆 <b>РОЗЫГРЫШ #{gid}</b> завершён, но участников не было."
-        return finish_command(m,"giveaway_draw",bot.send_message(cid,txt,parse_mode="HTML"),ttl=60)
-    return None
-
-def _reports_command(m, t_lower, t):
-    """Functional chat reports: submit, list and close moderator reports."""
-    cid, uid = m.chat.id, m.from_user.id
-    if m.chat.type not in ("group", "supergroup"):
-        return None
-    reports = db_get("chat_reports", {}) or {}
-    chat = reports.setdefault(str(cid), {})
-
-    if t_lower in ("репорты", "жалобы"):
-        if get_admin_rank(cid, uid) < 1:
-            return reply_no_rights(m)
-        rows=[]
-        for rid, r in sorted(chat.items(), key=lambda x: x[1].get("created",0), reverse=True):
-            if r.get("status") != "open": continue
-            rows.append(f"#{rid} — {get_user_mention(user_id=r['from_id'], first_name=r.get('from_name'))}: {html.escape(r.get('text',''))}")
-        txt="🚨 <b>ЖАЛОБЫ</b>\n\n" + ("\n".join(rows) if rows else "Открытых жалоб нет.")
-        return finish_command(m,"reports_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=60)
-
-    if t_lower.startswith(("жалоба ", "репорт ")):
-        reason=t.split(None,1)[1].strip() if len(t.split(None,1))>1 else ""
-        if not reason and getattr(m,"reply_to_message",None): reason="Жалоба на сообщение выше"
-        if not reason:
-            return finish_command(m,"report_err",bot.send_message(cid,"⚠️ Напиши причину: <code>Жалоба причина</code> или ответь на сообщение." ,parse_mode="HTML"),ttl=15)
-        target=getattr(m,"reply_to_message",None)
-        target_user=getattr(target,"from_user",None) if target else None
-        rid=str(int(time.time()*1000))
-        chat[rid]={"from_id":uid,"from_name":m.from_user.first_name,"target_id":getattr(target_user,"id",None),"target_name":getattr(target_user,"first_name",None),"text":reason,"created":time.time(),"status":"open"}
-        db_set("chat_reports",reports)
-        mention=get_user_mention(user_id=target_user.id, first_name=target_user.first_name) if target_user else "не указан"
-        msg=bot.send_message(cid,f"🚨 Жалоба <b>#{rid}</b> принята.\nНа: {mention}\nПричина: {html.escape(reason)}\n\nМодераторы могут посмотреть её командой <code>Репорты</code>.",parse_mode="HTML")
-        return finish_command(m,"report_new",msg,ttl=30)
-
-    if t_lower.startswith(("-репорт ", "закрыть репорт ", "закрыть жалобу ")):
-        if get_admin_rank(cid, uid) < 1: return reply_no_rights(m)
-        rid=t.split()[-1]
-        if rid not in chat or chat[rid].get("status") != "open":
-            return finish_command(m,"report_close_err",bot.send_message(cid,"⚠️ Открытая жалоба с таким ID не найдена."),ttl=15)
-        chat[rid]["status"]="closed"; chat[rid]["closed_by"]=uid; chat[rid]["closed_at"]=time.time(); db_set("chat_reports",reports)
-        return finish_command(m,"report_close",bot.send_message(cid,f"✅ Жалоба #{rid} закрыта."),ttl=15)
-
-    if t_lower in ("репорт помощь", "жалобы помощь"):
-        return finish_command(m,"report_help",bot.send_message(cid,"🚨 <b>Репорты</b>\n<code>Жалоба причина</code> — создать жалобу\n<code>Репорты</code> — список для модераторов\n<code>Закрыть жалобу ID</code> — закрыть жалобу",parse_mode="HTML"),ttl=30)
+    uid, cid = m.from_user.id, m.chat.id
+    balances = db_get("iriski_balances", {}) or {}
+    key = str(uid)
+    balances.setdefault(key, 0)
+    def save(): db_set("iriski_balances", balances)
+    if t_lower in ("баланс", "мой баланс", "ириски", "монеты"):
+        return finish_command(m, "balance", bot.send_message(cid, f"💰 <b>Баланс</b>\n\nУ тебя: <b>{int(balances.get(key,0))}</b> ирисок.", parse_mode="HTML"), ttl=30)
+    if t_lower in ("бонус", "ежедневный бонус", "бонус дня"):
+        cooldown = db_get("bonus_cooldowns", {}) or {}; now=time.time(); until=float(cooldown.get(key,0) or 0)
+        if until > now:
+            left=int(until-now); h=left//3600; mm=(left%3600)//60
+            return finish_command(m,"bonus_wait",bot.send_message(cid,f"⏳ Бонус уже получен. Следующий через <b>{h}ч {mm}м</b>.",parse_mode="HTML"),ttl=20)
+        import random as _random
+        amount=_random.randint(50,150); balances[key]=int(balances.get(key,0))+amount; cooldown[key]=now+86400
+        save(); db_set("bonus_cooldowns",cooldown)
+        return finish_command(m,"bonus",bot.send_message(cid,f"🎁 <b>Ежедневный бонус</b>\n\nНачислено: <b>+{amount}</b> ирисок.\nБаланс: <b>{balances[key]}</b>.",parse_mode="HTML"),ttl=30)
+    if t_lower.startswith("передать ириски ") or t_lower.startswith("подарить ириски "):
+        parts=t.split(); nums=[x for x in parts if x.isdigit()]
+        target_uid,target_name,_=extract_target_and_args(m, parts)
+        if not target_uid or not nums: return finish_command(m,"transfer_err",bot.send_message(cid,"⚠️ Формат: <code>Передать ириски @user 100</code>",parse_mode="HTML"),ttl=15)
+        amount=int(nums[-1])
+        if amount<=0 or amount>int(balances.get(key,0)): return finish_command(m,"transfer_err",bot.send_message(cid,"⚠️ Недостаточно ирисок или сумма указана неверно."),ttl=15)
+        if int(target_uid)==uid: return finish_command(m,"transfer_self",bot.send_message(cid,"⚠️ Нельзя переводить ириски самому себе."),ttl=15)
+        balances[key]-=amount; balances[str(target_uid)]=int(balances.get(str(target_uid),0))+amount; save()
+        return finish_command(m,"transfer",bot.send_message(cid,f"💸 {get_user_mention(m.from_user)} передал {get_user_mention(user_id=target_uid,first_name=target_name)} <b>{amount}</b> ирисок.",parse_mode="HTML"),ttl=20)
+    if t_lower.startswith("топ ирисок") or t_lower in ("топ балансов","богачи"):
+        rows=sorted(((int(v or 0),int(k)) for k,v in balances.items() if str(k).lstrip('-').isdigit()), reverse=True)[:10]
+        txt="🏆 <b>ТОП ИРИСОК</b>\n\n"+"\n".join(f"{i}. {get_user_mention(user_id=uid2)} — <b>{amt}</b>" for i,(amt,uid2) in enumerate(rows,1))
+        return finish_command(m,"top_iriski",bot.send_message(cid,txt,parse_mode="HTML"),ttl=45)
     return None
 
 def _private_personal_command(m, t_lower):
-    """Безопасные личные команды в ЛС: только просмотр собственных данных."""
-    if m.chat.type != "private":
-        return None
-    uid = m.from_user.id
-    if t_lower in ("помощь", "команды", "команды лиза", "лиза помощь"):
-        txt=("💗 <b>ЛИЗА — ЛИЧНЫЕ КОМАНДЫ</b>\n\n"
-             "<code>Мой баланс</code> — баланс ирисок\n"
-             "<code>Мои чеки</code> — активные чеки\n"
-             "<code>Где мои ириски</code> — история операций\n"
-             "<code>Мои баны</code> — история полученных банов\n"
-             "<code>Мой спам</code> — нарушения спама\n"
-             "<code>Моя стата</code> — общая активность\n"
-             "<code>Мой актив</code> — активность по чатам")
+    if m.chat.type != "private": return None
+    uid=m.from_user.id
+    if t_lower in ("помощь","команды","команды лиза","лиза помощь"):
+        txt=("<b>📖 ЛИЗА — ЛИЧНЫЕ КОМАНДЫ</b>\n\n"
+             "<code>Мой баланс</code> — текущий баланс ирисок.\n"
+             "<code>Бонус</code> — ежедневное начисление.\n"
+             "<code>Моя статистика</code> — активность в чатах, где работает Лиза.\n"
+             "<code>Мои баны</code> — история зафиксированных банов.\n\n"
+             "💡 Подсказка: в группе доступна расширенная справка командой <code>Помощь</code>.")
         return finish_command(m,"private_help",bot.send_message(m.chat.id,txt,parse_mode="HTML"),ttl=120)
-    if t_lower in ("мои баны", "мой бан"):
+    if t_lower in ("мои баны","мой бан"):
         history=db_get("ban_history",{}) or {}; rows=[]
         for cid,items in history.items():
             for v in items or []:
@@ -2330,22 +360,15 @@ def _private_personal_command(m, t_lower):
                     rows.append((float(v.get("date",0) or 0),f"• {html.escape(str(v.get('chat_title') or cid))} — {html.escape(str(v.get('reason') or 'без причины'))} · {dt}"))
         rows.sort(reverse=True)
         return finish_command(m,"private_bans",bot.send_message(m.chat.id,"🔨 <b>МОИ БАНЫ</b>\n\n"+("\n".join(x[1] for x in rows[:30]) or "История банов пуста."),parse_mode="HTML"),ttl=60)
-    if t_lower == "мой спам":
-        total=0
-        for cid,rows in (db_get("moderation_log",{}) or {}).items():
-            total += sum(1 for r in (rows or []) if int((r or {}).get("target_uid",0) or 0)==uid and str((r or {}).get("action","")).lower() in ("spam","antispam","спам"))
-        return finish_command(m,"private_spam",bot.send_message(m.chat.id,f"🚫 <b>МОЙ СПАМ</b>\n\nЗафиксировано нарушений: <b>{total}</b>.",parse_mode="HTML"),ttl=30)
-    if t_lower in ("моя стата", "моя статистика", "мой актив"):
+    if t_lower in ("моя стата","моя статистика","мой актив"):
         total=0; chats=0; last=0
         for cid,row in (db_get("chat_activity",{}) or {}).items():
             item=(row or {}).get(str(uid))
             if not item: continue
-            chats+=1; total += sum(int(v or 0) for v in ((item.get("daily",{}) or {}).values()))
-            last=max(last,float(item.get("last_seen",0) or 0))
+            chats+=1; total += sum(int(v or 0) for v in ((item.get("daily",{}) or {}).values())); last=max(last,float(item.get("last_seen",0) or 0))
         last_txt=datetime.fromtimestamp(last,KYIV_TZ).strftime("%d.%m.%Y %H:%M") if last else "нет данных"
-        return finish_command(m,"private_stats",bot.send_message(m.chat.id,f"📊 <b>МОЯ СТАТИСТИКА</b>\n\n💬 Сообщений в истории: <b>{total}</b>\n👥 Чатов: <b>{chats}</b>\n🕒 Последняя активность: <b>{last_txt}</b>",parse_mode="HTML"),ttl=60)
-    return None
-
+        return finish_command(m,"private_stats",bot.send_message(m.chat.id,f"📊 <b>МОЯ СТАТИСТИКА</b>\n\n💬 Сообщений: <b>{total}</b>\n👥 Чатов: <b>{chats}</b>\n🕒 Последняя активность: <b>{last_txt}</b>",parse_mode="HTML"),ttl=60)
+    return _economy_command(m,t_lower,t)
 
 def text_handler(m):
     t=(m.text or "").strip(); t_lower=t.lower()
@@ -2378,10 +401,6 @@ def text_handler(m):
         suffix="" if len(ids)<30 else "\n\n⚠️ Показаны первые 30 участников."
         return finish_command(m,"mass_mention",bot.send_message(cid,f"📣 <b>{title}</b>{extra}\n\n"+mentions+suffix,parse_mode="HTML"),ttl=30)
     try:
-        if m.text:
-            fun_result = _entertainment_command(m, m.text.lower().strip())
-            if fun_result is not None:
-                return fun_result
         # Нормализация Iris-style префиксов до разбора команд.
         if m.text:
             raw = m.text.strip()
@@ -2419,28 +438,18 @@ def text_handler(m):
 
         # Единая справка Лизы: коротко, по разделам и без перегруза.
         if t_lower in ("помощь", "команды", "команды лиза", "лиза помощь") and m.chat.type in ("group", "supergroup"):
-            txt = (
-                "💗 <b>ЛИЗА — ПОМОЩЬ</b>\n\n"
-                "Лиза умеет управлять чатом, помогать с участниками, статистикой, играми и экономикой.\n\n"
-                "🛡 <b>Модерация</b>\n"
-                "<code>Варн</code> · <code>Мут</code> · <code>Бан</code> · <code>Кик</code> · <code>Кто админ</code>\n\n"
-                "⚙️ <b>Настройки</b>\n"
-                "<code>Базовая настройка</code> · <code>Правила помощь</code> · <code>Приветствие помощь</code>\n\n"
-                "📊 <b>Статистика</b>\n"
-                "<code>Чат инфо</code> · <code>Чат стата</code> · <code>Топ</code> · <code>Кто онлайн</code>\n\n"
-                "👤 <b>Профиль</b>\n"
-                "<code>Моя анкета</code> · <code>Анкета @user</code> · <code>Ник</code> · <code>О себе</code>\n\n"
-                "💰 <b>Экономика</b>\n"
-                "<code>Баланс</code> · <code>Бонус</code> · <code>Передать ириски @user 100</code> · <code>Мои чеки</code>\n\n"
-                "🎮 <b>Развлечения</b>\n"
-                "<code>Дуэль @user</code> · <code>Кубы @user</code> · <code>Рандом 1 100</code> · <code>Шипперим</code>\n\n"
-                "🤝 <b>Сообщества</b>\n"
-                "<code>Клан</code> · <code>Круги</code> · <code>Мои отношения</code> · <code>Репутация</code>\n\n"
-                "📝 <b>Полезное</b>\n"
-                "<code>Заметки</code> · <code>Закладки</code> · <code>Таймеры</code> · <code>Розыгрыш</code>\n\n"
-                "💡 <i>Команды можно писать с !, / или обращаться к Лизе: «Лиза помощь».</i>"
+            txt=(
+                "<b>📚 СПРАВКА ЛИЗЫ</b>\n\n"
+                "Лиза — чат-менеджер. Здесь перечислены только функции текущей сборки.\n\n"
+                "🛡 <b>Модерация</b>\n<code>Варн</code> · <code>Варны</code> · <code>Мут 30м</code> · <code>Муты</code>\n<code>Бан</code> · <code>Разбан</code> · <code>Банлист</code> · <code>Кик</code>\n<code>Кто админ</code> · <code>Повысить</code> · <code>Понизить</code> · <code>Модер лог</code>\n\n"
+                "⚙️ <b>Настройки</b>\n<code>Базовая настройка</code> · <code>Настройки чата</code> · <code>Права рангов</code>\n<code>+Правила</code> · <code>Правила</code> · <code>+Приветствие</code> · <code>Приветствие</code>\n<code>+Автокик</code> · <code>+Минрег</code> · <code>+Каналы</code> · <code>+Инлайны</code>\n\n"
+                "🧹 <b>Очистка и защита</b>\n<code>Пург 50</code> · <code>Закреп</code> · <code>Открепить</code> · <code>+Ссылки</code> · <code>+Антиспам ID</code>\n<code>Проверка безопасности</code> · <code>Тг права</code>\n\n"
+                "📊 <b>Статистика</b>\n<code>Чат инфо</code> · <code>Чат стата</code> · <code>Чат стата 7</code> · <code>Топ</code> · <code>Кто онлайн</code> · <code>Моя статистика</code>\n\n"
+                "👤 <b>Профили</b>\n<code>Моя анкета</code> · <code>Анкета @user</code> · <code>Ник</code> · <code>Звание</code> · <code>О себе</code>\n\n"
+                "💰 <b>Экономика</b>\n<code>Баланс</code> · <code>Бонус</code> · <code>Передать ириски @user 100</code> · <code>Топ ирисок</code>\n\n"
+                "💡 <b>Подсказка:</b> команды можно писать с <code>!</code>, <code>/</code> или <code>.</code>. Например, <code>!Мут 30м</code>. Для подробной инструкции напиши <code>Помощь модерация</code> или <code>Помощь настройки</code>."
             )
-            return finish_command(m, "main_help", bot.send_message(cid, txt, parse_mode="HTML"), ttl=120)
+            return finish_command(m,"main_help",bot.send_message(cid,txt,parse_mode="HTML"),ttl=180)
 
         # Расширенная справка по разделам.
         help_sections = {
@@ -2468,24 +477,6 @@ def text_handler(m):
             title, lines = help_sections[t_lower]
             txt = title + "\n\n" + "\n".join("• " + x for x in lines) + "\n\n💡 <i>Ответь на сообщение участника, если команда принимает цель.</i>"
             return finish_command(m, "section_help", bot.send_message(cid, txt, parse_mode="HTML"), ttl=90)
-
-        # Следующий блок Iris: темы модераторов, голосования и локальный антиспам.
-        if (t_lower in ("темы", "!темы", "темы модераторов", "модераторы названия") or t_lower.startswith(("темы ", "!темы ", "модераторы названия\n", "+иконка модераторов ", "-иконка модераторов", "+админ иконка ", "-админ иконка"))):
-            result=_topic_command(m,t_lower)
-            if result is not None: return result
-        if t_lower.startswith(("+гк ", "-гк ", "гб ")):
-            result=_vote_command(m,t_lower)
-            if result is not None: return result
-        if t_lower in ("+ирис антиспам", "-ирис антиспам", "+ирис спам", "-ирис спам"):
-            if get_admin_rank(cid,uid)<5: return reply_no_rights(m)
-            enabled=t_lower.startswith("+"); set_chat_setting(cid,"iris_antispam",enabled)
-            return finish_command(m,"iris_antispam",bot.send_message(cid,f"🛡 Локальный Ирис-антиспам {'включён' if enabled else 'выключен'}."),ttl=15)
-        if t_lower.startswith("+антиспам "):
-            if get_admin_rank(cid,uid)<5: return reply_no_rights(m)
-            ids=get_v(cid,"antispam_ids",[]) or []; value=t_lower.split()[-1]
-            if value.isdigit() and value not in [str(x) for x in ids]: ids.append(value)
-            set_chat_setting(cid,"antispam_ids",ids)
-            return finish_command(m,"antispam_add",bot.send_message(cid,"🛡 Пользователь добавлен в локальную базу антиспама."),ttl=15)
 
         # --- IRIS: завещание и внутренняя передача создателя ---
         # В Telegram бот не может сам передать реального владельца чата.
@@ -3081,6 +1072,59 @@ def text_handler(m):
             msg = bot.send_message(cid, "🎛 <b>Панель управления Лизой</b> ✨\n\nНастрой поведение и функции бота под свой чат. Изменения сохраняются автоматически.",
                                    reply_markup=main_kb(cid, False), parse_mode="HTML")
             return finish_command(m, "settings", msg)
+
+        # --- ЦЕНТР УПРАВЛЕНИЯ ЛИЗОЙ: расширенный просмотр настроек и ролей ---
+        if t_lower in ("настройки чата", "настройки лизы", "статус настроек", "лиза статус"):
+            if get_admin_rank(cid, uid) < 1:
+                return reply_no_rights(m)
+            settings = db_get("settings", {}).get(str(cid), {}) or {}
+            def flag(key, default=False):
+                return "включено" if bool(settings.get(key, default)) else "выключено"
+            admins = db_get("chat_admins", {}).get(str(cid), {}) or {}
+            rank_rows=[]
+            users=db_get("users_data",{}) or {}
+            for suid, rank in sorted(admins.items(), key=lambda x:int(x[1]), reverse=True):
+                name=(users.get(str(suid),{}) or {}).get("name","Участник")
+                rank_rows.append(f"• {get_user_mention(user_id=int(suid), first_name=name)} — <b>{html.escape(ADMIN_RANKS[int(rank)])}</b>")
+            txt=("⚙️ <b>НАСТРОЙКИ ЛИЗЫ</b>\n\n"
+                 f"📖 Правила: <b>{'заданы' if get_v(cid,'rules','') else 'не заданы'}</b>\n"
+                 f"👋 Приветствие: <b>{'задано' if get_v(cid,'welcome_text','') else 'не задано'}</b>\n"
+                 f"🔗 Ссылка чата: <b>{'задана' if get_v(cid,'chat_link','') else 'нет'}</b>\n"
+                 f"📊 Статистика: <b>{flag('stats_enabled', True)}</b>\n"
+                 f"🛡 Антиспам: <b>{flag('iris_antispam')}</b>\n"
+                 f"🚨 Антирейд: <b>{'включён' if get_v(cid,'antiraid',{}) else 'выключен'}</b>\n"
+                 f"🤫 Автокик молчунов: <b>{'включён' if get_v(cid,'autokick_silent',0) else 'выключен'}</b>\n"
+                 f"🧹 Автокик: <b>{'включён' if get_v(cid,'autokick',{}) else 'выключен'}</b>\n"
+                 f"🔔 Входы: <b>{flag('notify_joins')}</b> · выходы: <b>{flag('notify_leaves')}</b>\n"
+                 f"🔐 ДК в ЛС: <b>{flag('dk_in_private')}</b>\n\n"
+                 "👑 <b>Модераторы</b>\n" + ("\n".join(rank_rows[:20]) if rank_rows else "Модераторы ещё не назначены."))
+            return finish_command(m,"settings_status",bot.send_message(cid,txt,parse_mode="HTML"),ttl=120)
+
+        if t_lower in ("права рангов", "права модеров", "ранги", "модераторы права"):
+            if get_admin_rank(cid, uid) < 1:
+                return reply_no_rights(m)
+            blocks=[]
+            for r in range(1,6):
+                perms=get_rank_permissions(cid,r)
+                enabled=[name for key,name in PERM_NAMES.items() if perms.get(key,False)]
+                blocks.append(f"<b>{r}. {html.escape(ADMIN_RANKS[r])}</b>\n" + (" · ".join(enabled) if enabled else "Нет доступных прав"))
+            txt="🛡 <b>ПРАВА РАНГОВ</b>\n\n"+"\n\n".join(blocks)+"\n\n💡 Изменение: <code>Права 2 can_mute вкл</code>"
+            return finish_command(m,"rank_permissions_all",bot.send_message(cid,txt,parse_mode="HTML"),ttl=120)
+
+        if t_lower in ("модераторы", "список модераторов", "кто модер", "кто модеры"):
+            if get_admin_rank(cid, uid) < 1:
+                return reply_no_rights(m)
+            admins=db_get("chat_admins",{}).get(str(cid),{}) or {}; users=db_get("users_data",{}) or {}
+            rows=[]
+            for suid,rank in sorted(admins.items(),key=lambda x:(-int(x[1]), int(x[0]))):
+                name=(users.get(str(suid),{}) or {}).get("name","Участник")
+                status=""
+                try:
+                    member=bot.get_chat_member(cid,int(suid)); status=member.status
+                except Exception: status="unknown"
+                rows.append(f"{len(rows)+1}. {get_user_mention(user_id=int(suid),first_name=name)}\n   🛡 <b>{html.escape(ADMIN_RANKS[int(rank)])}</b> · {('в чате' if status not in ('left','kicked') else 'вышел')}")
+            txt="👥 <b>МОДЕРАТОРЫ ЧАТА</b>\n\n"+("\n".join(rows[:50]) if rows else "Список пока пуст.")
+            return finish_command(m,"moderators_list",bot.send_message(cid,txt,parse_mode="HTML"),ttl=120)
 
         # --- ДОСТУП КОМАНД (IRIS-STYLE) ---
         if cmd == "мой" and len(parts) >= 3 and parts[1].lower() == "доступ" and parts[2].lower() in ["команд", "команды"]:
@@ -3709,51 +1753,18 @@ def text_handler(m):
         if tg_result is not None:
             return tg_result
 
-        giveaway_result = _giveaway_command(m, t_lower, t)
-        if giveaway_result is not None:
-            return giveaway_result
 
-        report_result = _reports_command(m, t_lower, t)
-        if report_result is not None:
-            return report_result
 
-        exchange_result = _exchange_command(m, t_lower, t)
-        if exchange_result is not None:
-            return exchange_result
 
         economy_result = _economy_command(m, t_lower, t)
         if economy_result is not None:
             return economy_result
 
-        vip_result = _vip_catalog_command(m, t_lower, t)
-        if vip_result is not None:
-            return vip_result
 
-        clan_result = _clans_command(m, t_lower, t)
-        if clan_result is not None:
-            return clan_result
 
-        circle_result = _circles_command(m, t_lower, t)
-        if circle_result is not None:
-            return circle_result
 
-        rep_result = _reputation_command(m, t_lower, t)
-        if rep_result is not None:
-            return rep_result
-        relationship_result = _relationships_command(m, t_lower, t)
-        if relationship_result is not None:
-            return relationship_result
-        awards_result = _awards_command(m, t_lower, t)
-        if awards_result is not None:
-            return awards_result
 
-        bookmark_result = _bookmarks_command(m, t_lower, t)
-        if bookmark_result is not None:
-            return bookmark_result
 
-        note_result = _notes_timers_command(m, t_lower, t)
-        if note_result is not None:
-            return note_result
 
         # --- IRIS: ники, баны и служебная статистика ---
         if t_lower == "ники" or t_lower.startswith("ники "):
@@ -3890,13 +1901,17 @@ def text_handler(m):
             return finish_command(m,"my_period_stats",bot.send_message(cid,f"📊 {get_user_mention(m.from_user)} за <b>{label}</b>: <b>{count}</b> сообщений.",parse_mode="HTML"),ttl=30)
         if t_lower in ("олды", "новички"):
             activity=db_get("chat_activity", {}).get(str(cid), {})
-            rows=[]
+            rows=[]; now=time.time()
             for suid,row in activity.items():
-                first=float(row.get("first_seen",time.time()) or time.time())
-                rows.append((first,int(suid),row.get("name","Участник")))
-            rows.sort(reverse=(t_lower=="новички"))
+                first=float(row.get("first_seen",now) or now)
+                last=float(row.get("last_seen",0) or 0)
+                rows.append((first,last,int(suid),row.get("name","Участник")))
+            rows.sort(key=lambda x:x[0], reverse=(t_lower=="новички"))
             title="НОВИЧКИ" if t_lower=="новички" else "ОЛДЫ"
-            lines=[f"{i}. {get_user_mention(user_id=u,first_name=n)} — {datetime.fromtimestamp(ts,KYIV_TZ).strftime('%d.%m.%Y')}" for i,(ts,u,n) in enumerate(rows[:15],1)]
+            lines=[]
+            for i,(ts,last,u,n) in enumerate(rows[:30],1):
+                flame=" 🔥" if t_lower=="олды" and last and now-last <= 30*86400 else ""
+                lines.append(f"{i}. {get_user_mention(user_id=u,first_name=n)}{flame} — с {datetime.fromtimestamp(ts,KYIV_TZ).strftime('%d.%m.%Y')}")
             return finish_command(m,"olds_new",bot.send_message(cid,f"👥 <b>{title}</b>\n\n"+("\n".join(lines) if lines else "Нет данных."),parse_mode="HTML"),ttl=60)
         if t_lower == "!население":
             activity=db_get("chat_activity", {}).get(str(cid), {})
@@ -4036,19 +2051,37 @@ def text_handler(m):
         if t_lower in ("онлайн", "кто онлайн", "мой онлайн"):
             activity = db_get("chat_activity", {}).get(str(cid), {})
             now = time.time()
-            online = []
-            for suid, data in activity.items():
-                last = float(data.get("last_seen", 0) or 0)
-                if last and now - last <= 15 * 60:
-                    online.append((last, int(suid), data.get("name", "Участник")))
-            online.sort(reverse=True)
             if t_lower == "мой онлайн":
                 last = activity.get(str(uid), {}).get("last_seen", 0)
-                state = "🟢 онлайн" if last and now-last <= 15*60 else "⚪️ оффлайн"
-                txt = f"🟢 <b>МОЙ ОНЛАЙН</b>\n\n{get_user_mention(m.from_user)} — {state}"
-            else:
-                lines = [f"• {get_user_mention(user_id=u, first_name=n)}" for _,u,n in online[:30]]
-                txt = "🟢 <b>СЕЙЧАС АКТИВНЫ</b>\n\n" + ("\n".join(lines) if lines else "Никто не проявлял активность последние 15 минут.")
+                state = "🟢 недавно активен" if last and now-last <= 15*60 else "⚪️ давно не активен"
+                try:
+                    member = bot.get_chat_member(cid, uid)
+                    if getattr(member, "status", "") == "creator" or getattr(member, "status", "") == "administrator":
+                        state = "🟢 в чате"
+                except Exception:
+                    pass
+                txt = f"<b>МОЙ ОНЛАЙН</b>\n\n{get_user_mention(m.from_user)} — {state}"
+                return finish_command(m, "online", bot.send_message(cid, txt, parse_mode="HTML"), ttl=60)
+            candidates=[]
+            for suid,data in activity.items():
+                last=float(data.get("last_seen",0) or 0)
+                if last and now-last <= 30*60:
+                    candidates.append((last,int(suid),data.get("name","Участник")))
+            candidates.sort(reverse=True)
+            lines=[]
+            for _,u,n in candidates[:30]:
+                status_label="🟢 недавно активен"
+                try:
+                    member=bot.get_chat_member(cid,u)
+                    st=getattr(member,"status","")
+                    if st=="online": status_label="🟢 онлайн"
+                    elif st=="recently": status_label="🟢 недавно был в сети"
+                    elif st in ("creator","administrator","member"): status_label="🟢 активен"
+                    elif st in ("left","kicked"): continue
+                except Exception:
+                    pass
+                lines.append(f"• {get_user_mention(user_id=u, first_name=n)} — {status_label}")
+            txt = "🟢 <b>АКТИВНЫЕ УЧАСТНИКИ</b>\n\n" + ("\n".join(lines) if lines else "Нет данных об активности за последние 30 минут.")
             return finish_command(m, "online", bot.send_message(cid, txt, parse_mode="HTML"), ttl=60)
 
         # --- IRIS: история приглашений ---
@@ -4331,6 +2364,15 @@ def text_handler(m):
             return finish_command(m,"profile_full",bot.send_message(cid,"\n".join(lines),parse_mode="HTML"),ttl=60)
 
         # visibility and profile attributes
+        if t_lower in ("-гражданство", "гражданство удалить", "снять гражданство"):
+            profiles=db_get("user_profiles",{}); p=profiles.setdefault(str(uid),{})
+            p.pop("citizen", None); db_set("user_profiles", profiles)
+            return finish_command(m, "citizenship_del", bot.send_message(cid, "✅ Статус гражданина удалён."), ttl=10)
+        if t_lower in ("гражданство", "мой гражданство", "моё гражданство"):
+            prof=db_get("user_profiles",{}).get(str(uid),{})
+            status="гражданин этого чата" if prof.get("citizen") else "статус не установлен"
+            return finish_command(m, "citizenship_show", bot.send_message(cid, f"🏡 <b>Гражданство</b>\n\nСтатус: {status}." , parse_mode="HTML"), ttl=15)
+
         if t_lower in ("+анкета","-анкета"):
             profiles=db_get("user_profiles",{}); p=profiles.setdefault(str(uid),{})
             p["visible"]=t_lower=="+анкета"; db_set("user_profiles",profiles)
@@ -4403,72 +2445,6 @@ def text_handler(m):
 
         record_xp_and_stats(m)
 
-        if m.chat.type == 'private' and boss:
-            with state_lock: fsm = active_fsm.get(uid)
-            if fsm:
-                action, pid = fsm.get("action"), fsm.get("pid")
-                with state_lock: active_fsm.pop(uid, None)
-                
-                if action == "buttons":
-                    new_btns = []
-                    for line in t.split('\n'):
-                        row = []
-                        for part in line.split('|'):
-                            if '-' in part:
-                                try:
-                                    t_btn, val = part.rsplit('-', 1)
-                                    t_btn, val = trim_btn_text(t_btn.strip()), val.strip()
-                                    if val.startswith("cmd:"): row.append({"text": t_btn, "command": val[4:].strip()})
-                                    elif val.startswith("cb:"): row.append({"text": t_btn, "callback_data": val[3:].strip()})
-                                    else: row.append({"text": t_btn, "url": val if val.startswith("http") else "https://"+val})
-                                except: pass
-                        if row: new_btns.append(row)
-                    with state_lock:
-                        data = db_get("autopost", {"posts": []})
-                        for p in data["posts"]:
-                            if p["id"] == pid: p["buttons"] = new_btns
-                        db_set("autopost", data)
-                    return bot.reply_to(m, "✅ Кнопки сохранены!", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-
-                elif action == "text":
-                    with state_lock:
-                        data = db_get("autopost", {"posts": []})
-                        for p in data["posts"]:
-                            if p["id"] == pid: p["text"] = t
-                        db_set("autopost", data)
-                    return bot.reply_to(m, "✅ Текст поста сохранён!", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-
-                elif action == "interval":
-                    sec = parse_interval_input(t)
-                    if sec is not None:
-                        with state_lock:
-                            data = db_get("autopost", {"posts": []})
-                            for p in data["posts"]:
-                                if p["id"] == pid: p["interval"], p["daily_time"] = sec, None
-                            db_set("autopost", data)
-                        return bot.reply_to(m, "✅ Интервал сохранён!", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Не понимаю такой формат. Пример: 30м, 2ч, 1д")
-
-                elif action == "time":
-                    if re.match(r'^\d{2}:\d{2}$', t):
-                        with state_lock:
-                            data = db_get("autopost", {"posts": []})
-                            for p in data["posts"]:
-                                if p["id"] == pid: p["daily_time"] = t
-                            db_set("autopost", data)
-                        return bot.reply_to(m, "✅ Время сохранено!", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Нужен формат ЧЧ:ММ, например: 12:00")
-
-                elif action == "date":
-                    if re.match(r'^\d{4}-\d{2}-\d{2}$', t):
-                        with state_lock:
-                            data = db_get("autopost", {"posts": []})
-                            for p in data["posts"]:
-                                if p["id"] == pid: p["start_date"] = t
-                            db_set("autopost", data)
-                        return bot.reply_to(m, "✅ Дата старта сохранена!", reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад", callback_data=f"ap:select:{pid}")))
-                    return bot.reply_to(m, "⚠️ Нужен формат ГГГГ-ММ-ДД, например: 2026-10-01")
-
         with state_lock: is_safe_active = cid in active_safes
         if is_safe_active and re.fullmatch(r'\d{3}', t):
             with state_lock:
@@ -4481,9 +2457,7 @@ def text_handler(m):
                     auto_del(msg, 180)
             return
 
-        with state_lock: is_words_active = cid in active_word_games
-        if is_words_active and CYRILLIC_WORD_RE.match(t):
-            executor.submit(process_word_guess, cid, uid, m.from_user.first_name, t, m.message_id)
+        is_words_active = False
 
         if m.chat.type in ['group', 'supergroup'] and not is_words_active and not is_safe_active and not t.startswith('/'):
             executor.submit(maybe_react_randomly, m)
@@ -4527,8 +2501,7 @@ def text_handler(m):
         conflict_hit = any(w in t_lower for w in CONFL)
 
         if direct or conflict_hit:
-            with state_lock: cities_running = cid in active_word_games
-            if cities_running: return  
+            
             if not get_v(cid, "intervene", True) or random.randint(1, 100) > get_v(cid, "freq", 40): return
             prompt = f"В чате ссора: {m.reply_to_message.text} -> {m.text}. Резюме:" if (conflict_hit and m.reply_to_message) else m.text
             def ai_task():
@@ -4759,60 +2732,47 @@ def handle_chat_join_request(r):
         logging.error(f'[JOIN REQUEST] {e}', exc_info=True)
 
 
-# ============================================================
-# Регистрация обработчиков.
-# Без этого блока бот получает апдейты от Telegram, но НИКАК
-# на них не реагирует — ни одна функция выше не была подключена
-# к боту (текстовые сообщения, кнопки, команды, вход/выход
-# участников). Судя по всему, это и было потеряно при рефакторинге.
-#
-# Названия слэш-команд для cmd_sgs/cmd_lsg/cmd_start_words и т.д.
-# восстановлены по внутренним меткам finish_command(...) и по
-# текстам самих сообщений (например "/start_words_game",
-# "/leaders_safe_game"). Для "сейфа" точное название команды в
-# коде нигде прямо не упоминается — заведено сразу под 3
-# вероятных варианта, лишние просто никогда не сработают.
-# ============================================================
-
-_EXPLICIT_COMMANDS = [
-    "start", "settings", "lucky_game", "leaders_lucky_game", "events",
-    "start_game_safe", "start_safe_game", "safe_game", "leaders_safe_game",
-    "start_words_game", "stop_words_game", "leaders_words_game", "words_status",
-]
-
-def _is_explicit_command(m):
-    """True если сообщение — одна из команд, для которых зарегистрирован
-    отдельный обработчик ниже (нужно, чтобы text_handler не обрабатывал
-    их повторно)."""
-    if not m.text or not m.text.startswith("/"):
-        return False
-    cmd = m.text.split()[0][1:].split("@")[0].lower()
-    return cmd in _EXPLICIT_COMMANDS
-
-# Системные сообщения (вход/выход участников) и фото
+# Регистрация основных обработчиков.
 bot.register_message_handler(handle_system_messages, content_types=["new_chat_members", "left_chat_member"])
 try:
     bot.register_chat_join_request_handler(handle_chat_join_request)
 except AttributeError:
-    logging.warning("[JOIN REQUEST] Handler registration unavailable in installed pyTelegramBotAPI")
+    logging.warning("[JOIN REQUEST] Handler registration unavailable")
 bot.register_message_handler(on_photo, content_types=["photo"])
-
-# Явные слэш-команды
 bot.register_message_handler(cmd_start, commands=["start"])
 bot.register_message_handler(cmd_settings, commands=["settings"])
-bot.register_message_handler(cmd_lg, commands=["lucky_game"])
-bot.register_message_handler(cmd_llg, commands=["leaders_lucky_game"])
-bot.register_message_handler(cmd_events, commands=["events"])
-bot.register_message_handler(cmd_sgs, commands=["start_game_safe", "start_safe_game", "safe_game"])
-bot.register_message_handler(cmd_lsg, commands=["leaders_safe_game"])
-bot.register_message_handler(cmd_start_words, commands=["start_words_game"])
-bot.register_message_handler(cmd_stop_words, commands=["stop_words_game"])
-bot.register_message_handler(cmd_leaders_words, commands=["leaders_words_game"])
-bot.register_message_handler(cmd_words_status, commands=["words_status"])
-
-# Весь остальной текст (включая "кто админ", "+варн", "/ban", "фарм" и т.д.,
-# они разбираются внутри самого text_handler по тексту сообщения)
 bot.register_message_handler(text_handler, content_types=["text"], func=lambda m: not _is_explicit_command(m))
 
-# Инлайн-кнопки
+def cb_handler(c):
+    try:
+        d=c.data or ""; cid=c.message.chat.id if c.message else c.from_user.id; uid=c.from_user.id
+        if d=="noop": return bot.answer_callback_query(c.id)
+        if d=="what_can_i_do":
+            txt=("<b>ЛИЗА</b>\n\n🛡 Модерация и защита чата\n⚙️ Настройки, правила и приветствие\n📊 Статистика и активность\n👤 Профили участников\n💰 Базовая экономика")
+            return bot.edit_message_text(txt,cid,c.message.message_id,parse_mode="HTML",reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад",callback_data="back_to_start")))
+        if d=="back_to_start":
+            kb=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Что умеет Лиза?",callback_data="what_can_i_do"))
+            if get_admin_rank(cid,uid)>=5: kb.add(types.InlineKeyboardButton("⚙️ Настройки",callback_data="open_main_settings"))
+            return bot.edit_message_text("👋 <b>Лиза готова работать.</b>\n\nДобавь её в группу и выдай права администратора.",cid,c.message.message_id,parse_mode="HTML",reply_markup=kb)
+        if d=="liza_setup_help":
+            return bot.edit_message_text("⚙️ <b>Быстрый старт</b>\n\n1. Добавь Лизу в группу.\n2. Выдай права администратора.\n3. Настрой правила, приветствие и модерацию.\n4. Проверь <code>Помощь</code>.",cid,c.message.message_id,parse_mode="HTML",reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Назад",callback_data="back_to_start")))
+        if d=="open_main_settings":
+            if get_admin_rank(cid,uid)<5: return bot.answer_callback_query(c.id,"⛔ Только создатель чата.",show_alert=True)
+            return bot.edit_message_text("⚙️ <b>Настройки Лизы</b>\n\nОсновные параметры можно менять командами <code>Настройки чата</code> и <code>Права рангов</code>.",cid,c.message.message_id,parse_mode="HTML")
+        if d.startswith("m:"):
+            if get_admin_rank(cid,uid)<5: return bot.answer_callback_query(c.id,"⛔ Только создатель чата.",show_alert=True)
+            key=d[2:]
+            if key in ("toggle_intervene","toggle_sys","toggle_reactions","toggle_butt_in"):
+                setting={"toggle_intervene":"intervene","toggle_sys":"del_sys","toggle_reactions":"random_reactions","toggle_butt_in":"butt_in"}[key]
+                set_chat_setting(cid,setting,not bool(get_v(cid,setting,False)))
+                bot.answer_callback_query(c.id,"✅ Сохранено")
+                return bot.edit_message_reply_markup(cid,c.message.message_id,reply_markup=main_kb(cid,False))
+            if key in ("freq","anger","butt_in_chance"):
+                return bot.answer_callback_query(c.id,"Изменяй параметр командой в чате.",show_alert=True)
+        return bot.answer_callback_query(c.id)
+    except Exception as e:
+        logging.error(f"[CALLBACK] {e}",exc_info=True)
+        try: bot.answer_callback_query(c.id,"⚠️ Не удалось выполнить действие.",show_alert=True)
+        except: pass
+
 bot.register_callback_query_handler(cb_handler, func=lambda c: True)

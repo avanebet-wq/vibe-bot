@@ -193,17 +193,6 @@ def register_chat(chat):
 def check_access(m):
     uid = m.from_user.id if m.from_user else 0
     cid = m.chat.id
-    if m.chat.type in ['group', 'supergroup']:
-        with state_lock:
-            is_words_active = cid in active_word_games
-            game = active_word_games.get(cid)
-        if is_words_active and game:
-            if uid not in game["players"] and get_admin_rank(cid, uid) == 0:
-                try: bot.delete_message(cid, m.message_id)
-                except: pass
-                warn = bot.send_message(cid, f"🤫 {get_user_mention(m.from_user)}, тсс! Идёт игра в слова, писать могут только участники!", parse_mode='HTML')
-                auto_del(warn, 5)
-                return False
     if m.chat.type == 'private':
         cmd_word = ""
         if m.text:
@@ -213,10 +202,9 @@ def check_access(m):
         # Команды, меняющие настройки чата или модерирующие участников,
         # по-прежнему доступны только внутри группы.
         private_readonly = {
-            "мои баны", "мой бан", "мой спам", "моя стата", "моя статистика",
-            "мой актив", "где мои ириски", "мои чеки", "мой баланс", "баланс",
-            "ириски", "экономика", "моя экономика", "помощь", "команды",
-            "команды лиза", "лизa помощь"
+            "мои баны", "мой бан", "моя стата", "моя статистика", "мой актив",
+            "мой баланс", "баланс", "ириски", "монеты", "бонус", "ежедневный бонус",
+            "топ ирисок", "помощь", "команды", "команды лиза", "лиза помощь"
         }
         if cmd_word in ("start", "settings") or (m.text and m.text.strip().lower() in private_readonly):
             return True
@@ -233,9 +221,9 @@ def check_access(m):
 def _polish_liza_text(text):
     """Lightweight final pass for short plain-text bot replies.
 
-    Existing HTML-rich responses are left untouched; short plain responses get
-    a compact Liza header so the whole bot has one recognizable voice without
-    turning every message into a decorative wall of emojis.
+    Existing HTML-rich responses are left untouched; short plain responses are
+    normalized only for safe HTML rendering. The bot name is never prepended to
+    user-facing replies, keeping the interface clean and professional.
     """
     if not isinstance(text, str):
         return text, None
@@ -247,7 +235,7 @@ def _polish_liza_text(text):
     # Avoid touching long generated/AI text and content that is clearly a post.
     if len(raw) > 420 or '\n' in raw and len(raw) > 300:
         return text, None
-    return f"💗 <b>Лиза</b>\n\n{html.escape(raw)}", 'HTML'
+    return html.escape(raw), 'HTML'
 
 def reply_no_rights(m):
     try: bot.delete_message(m.chat.id, m.message_id)
@@ -397,6 +385,28 @@ def format_dk_list(cid, uid=None):
         lines.append(f"{status} <code>{label}</code> — {text}")
     return "━━━━━━━VIBE━━━━━━━\n⚙️ <b>ДОСТУП КОМАНД</b>\n\n" + "\n".join(lines) + "\n\n<i>0 — всем • 1–5 — с ранга • 6 — выключено</i>\n━━━━━━━VIBE━━━━━━━"
 
+def _reply_hint(cmd_name):
+    hints = {
+        "main_help": "💡 <b>Подсказка:</b> для подробностей используй <code>Помощь модерация</code>, <code>Помощь настройки</code> или <code>Помощь статистика</code>.",
+        "balance": "💡 <b>Подсказка:</b> баланс можно проверить командой <code>Баланс</code>, а получить ежедневное начисление — <code>Бонус</code>.",
+        "bonus": "💡 <b>Подсказка:</b> бонус доступен раз в 24 часа. Актуальную сумму смотри через <code>Баланс</code>.",
+        "transfer": "💡 <b>Подсказка:</b> перевод можно делать ответом на сообщение или командой <code>Передать ириски @user 100</code>.",
+        "warn": "💡 <b>Подсказка:</b> укажи пользователя ответом на сообщение, через @username или ID. Список — <code>Варны</code>.",
+        "mute": "💡 <b>Подсказка:</b> срок можно указать как <code>Мут 30м</code>; снять ограничение — <code>Снять мут</code>.",
+        "ban": "💡 <b>Подсказка:</b> пользователя лучше указывать ответом на его сообщение. Список заблокированных — <code>Банлист</code>.",
+        "kick": "💡 <b>Подсказка:</b> для точного выбора участника используй команду ответом на его сообщение.",
+        "setup_help": "💡 <b>Подсказка:</b> сначала выдай Лизе права администратора Telegram, затем настрой правила, приветствие и модерацию.",
+        "security_check": "💡 <b>Подсказка:</b> если какое-либо право отмечено ❌, выдай его Лизе в настройках Telegram и повтори проверку.",
+        "profile": "💡 <b>Подсказка:</b> профиль можно открыть командой <code>Анкета</code> или ответом на сообщение участника.",
+        "stats": "💡 <b>Подсказка:</b> для своей активности используй <code>Моя статистика</code>, для чата — <code>Чат стата 7</code>.",
+    }
+    return hints.get(cmd_name, "💡 <b>Подсказка:</b> если команда сработала не так, как ожидалось, напиши <code>Помощь</code> и выбери нужный раздел.")
+
+def _ensure_reply_hint(text, cmd_name):
+    if not isinstance(text, str) or not text.strip() or "💡" in text or len(text) > 1800:
+        return text
+    return text.rstrip() + "\n\n" + _reply_hint(cmd_name)
+
 def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
     if delete_user_msg and not getattr(m, "is_callback", False) and m.chat.type != 'private':
         try: bot.delete_message(m.chat.id, m.message_id)
@@ -408,6 +418,14 @@ def finish_command(m, cmd_name, sent_msg=None, ttl=None, delete_user_msg=True):
         # A final visual pass for short plain replies keeps legacy handlers
         # consistent with the newer Liza UI. Rich HTML responses remain intact.
         try:
+            current_text = getattr(sent_msg, 'text', None)
+            hinted_text = _ensure_reply_hint(current_text, cmd_name)
+            if hinted_text != current_text and isinstance(current_text, str):
+                try:
+                    bot.edit_message_text(hinted_text, chat_id=sent_msg.chat.id, message_id=sent_msg.message_id, parse_mode='HTML', reply_markup=getattr(sent_msg, 'reply_markup', None))
+                    sent_msg.text = hinted_text
+                except Exception as hint_error:
+                    logging.debug(f'[UI HINT:{cmd_name}] {hint_error}')
             polished, mode = _polish_liza_text(getattr(sent_msg, 'text', None))
             if mode and polished != getattr(sent_msg, 'text', None):
                 bot.edit_message_text(
