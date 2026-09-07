@@ -6,8 +6,10 @@ import logging
 from runtime import bot
 
 import handlers  # регистрирует обработчики
+import settings  # регистрирует обработчики меню настроек
 
 if __name__ == "__main__":
+    settings.start_scheduler()
     try:
         bot.remove_webhook()
     except Exception as e:

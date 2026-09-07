@@ -19,6 +19,10 @@ from stats import cmd_stats, record_message
 from stories import cmd_tell_story, cmd_stories_on, cmd_stories_off, maybe_autotell
 from help import cmd_help
 from ai import ask_liza
+from settings import (
+    try_handle_pending_input, enforce_silence, enforce_captcha,
+    track_message, cmd_settings_command, open_settings_in_dm,
+)
 
 # Многословные команды проверяются первыми (от самых длинных, чтобы не путать с однословными)
 _COMPOUND_COMMANDS = [
@@ -56,6 +60,7 @@ _SINGLE_COMMANDS = {
     "успокойся": lambda m, a: cmd_calm_down(m),
     "помощь": lambda m, a: cmd_help(m),
     "команды": lambda m, a: cmd_help(m),
+    "настройки": lambda m, a: cmd_settings_command(m),
 }
 
 
@@ -99,9 +104,33 @@ def _apply_polite_filter(cid, text):
     return text
 
 
+def _safe_reply(message, text):
+    """reply_to, но никогда не отправляет пустое сообщение (Telegram это запрещает)."""
+    if not text or not text.strip():
+        text = "🙃 Не нашлась, что ответить."
+    bot.reply_to(message, text)
+
+
+def _safe_send(chat_id, text):
+    if not text or not text.strip():
+        return
+    bot.send_message(chat_id, text)
+
+
 @bot.message_handler(commands=["start"])
 def on_start(message):
     if message.chat.type == "private":
+        parts = (message.text or "").split(maxsplit=1)
+        payload = parts[1].strip() if len(parts) > 1 else ""
+        if payload.startswith("cfg-"):
+            gid_str = payload[len("cfg-"):]
+            try:
+                gid = int(gid_str)
+            except ValueError:
+                gid = None
+            if gid is not None:
+                return open_settings_in_dm(message.from_user.id, gid)
+
         bot.send_message(
             message.chat.id,
             "💗 Привет, я Лиза! Добавь меня в группу и дай права администратора, "
@@ -122,6 +151,16 @@ def text_handler(message):
         cid = message.chat.id
         text = message.text or ""
         is_group = message.chat.type in ("group", "supergroup")
+
+        if is_group:
+            if enforce_captcha(message):
+                return
+            if enforce_silence(message):
+                return
+            track_message(cid, message.message_id)
+
+        if try_handle_pending_input(message):
+            return
 
         if message.from_user:
             remember_user(message.from_user)
@@ -152,21 +191,21 @@ def text_handler(message):
             # Обратились по имени, но это не команда — считаем, что это вопрос к AI.
             reply = ask_liza(cmd_text, angry=is_angry(cid))
             reply = _apply_polite_filter(cid, reply)
-            bot.reply_to(message, reply)
+            _safe_reply(message, reply)
             return
 
         if not is_group:
             # Личка — общаемся без обращения по имени.
             reply = ask_liza(text, angry=is_angry(cid))
             reply = _apply_polite_filter(cid, reply)
-            bot.reply_to(message, reply)
+            _safe_reply(message, reply)
             return
 
         # Групповой чат, сообщение не адресовано напрямую.
         if addressed:
             reply = ask_liza(text, angry=is_angry(cid))
             reply = _apply_polite_filter(cid, reply)
-            bot.reply_to(message, reply)
+            _safe_reply(message, reply)
             return
 
         # Если включена автоактивность — не встреваем во время бурного обсуждения.
@@ -180,7 +219,7 @@ def text_handler(message):
         if random.random() < chance:
             reply = ask_liza(text, angry=is_angry(cid), max_tokens=80)
             reply = _apply_polite_filter(cid, reply)
-            bot.send_message(cid, reply)
+            _safe_send(cid, reply)
 
     except Exception as e:
         logging.error(f"[text_handler] {e}", exc_info=True)

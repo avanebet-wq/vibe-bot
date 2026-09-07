@@ -27,6 +27,18 @@ def clean_response(text):
     return text.strip()
 
 
+FALLBACK_REPLIES = [
+    "🙃 Что-то я задумалась и не могу подобрать слов. Спроси ещё раз?",
+    "🤷 Хотела ответить умно, но мысль потерялась. Повтори вопрос.",
+    "😶 Кажется, я зависла. Спроси ещё разок.",
+]
+
+
+def _fallback():
+    import random
+    return random.choice(FALLBACK_REPLIES)
+
+
 def ask_liza(user_text, angry=False, max_tokens=200):
     key = _current_key()
     if not key:
@@ -52,8 +64,15 @@ def ask_liza(user_text, angry=False, max_tokens=200):
             )
             if resp.status_code == 200:
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"]
-                return clean_response(content)
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError):
+                    logging.error(f"[ai] unexpected response shape: {data}")
+                    return _fallback()
+                cleaned = clean_response(content)
+                # Модель иногда возвращает пустую строку (например, упёрлась в max_tokens
+                # на служебных токенах) — Telegram не разрешает отправлять пустой текст.
+                return cleaned if cleaned else _fallback()
             elif resp.status_code in (401, 402, 429):
                 _switch_key()
                 headers["Authorization"] = f"Bearer {_current_key()}"
