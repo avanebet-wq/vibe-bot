@@ -918,6 +918,15 @@ def _dispatch_callback(call):
 
     chat_id, message_id = call.message.chat.id, call.message.message_id
 
+    # Any settings callback exits the previous input mode. This prevents an
+    # old pending prompt (time/text/media/etc.) from consuming the next
+    # ordinary user message after navigating back or switching menus.
+    # The pending state is chat-scoped; topic selection historically uses
+    # the target group id, so clear both possible keys when they differ.
+    store.clear_pending(chat_id, call.from_user.id)
+    if gid != chat_id:
+        store.clear_pending(gid, call.from_user.id)
+
     if action == "postbtn":
         pid = rest[0] if rest else ""
         pos = rest[1] if len(rest) > 1 else ""
