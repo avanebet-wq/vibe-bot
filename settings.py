@@ -4,6 +4,8 @@ import re
 import time
 import logging
 import threading
+import os
+from urllib.parse import urlencode
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -412,28 +414,24 @@ def parse_url_buttons(raw_text):
     return rows, None
 
 
-def build_markup_from_buttons(rows):
+def build_markup_from_buttons(rows, gid=None, pid=None):
     if not rows:
         return None
     kb = types.InlineKeyboardMarkup()
-    for row in rows:
+    for row_index, row in enumerate(rows):
         line = []
-        for b in row:
+        for btn_index, b in enumerate(row):
+            text = b.get("text", "Кнопка")
             if b.get("url"):
-                line.append(types.InlineKeyboardButton(b["text"], url=b["url"]))
-            elif b.get("rules"):
-                line.append(types.InlineKeyboardButton(b["text"], callback_data="cf|rules|0"))
-            elif b.get("popup") is not None:
-                line.append(types.InlineKeyboardButton(b["text"], callback_data=f"cf|txtpop|0"))
-            elif b.get("alert") is not None:
-                line.append(types.InlineKeyboardButton(b["text"], callback_data=f"cf|txtal|0"))
+                line.append(types.InlineKeyboardButton(text, url=b["url"]))
             elif b.get("share") is not None:
                 share_url = f"https://t.me/share/url?text={b['share']}"
-                line.append(types.InlineKeyboardButton(b["text"], url=share_url))
-            elif b.get("copy") is not None:
-                line.append(types.InlineKeyboardButton(b["text"], callback_data="cf|txtcp|0"))
+                line.append(types.InlineKeyboardButton(text, url=share_url))
+            elif gid is not None and pid is not None:
+                callback_data = f"cf|postbtn|{gid}|{pid}|{row_index}:{btn_index}"
+                line.append(types.InlineKeyboardButton(text, callback_data=callback_data[:64]))
             else:
-                line.append(types.InlineKeyboardButton(b["text"], callback_data="cf|noop|0"))
+                line.append(types.InlineKeyboardButton(text, callback_data="cf|noop|0"))
         kb.row(*line)
     return kb
 
@@ -442,8 +440,8 @@ def build_markup_from_buttons(rows):
 # Публикации: превью и рассылка
 # =============================================================================
 
-def _deliver_post(chat_id, post, thread_id=None):
-    markup = build_markup_from_buttons(post.get("buttons"))
+def _deliver_post(chat_id, post, thread_id=None, pid=None):
+    markup = build_markup_from_buttons(post.get("buttons"), gid=chat_id, pid=pid)
     media = post.get("media")
     if media:
         caption = media.get("caption") or post.get("text")
@@ -471,7 +469,7 @@ def _preview_post(chat_id, gid, pid):
     if not post or (not post.get("text") and not post.get("media")):
         bot.send_message(chat_id, "🤔 Сначала задайте текст или медиа публикации.")
         return
-    _deliver_post(chat_id, post, thread_id=post.get("topic_id"))
+    _deliver_post(chat_id, post, thread_id=post.get("topic_id"), pid=pid)
 
 
 # =============================================================================
@@ -583,7 +581,7 @@ def _scheduler_tick():
                     except Exception:
                         pass
 
-                msg = _deliver_post(gid, post, thread_id=post.get("topic_id"))
+                msg = _deliver_post(gid, post, thread_id=post.get("topic_id"), pid=pid)
                 if msg:
                     if post.get("pin"):
                         try:
@@ -911,6 +909,61 @@ def _dispatch_callback(call):
 
     chat_id, message_id = call.message.chat.id, call.message.message_id
 
+    if action == "postbtn":
+        pid = rest[0] if rest else ""
+        pos = rest[1] if len(rest) > 1 else ""
+        try:
+            row_index, btn_index = [int(x) for x in pos.split(":", 1)]
+        except Exception:
+            return bot.answer_callback_query(call.id, "⚠️ Некорректная кнопка.", show_alert=True)
+
+        post = store.get_post(gid, pid)
+        if not post:
+            return bot.answer_callback_query(call.id, "⚠️ Публикация не найдена.", show_alert=True)
+
+        rows = post.get("buttons") or []
+        try:
+            button = rows[row_index][btn_index]
+        except (IndexError, TypeError):
+            return bot.answer_callback_query(call.id, "⚠️ Кнопка не найдена.", show_alert=True)
+
+        if button.get("popup") is not None:
+            return bot.answer_callback_query(call.id, str(button.get("popup") or ""), show_alert=False)
+        if button.get("alert") is not None:
+            return bot.answer_callback_query(call.id, str(button.get("alert") or ""), show_alert=True)
+        if button.get("rules") is not None:
+            text = button.get("rules")
+            if not isinstance(text, str) or not text.strip():
+                text = "Правила группы не заданы."
+            return bot.answer_callback_query(call.id, text[:195], show_alert=True)
+        if button.get("copy") is not None:
+            text = str(button.get("copy") or "")
+            return bot.answer_callback_query(
+                call.id, f"📋 Текст для копирования:\n{text}"[:195], show_alert=True
+            )
+        if button.get("delete_message"):
+            try:
+                bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+            return bot.answer_callback_query(call.id, "🗑 Сообщение удалено.")
+        if button.get("user_command") is not None:
+            command = str(button.get("user_command") or "")
+            try:
+                bot.send_message(
+                    call.from_user.id,
+                    f"Команда для выполнения: <code>{command}</code>\n"
+                    "Автоматически выполнить её от имени пользователя бот не может.",
+                    parse_mode="HTML",
+                )
+                return bot.answer_callback_query(call.id, "📩 Команда отправлена вам в личку.")
+            except Exception:
+                return bot.answer_callback_query(
+                    call.id, "📩 Откройте личные сообщения с Лизой для команды.", show_alert=True
+                )
+
+        return bot.answer_callback_query(call.id)
+
     if action == "back":
         target = rest[0]
         pid = rest[1] if len(rest) > 1 else None
@@ -1007,32 +1060,33 @@ def _dispatch_callback(call):
         pid = rest[0]
         post = store.get_post(gid, pid)
         bot.answer_callback_query(call.id)
+
+        # The recurring post is only a template at this stage: there is no
+        # Telegram message_id yet. The Mini App therefore edits the saved
+        # post configuration by (chat_id, post_id), and the scheduler applies
+        # that configuration when the post is published.
+        # Inline Web App buttons are supported only in private chats.
+        # The settings menu can be opened in a group, so use the bot's
+        # Main Mini App direct link instead. Telegram still supplies
+        # initData and passes startapp through to tg.initDataUnsafe.start_param.
+        start_param = f"c{chat_id}_p{pid}"
+        miniapp_url = f"https://t.me/{BOT_USERNAME}?startapp={start_param}"
+
         hint = (
-            "👉🏻 Установите кнопки, которые будут вставлены под сообщением\n"
-            "Отправьте сообщение, структурированное следующим образом:\n\n"
-            "<blockquote>• Вставьте одну кнопку:\n"
-            "Название кнопки - t.me/LinkExample\n\n"
-            "• Вставьте несколько кнопок в один ряд:\n"
-            "Название кнопки - t.me/LinkExample && Текст кнопки - t.me/LinkExample\n\n"
-            "• Вставьте несколько рядов кнопок:\n"
-            "Название кнопки - t.me/LinkExample\n"
-            "Название кнопки - t.me/LinkExample</blockquote>\n\n"
-            "<b>Специальные кнопки</b>\n"
-            "<blockquote>• Кнопка со всплывающим окном:\n"
-            "Название кнопки - popup: Текст всплывающего окна\n"
-            "или\n"
-            "Название кнопки - alert: Текст всплывающего окна\n\n"
-            "• Кнопка правил:\n"
-            "Название кнопки - rules\n\n"
-            "• Кнопка «Поделиться»:\n"
-            "Название кнопки - share: Текст для обмена\n\n"
-            "• Кнопка с копируемым текстом:\n"
-            "Название кнопки - copy: Текст копируется при нажатии</blockquote>"
+            "👉🏻 Здесь можно настроить кнопки для этой публикации.\n\n"
+            "Нажмите «✏️ Удобное создание кнопок», чтобы открыть конструктор.\n"
+            "После сохранения кнопки автоматически будут использоваться при каждой "
+            "повторяющейся публикации."
         )
-        msg = bot.send_message(chat_id, hint, parse_mode="HTML",
-                                reply_markup=ui.buttons_prompt_kb(gid, pid, bool(post.get("buttons"))))
+        msg = bot.send_message(
+            chat_id,
+            hint,
+            parse_mode="HTML",
+            reply_markup=ui.buttons_prompt_kb(
+                gid, pid, bool(post.get("buttons")), miniapp_url=miniapp_url
+            ),
+        )
         track_message(chat_id, msg.message_id)
-        store.set_pending(chat_id, call.from_user.id, {"kind": "buttons", "gid": gid, "pid": pid})
         return
 
     if action == "ptxtdel":

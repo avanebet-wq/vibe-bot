@@ -6,7 +6,6 @@ import random
 import logging
 import threading
 from datetime import datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from concurrent.futures import ThreadPoolExecutor
 
 import telebot
@@ -23,32 +22,14 @@ if not TOKEN:
     raise SystemExit(1)
 
 
-def run_dummy_server():
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            try:
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"Liza is alive!")
-            except Exception as e:
-                logging.error(f"[DUMMY SERVER] {e}")
-
-        def log_message(self, fmt, *args):
-            pass
-
-    port = int(os.environ.get("PORT", 8080))
-    try:
-        HTTPServer(("0.0.0.0", port), Handler).serve_forever()
-    except Exception as e:
-        logging.error(f"[DUMMY SERVER CRASH] {e}")
-
-
-threading.Thread(target=run_dummy_server, daemon=True).start()
-
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 ME = bot.get_me()
 BOT_ID = ME.id
 BOT_USERNAME = (ME.username or "").lower()
+
+# Railway health port is now used by the Telegram Mini App/API server.
+from miniapp import start_miniapp_server
+start_miniapp_server()
 
 executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="liza-fast")
 ai_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="liza-ai")
