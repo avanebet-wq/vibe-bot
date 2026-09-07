@@ -22,6 +22,7 @@ from ai import ask_liza
 from settings import (
     try_handle_pending_input, enforce_silence, enforce_captcha,
     track_message, cmd_settings_command, open_settings_in_dm,
+    send_dm_start_intro, send_dm_start_group_picker, send_group_start,
 )
 
 # Многословные команды проверяются первыми (от самых длинных, чтобы не путать с однословными)
@@ -131,13 +132,11 @@ def on_start(message):
             if gid is not None:
                 return open_settings_in_dm(message.from_user.id, gid)
 
-        bot.send_message(
-            message.chat.id,
-            "💗 Привет, я Лиза! Добавь меня в группу и дай права администратора, "
-            "чтобы я могла модерировать чат. Команда «Лиза, помощь» покажет всё, что я умею.",
-        )
+        if send_dm_start_group_picker(message.chat.id, message.from_user.id):
+            return
+        send_dm_start_intro(message.chat.id)
     else:
-        cmd_help(message)
+        send_group_start(message)
 
 
 @bot.message_handler(commands=["help"])

@@ -195,6 +195,29 @@ def toggle_post_day(gid, pid, list_field, day):
 
 
 # ---------------------------------------------------------------------------
+# Реестр групп, в которых сейчас находится бот (для списка «выберите чат» в ЛС)
+# ---------------------------------------------------------------------------
+
+def get_known_groups():
+    with _lock:
+        return db_get("known_groups", {})
+
+
+def register_known_group(gid, title):
+    with _lock:
+        groups = db_get("known_groups", {})
+        groups[str(gid)] = title or str(gid)
+        db_set("known_groups", groups)
+
+
+def remove_known_group(gid):
+    with _lock:
+        groups = db_get("known_groups", {})
+        if groups.pop(str(gid), None) is not None:
+            db_set("known_groups", groups)
+
+
+# ---------------------------------------------------------------------------
 # Состояния "ожидаю ввод от пользователя" (текст / медиа / кнопки / дата и т.п.)
 # Ключ: (asker_chat_id, user_id) -> {"kind":.., "gid":.., "pid":.., ...}
 # ---------------------------------------------------------------------------

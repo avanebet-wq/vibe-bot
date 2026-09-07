@@ -49,7 +49,9 @@ def _authorized(gid, uid):
 def _chat_title(gid):
     try:
         chat = bot.get_chat(gid)
-        return chat.title or str(gid)
+        title = chat.title or str(gid)
+        store.register_known_group(gid, title)
+        return title
     except Exception:
         return str(gid)
 
@@ -97,19 +99,87 @@ def _send(chat_id, target, gid, pid=None, thread_id=None):
 
 
 # =============================================================================
-# Добавление бота в группу — приглашение открыть настройки
+# Добавление бота в группу — приветствие + /start в разных контекстах
 # =============================================================================
 
-def _offer_settings(chat_id, gid, thread_id=None):
-    kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton("⚙️ Настройки чата", callback_data=f"cf|askwhere|{gid}"))
-    msg = bot.send_message(
-        chat_id,
-        "🎉 Спасибо, что добавили меня в группу! Дайте мне права администратора, "
-        "и можно настраивать чат прямо отсюда.",
-        reply_markup=kb, message_thread_id=thread_id,
+MANUAL_URL = "https://telegra.ph/Liza--manual-po-botu-09-07"
+
+
+def _addbot_url():
+    return f"https://t.me/{BOT_USERNAME}?startgroup=true"
+
+
+def _offer_settings(chat_id, thread_id=None):
+    text = (
+        "👋Всем привет, спасибо что добавили\n\n"
+        "👅Я — Лиза, развлеку и помогу с самым нужным😼\n\n"
+        "Для начала напишите /start"
     )
+    msg = bot.send_message(chat_id, text, message_thread_id=thread_id)
     track_message(chat_id, msg.message_id)
+
+
+def send_dm_start_intro(chat_id):
+    text = (
+        "Привет! Я — Лиза👅, умный ИИ-помощник для вашего чата😼\n\n"
+        "Я умею:\n"
+        "• 💬 Отвечать на сообщения и поддерживать общение с участниками\n"
+        "• 🛡️ Помогать с модерацией: бан, мут, варн и другие действия\n"
+        "• 📢 Автоматически публиковать посты и настраивать автопостинг\n"
+        "• ⚙️ Гибко настраиваться под правила и формат вашего чата\n"
+        "• 🧠 Использовать ИИ для общения и помощи участникам\n\n"
+        "Чтобы попробовать мои возможности, просто добавь меня в свой чат и напиши:\n\n"
+        "«Лиза настройки»\n\n"
+        "Я покажу доступные функции и помогу всё настроить.\n\n"
+        f'👀 <a href="{MANUAL_URL}">Все команды и возможности</a>'
+    )
+    kb = types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("➕ Добавить в чат", url=_addbot_url()))
+    msg = bot.send_message(chat_id, text, reply_markup=kb)
+    track_message(chat_id, msg.message_id)
+
+
+def send_dm_start_group_picker(chat_id, user_id):
+    """Если пользователь — админ хотя бы одной из групп, где сейчас есть Лиза,
+    показывает список этих чатов. Возвращает True, если список был показан."""
+    groups = store.get_known_groups()
+    my_groups = []
+    for gid_str, title in groups.items():
+        try:
+            gid = int(gid_str)
+        except ValueError:
+            continue
+        if _authorized(gid, user_id):
+            my_groups.append((gid, title))
+
+    if not my_groups:
+        return False
+
+    text = (
+        "👋 Я — Лиза, ИИ-помощник ваших чатов.\n\n"
+        "Я готова помогать с общением, модерацией и другими задачами 😼\n\n"
+        "Выберите чат ниже, чтобы открыть настройки👇"
+    )
+    kb = types.InlineKeyboardMarkup()
+    for gid, title in my_groups:
+        kb.row(types.InlineKeyboardButton(title, callback_data=f"cf|selectgroup|{gid}"))
+    msg = bot.send_message(chat_id, text, reply_markup=kb)
+    track_message(chat_id, msg.message_id)
+    return True
+
+
+def send_group_start(message):
+    gid = message.chat.id
+    text = (
+        "👋 Я — Лиза, ИИ-помощник этого чата👅\n\n"
+        "Готова помогать с общением, модерацией и автоматизацией😼\n\n"
+        "Выберите действие ниже, чтобы начать настройку👇"
+    )
+    kb = types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("⚙️ Настройки", callback_data=f"cf|askwhere|{gid}"))
+    msg = bot.send_message(gid, text, reply_markup=kb,
+                            message_thread_id=getattr(message, "message_thread_id", None))
+    track_message(gid, msg.message_id)
 
 
 def open_settings_in_dm(user_id, gid):
@@ -142,7 +212,8 @@ def handle_new_members(message):
     gid = message.chat.id
     for user in message.new_chat_members:
         if user.id == BOT_ID:
-            _offer_settings(gid, gid, thread_id=getattr(message, "message_thread_id", None))
+            store.register_known_group(gid, message.chat.title)
+            _offer_settings(gid, thread_id=getattr(message, "message_thread_id", None))
             continue
 
         if store.get_captcha(gid).get("enabled", False):
@@ -716,6 +787,23 @@ def _on_new_members(message):
         log.error(f"[new_members] {e}", exc_info=True)
 
 
+if hasattr(bot, "my_chat_member_handler"):
+    @bot.my_chat_member_handler()
+    def _on_my_chat_member(update):
+        try:
+            gid = update.chat.id
+            status = update.new_chat_member.status
+            if status in ("left", "kicked"):
+                store.remove_known_group(gid)
+            else:
+                store.register_known_group(gid, update.chat.title)
+        except Exception as e:
+            log.warning(f"[my_chat_member] {e}")
+else:
+    log.info("Установленная версия telebot не поддерживает my_chat_member_handler — "
+             "список групп в реестре не будет очищаться при удалении бота из чата.")
+
+
 @bot.message_handler(content_types=[
     "photo", "video", "animation", "document", "voice", "audio", "sticker",
 ])
@@ -812,6 +900,11 @@ def _dispatch_callback(call):
                 pass
         return
 
+    # Подтверждение капчи — особый случай: жать её должен вступивший пользователь,
+    # а не администратор, поэтому обрабатываем раньше общей проверки прав.
+    if action == "capver":
+        return _captcha_callback(call, gid, rest[0])
+
     # Всё, что ниже, требует прав администратора целевой группы.
     if not _authorized(gid, call.from_user.id):
         return bot.answer_callback_query(call.id, "⛔ Только для админов чата.", show_alert=True)
@@ -846,8 +939,10 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id, "❌ Капча выключена.")
         return _show(chat_id, message_id, "cap", gid)
 
-    if action == "capver":
-        return _captcha_callback(call, gid, rest[0])
+    if action == "selectgroup":
+        bot.answer_callback_query(call.id)
+        store.set_active_group(call.from_user.id, gid)
+        return _show(chat_id, message_id, "root", gid)
 
     if action == "pst":
         bot.answer_callback_query(call.id)
