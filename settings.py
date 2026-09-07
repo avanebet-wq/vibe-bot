@@ -196,7 +196,16 @@ def open_settings_in_dm(user_id, gid):
 
 
 def cmd_settings_command(message):
-    """«Лиза, настройки» — сразу спросить, где открыть меню."""
+    """«Лиза, настройки» — в группе открывает настройки этого чата,
+    а в личке показывает список чатов, где Лиза есть и пользователь админ."""
+    if message.chat.type == "private":
+        if send_dm_start_group_picker(message.chat.id, message.from_user.id):
+            return
+        return bot.reply_to(
+            message,
+            "⛔ Я не нашла чатов, где я добавлена и где вы являетесь администратором."
+        )
+
     gid = message.chat.id
     if not _authorized(gid, message.from_user.id):
         return bot.reply_to(message, "⛔ Эта команда только для админов чата.")
@@ -1069,7 +1078,7 @@ def _dispatch_callback(call):
         # The settings menu can be opened in a group, so use the bot's
         # Main Mini App direct link instead. Telegram still supplies
         # initData and passes startapp through to tg.initDataUnsafe.start_param.
-        start_param = f"c{chat_id}_p{pid}"
+        start_param = f"c{gid}_p{pid}"
         miniapp_url = f"https://t.me/{BOT_USERNAME}?startapp={start_param}"
 
         hint = (
@@ -1083,7 +1092,8 @@ def _dispatch_callback(call):
             hint,
             parse_mode="HTML",
             reply_markup=ui.buttons_prompt_kb(
-                gid, pid, bool(post.get("buttons")), miniapp_url=miniapp_url
+                gid, pid, bool(post.get("buttons")), miniapp_url=miniapp_url,
+                edit_url=miniapp_url + "&mode=edit" if post.get("buttons") else None
             ),
         )
         track_message(chat_id, msg.message_id)
