@@ -331,10 +331,12 @@
   }
 
   var qs = new URLSearchParams(location.search);
-  var CHAT_ID = qs.get("chat_id") || (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param
-                  ? decodeStartParam(tg.initDataUnsafe.start_param).chat_id : null);
-  var POST_ID = qs.get("post_id") || (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param
-                  ? decodeStartParam(tg.initDataUnsafe.start_param).post_id : null);
+  var startParam = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) ||
+                   qs.get("tgWebAppStartParam") || "";
+  var decodedStart = decodeStartParam(startParam);
+  var CHAT_ID = qs.get("chat_id") || decodedStart.chat_id;
+  var POST_ID = qs.get("post_id") || decodedStart.post_id;
+  var EDIT_MODE = qs.get("mode") === "edit";
   var INIT_DATA = tg ? tg.initData : "";
 
   function decodeStartParam(sp){
@@ -644,7 +646,10 @@
    *  LOAD EXISTING CONFIGURATION FOR THIS chat_id + post_id
    * ------------------------------------------------------------------ */
   function loadExisting(){
-    if (!CHAT_ID || !POST_ID) { renderMain(); return; }
+    // In edit mode we always load the saved template. In normal mode a new
+    // constructor starts empty; this keeps the two buttons semantically
+    // separate even though both point to the same Main Mini App.
+    if (!CHAT_ID || !POST_ID || !EDIT_MODE) { renderMain(); return; }
     authFetch("/api/context?chat_id=" + encodeURIComponent(CHAT_ID) + "&post_id=" + encodeURIComponent(POST_ID))
       .then(function(r){ return r.ok ? r.json() : { rows: [] }; })
       .then(function(data){
