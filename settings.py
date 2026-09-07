@@ -1093,7 +1093,7 @@ def _dispatch_callback(call):
             parse_mode="HTML",
             reply_markup=ui.buttons_prompt_kb(
                 gid, pid, bool(post.get("buttons")), miniapp_url=miniapp_url,
-                edit_url=miniapp_url + "&mode=edit" if post.get("buttons") else None
+                edit_url=(f"https://t.me/{BOT_USERNAME}?startapp=c{gid}_p{pid}_e") if post.get("buttons") else None
             ),
         )
         track_message(chat_id, msg.message_id)
