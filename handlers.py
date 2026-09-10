@@ -282,6 +282,7 @@ def text_handler(message):
             active_wake = WAKE_RE.match(text)
             active_cmd = active_wake.group(1).strip().rstrip("?!. ").lower() if active_wake else ""
             if active_cmd in ("стоп запись", "добавить", "записать"):
+                logging.info("contest command received: chat=%s user=%s command=%r", cid, getattr(message.from_user, "id", None), active_wake.group(1))
                 _dispatch(message, active_wake.group(1))
             return
 

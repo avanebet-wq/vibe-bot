@@ -4,7 +4,7 @@ import html
 import logging
 import threading
 import time
-from utils import _lookup_username
+from utils import _lookup_username, remember_user
 
 from telebot import types
 
@@ -182,7 +182,17 @@ def cmd_add_participant(message, args):
     username = raw.split()[0].lstrip("@").strip().lower()
     target_id, target_name = _lookup_username(cid, username)
     if not target_id:
-        return bot.reply_to(message, "⚠️ Не могу найти этого пользователя. Пусть он напишет сообщение в группе, после чего повтори команду.")
+        # Telegram Bot API не умеет находить произвольного пользователя по @username.
+        # Если команда является reply на его сообщение, ID можно получить напрямую.
+        if message.reply_to_message and message.reply_to_message.from_user:
+            target = message.reply_to_message.from_user
+            target_id = target.id
+            target_name = target.first_name or target.username or username
+            if target.username and target.username.lower() != username:
+                return bot.reply_to(message, f"⚠️ В ответе указан другой username: @{_escape(target.username)}.", parse_mode="HTML")
+        else:
+            LOG.info("manual contest add: username=%s not resolvable in chat=%s", username, cid)
+            return bot.reply_to(message, "⚠️ Не могу получить ID @username через Telegram. Ответь командой на сообщение этого пользователя: <code>Лиза записать @username</code>.", parse_mode="HTML")
     if not username:
         return bot.reply_to(message, "⚠️ У пользователя нет username.")
     with _LOCK:
@@ -269,6 +279,13 @@ def handle_new_members(message):
         return
     inviter = getattr(getattr(message, "from_user", None), "id", None)
     members = getattr(message, "new_chat_members", None) or []
+    # Запоминаем username/ID новых участников, чтобы админ мог позже
+    # использовать «Лиза записать @username».
+    for member in members:
+        try:
+            remember_user(member)
+        except Exception:
+            LOG.exception("failed to cache contest new member")
     ids = [getattr(u, "id", None) for u in members]
     if _count_direct_add(message.chat.id, inviter, ids):
         added = [uid for uid in ids if uid]
