@@ -5,6 +5,7 @@ from events import emit as emit_event
 from mood_state import on_message as update_mood, on_event as update_mood_event
 from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_user_memory
 from social_context import observe as observe_social
+from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop)
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
@@ -58,6 +59,7 @@ _COMPOUND_COMMANDS = [
     ("мут за варны", cmd_set_warn_mute_duration),
     ("моя статистика", lambda m, a: cmd_stats(m, "моя")),
     ("статистика пользователя", lambda m, a: cmd_stats(m, "пользователь " + a)),
+    ("стоп запись", lambda m, a: contest_stop(m)),
 ]
 _COMPOUND_COMMANDS.sort(key=lambda x: -len(x[0]))
 
@@ -94,6 +96,7 @@ _SINGLE_COMMANDS = {
     "закрыть цель": lambda m, a: _cmd_goal_done(m, a),
     "удалить цель": lambda m, a: _cmd_goal_delete(m, a),
     "характер": lambda m, a: _cmd_personality(m, a),
+    "запись": lambda m, a: contest_start(m, a),
 }
 
 
@@ -270,6 +273,15 @@ def text_handler(message):
         cid = message.chat.id
         text = message.text or ""
         is_group = message.chat.type in ("group", "supergroup")
+
+        # Во время активной записи Лиза не участвует в обычном диалоге.
+        # Единственное текстовое исключение — команда администратора «Лиза стоп запись».
+        if is_group and contest_is_active(cid):
+            active_wake = WAKE_RE.match(text)
+            active_cmd = active_wake.group(1).strip().rstrip("?!. ").lower() if active_wake else ""
+            if active_cmd == "стоп запись":
+                _dispatch(message, active_wake.group(1))
+            return
 
         if is_group:
             if enforce_captcha(message):

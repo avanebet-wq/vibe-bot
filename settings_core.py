@@ -5,7 +5,7 @@ import time
 import logging
 import threading
 import os
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -415,6 +415,12 @@ def parse_url_buttons(raw_text):
             elif low.startswith("copy:"):
                 btn["copy"] = value.split(":", 1)[1].strip()
             else:
+                parsed = urlparse(value)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    return None, (
+                        f"⚠️ Некорректная ссылка: «{value}». "
+                        "Ссылка должна начинаться с http:// или https://."
+                    )
                 btn["url"] = value
             row.append(btn)
         rows.append(row)
@@ -432,7 +438,14 @@ def build_markup_from_buttons(rows, gid=None, pid=None):
         for btn_index, b in enumerate(row):
             text = b.get("text", "Кнопка")
             if b.get("url"):
-                line.append(types.InlineKeyboardButton(text, url=b["url"]))
+                value = str(b.get("url") or "").strip()
+                parsed = urlparse(value)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    # Защита старых/повреждённых записей в БД: Telegram не примет
+                    # такую кнопку и вернёт 400, поэтому не отправляем её.
+                    log.warning("[settings buttons] skipped invalid URL: %r", value)
+                    continue
+                line.append(types.InlineKeyboardButton(text, url=value))
             elif b.get("share") is not None:
                 share_url = f"https://t.me/share/url?text={b['share']}"
                 line.append(types.InlineKeyboardButton(text, url=share_url))
