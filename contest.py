@@ -7,6 +7,8 @@ import time
 import uuid
 from urllib.parse import quote
 
+from utils import _lookup_username
+
 from telebot import types
 
 from database import db_get, db_set
@@ -48,7 +50,7 @@ def _username(user):
 def _button_markup(cid, session):
     required = int(session.get("required", 0))
     return types.InlineKeyboardMarkup(row_width=2).add(
-        types.InlineKeyboardButton("➕ Добавить людей", callback_data=f"contest|invite|{cid}"),
+        types.InlineKeyboardButton("➕ Пригласить людей", callback_data=f"contest|invite|{cid}"),
         types.InlineKeyboardButton("📝 Записаться", callback_data=f"contest|register|{cid}"),
     )
 
@@ -67,6 +69,17 @@ def _render(cid, session):
 
 
 def _send(cid, session):
+    # Перед новой публикацией удаляем предыдущую, чтобы в чате оставалось
+    # только актуальное сообщение с текущим списком участников.
+    previous_message_id = session.get("last_message_id")
+    if previous_message_id:
+        try:
+            bot.delete_message(cid, previous_message_id)
+        except Exception as exc:
+            # Сообщение могло быть удалено вручную или Telegram мог запретить
+            # удаление из-за срока/прав. Это не должно останавливать запись.
+            LOG.warning("Не удалось удалить предыдущее сообщение конкурса %s/%s: %s", cid, previous_message_id, exc)
+
     msg = bot.send_message(cid, _render(cid, session), reply_markup=_button_markup(cid, session), parse_mode="HTML")
     session["last_message_id"] = getattr(msg, "message_id", None)
     session["last_sent_at"] = time.time()
@@ -145,11 +158,23 @@ def _create_invite(cid, uid, session):
     return url
 
 
+def _share_url(invite_url, text):
+    # Telegram откроет встроенное окно выбора чатов/контактов.
+    # В приглашении остаётся персональная ссылка, поэтому входы можно
+    # атрибутировать конкретному участнику через ChatMemberUpdated.invite_link.
+    return "https://t.me/share/url?url=" + quote(invite_url, safe="") + "&text=" + quote(text, safe="")
+
+
 def _invite_text(cid, uid, session):
     url = _create_invite(cid, uid, session)
     n = int(session.get("required", 0))
-    return (f"➕ Твоя ссылка для приглашения людей:\n\n{url}\n\n"
-            f"Пригласи <b>{n}</b> человек. Когда нужное количество будет приглашено, нажми «Записаться».")
+    share_text = f"{session.get('text', 'Приглашение на конкурс')}\n\nПрисоединяйся: {url}"
+    share_url = _share_url(url, share_text)
+    return (f"➕ Пригласи <b>{n}</b> человек.\n\n"
+            "Нажми кнопку ниже — Telegram откроет меню выбора чатов/контактов. "
+            "Когда люди перейдут по твоей персональной ссылке и вступят в группу, "
+            "Лиза автоматически засчитает их.\n\n"
+            f"Твой прогресс: <b>{len(session.setdefault('invited_users', {}).get(str(uid), []))}/{n}</b>"), share_url
 
 
 def _register(call, cid, session):
@@ -176,6 +201,50 @@ def _register(call, cid, session):
         pass
 
 
+def cmd_add_participant(message, args):
+    """Админская ручная запись: «Лиза добавить @username»."""
+    cid = message.chat.id
+    if message.chat.type not in ("group", "supergroup"):
+        return bot.reply_to(message, "⚠️ Команда работает только в группе.")
+    if not is_chat_admin(cid, message.from_user.id):
+        return bot.reply_to(message, "⛔ Только администратор может добавлять участников.")
+    if not is_active(cid):
+        return bot.reply_to(message, "ℹ️ Активной записи нет.")
+    raw = (args or "").strip()
+    if not raw or not raw.split()[0].startswith("@"):
+        return bot.reply_to(message, "⚠️ Формат: <code>Лиза добавить @username</code>")
+    username = raw.split()[0].lstrip("@").strip().lower()
+    target_id, target_name = _lookup_username(cid, username)
+    if not target_id:
+        return bot.reply_to(message, "⚠️ Не могу найти этого пользователя. Пусть он напишет сообщение в группе, после чего повтори команду.")
+    if not username:
+        return bot.reply_to(message, "⚠️ У пользователя нет username.")
+    with _LOCK:
+        data = _store()
+        session = data.get(str(cid))
+        if not session or not session.get("active"):
+            return bot.reply_to(message, "ℹ️ Активной записи нет.")
+        participants = session.setdefault("participants", {})
+        if str(target_id) in participants:
+            return bot.reply_to(message, "ℹ️ Этот пользователь уже записан.")
+        participants[str(target_id)] = {
+            "id": target_id,
+            "username": username,
+            "name": target_name or username,
+            "registered_at": time.time(),
+            "manual": True,
+        }
+        data[str(cid)] = session
+        _save(data)
+    bot.reply_to(message, f"✅ @{_escape(username)} добавлен(а) в список участников.", parse_mode="HTML")
+    try:
+        if session.get("last_message_id"):
+            bot.edit_message_text(_render(cid, session), cid, session["last_message_id"],
+                                  reply_markup=_button_markup(cid, session), parse_mode="HTML")
+    except Exception:
+        LOG.exception("failed to update contest participant list")
+
+
 def handle_callback(call):
     parts = (call.data or "").split("|")
     if len(parts) < 3 or parts[0] != "contest":
@@ -190,13 +259,14 @@ def handle_callback(call):
         uid = call.from_user.id
         try:
             with _LOCK:
-                text = _invite_text(cid, uid, session)
+                text, share_url = _invite_text(cid, uid, session)
                 data = _store(); data[str(cid)] = session; _save(data)
-            bot.send_message(uid, text, parse_mode="HTML", disable_web_page_preview=True)
-            bot.answer_callback_query(call.id, "Ссылка отправлена в личные сообщения.")
+            # Открываем системное Telegram-окно выбора чатов/контактов.
+            # Это надёжнее, чем отправлять пользователя в личку боту.
+            bot.answer_callback_query(call.id, "Выбери людей для приглашения.", url=share_url)
         except Exception as e:
-            LOG.exception("invite link failed")
-            bot.answer_callback_query(call.id, "Не удалось создать ссылку. Проверь права Лизы администратора.", show_alert=True)
+            LOG.exception("invite share failed")
+            bot.answer_callback_query(call.id, "Не удалось создать приглашение. Проверь права Лизы администратора.", show_alert=True)
     elif action == "register":
         _register(call, cid, session)
     else:
