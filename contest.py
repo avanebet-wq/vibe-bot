@@ -4,7 +4,6 @@ import html
 import logging
 import threading
 import time
-import uuid
 from urllib.parse import quote
 
 from utils import _lookup_username
@@ -143,38 +142,38 @@ def cmd_stop(message):
     bot.reply_to(message, "🛑 Запись остановлена.")
 
 
-def _create_invite(cid, uid, session):
-    # Уникальная ссылка на каждого участника позволяет Telegram сообщить нам,
-    # кто именно пришёл по этой ссылке.
-    name = f"liza-{cid}-{uid}-{uuid.uuid4().hex[:8]}"
-    try:
-        inv = bot.create_chat_invite_link(cid, name=name, creates_join_request=False)
-    except TypeError:
-        inv = bot.create_chat_invite_link(cid, name=name)
-    url = getattr(inv, "invite_link", None)
-    if not url:
-        raise RuntimeError("Telegram не вернул invite link")
-    session.setdefault("invites", {})[url] = {"owner_id": uid, "created_at": time.time()}
-    return url
+def _get_share_target(cid):
+    """Получает уже существующую ссылку группы, ничего не создавая.
+
+    Для публичной группы используем @username. Для приватной — primary invite
+    link, который Telegram возвращает через get_chat() для администраторских ботов.
+    """
+    chat = bot.get_chat(cid)
+    username = getattr(chat, "username", None)
+    if username:
+        return f"https://t.me/{username}"
+    invite_link = getattr(chat, "invite_link", None)
+    if invite_link:
+        return invite_link
+    raise RuntimeError("У группы нет доступной существующей ссылки-приглашения")
 
 
 def _share_url(invite_url, text):
-    # Telegram откроет встроенное окно выбора чатов/контактов.
-    # В приглашении остаётся персональная ссылка, поэтому входы можно
-    # атрибутировать конкретному участнику через ChatMemberUpdated.invite_link.
+    # Это штатное Telegram-окно выбора чатов для отправки уже существующей
+    # ссылки. Бот не создаёт новую персональную invite-ссылку.
     return "https://t.me/share/url?url=" + quote(invite_url, safe="") + "&text=" + quote(text, safe="")
 
 
 def _invite_text(cid, uid, session):
-    url = _create_invite(cid, uid, session)
     n = int(session.get("required", 0))
-    share_text = f"{session.get('text', 'Приглашение на конкурс')}\n\nПрисоединяйся: {url}"
-    share_url = _share_url(url, share_text)
+    current = len(session.setdefault("invited_users", {}).get(str(uid), []))
+    invite_url = _get_share_target(cid)
+    share_text = f"{session.get('text', 'Приглашение на конкурс')}\n\nПрисоединяйся: {invite_url}"
+    share_url = _share_url(invite_url, share_text)
     return (f"➕ Пригласи <b>{n}</b> человек.\n\n"
-            "Нажми кнопку ниже — Telegram откроет меню выбора чатов/контактов. "
-            "Когда люди перейдут по твоей персональной ссылке и вступят в группу, "
-            "Лиза автоматически засчитает их.\n\n"
-            f"Твой прогресс: <b>{len(session.setdefault('invited_users', {}).get(str(uid), []))}/{n}</b>"), share_url
+            "Telegram откроет меню выбора чатов для отправки приглашения. "
+            "Количество реально добавленных людей Лиза считает по событиям входа/добавления в группе.\n\n"
+            f"Твой прогресс: <b>{current}/{n}</b>"), share_url
 
 
 def _register(call, cid, session):
@@ -187,7 +186,7 @@ def _register(call, cid, session):
     if str(uid) in participants:
         return bot.answer_callback_query(call.id, "Ты уже записан(а).", show_alert=True)
     invited = session.setdefault("invited_users", {}).get(str(uid), [])
-    # Уникальные люди, пришедшие по персональной ссылке.
+    # Уникальные люди, которых этот пользователь реально добавил в группу.
     invited_count = len(invited)
     required = int(session.get("required", 0))
     if invited_count < required:
@@ -258,52 +257,72 @@ def handle_callback(call):
     if action == "invite":
         uid = call.from_user.id
         try:
-            with _LOCK:
-                text, share_url = _invite_text(cid, uid, session)
-                data = _store(); data[str(cid)] = session; _save(data)
-            # Открываем системное Telegram-окно выбора чатов/контактов.
-            # Это надёжнее, чем отправлять пользователя в личку боту.
-            bot.answer_callback_query(call.id, "Выбери людей для приглашения.", url=share_url)
+            text, share_url = _invite_text(cid, uid, session)
+            bot.answer_callback_query(call.id, "Открываю меню приглашения.", url=share_url)
         except Exception as e:
             LOG.exception("invite share failed")
-            bot.answer_callback_query(call.id, "Не удалось создать приглашение. Проверь права Лизы администратора.", show_alert=True)
+            bot.answer_callback_query(call.id, "Не удалось открыть меню приглашения: у группы нет доступной ссылки.", show_alert=True)
     elif action == "register":
         _register(call, cid, session)
     else:
         bot.answer_callback_query(call.id)
 
 
-def handle_chat_member(update):
-    cid = getattr(getattr(update, "chat", None), "id", None)
-    if cid is None or not is_active(cid):
-        return
-    old = getattr(getattr(update, "old_chat_member", None), "status", None)
-    new = getattr(getattr(update, "new_chat_member", None), "status", None)
-    if new not in ("member", "administrator") or old in ("member", "administrator"):
-        return
-    invite = getattr(update, "invite_link", None)
-    invite_url = getattr(invite, "invite_link", None) if invite else None
-    if not invite_url:
-        return
-    user = getattr(update, "new_chat_member", None)
-    uid = getattr(user, "user", None)
-    uid = getattr(uid, "id", None)
-    if uid is None:
-        return
+def _count_direct_add(cid, inviter_id, user_ids):
+    """Засчитывает реальных добавленных в группу пользователей по service-log.
+
+    Важно: Telegram сообщает sender (message.from_user) для сервисного
+    сообщения new_chat_members. Это позволяет считать именно прямые добавления,
+    без создания персональных invite-ссылок.
+    """
+    if not inviter_id or not user_ids:
+        return False
     with _LOCK:
-        data = _store(); session = data.get(str(cid))
+        data = _store()
+        session = data.get(str(cid))
         if not session or not session.get("active"):
-            return
-        meta = session.setdefault("invites", {}).get(invite_url)
-        if not meta:
-            return
-        owner = int(meta.get("owner_id"))
-        if owner == uid or uid == BOT_ID:
-            return
-        invited = session.setdefault("invited_users", {}).setdefault(str(owner), [])
-        if uid not in invited:
-            invited.append(uid)
-        data[str(cid)] = session; _save(data)
+            return False
+        if inviter_id == BOT_ID:
+            return False
+        invited_map = session.setdefault("invited_users", {})
+        invited = invited_map.setdefault(str(inviter_id), [])
+        changed = False
+        for uid in user_ids:
+            try:
+                uid = int(uid)
+            except (TypeError, ValueError):
+                continue
+            if uid == inviter_id or uid == BOT_ID:
+                continue
+            if uid not in invited:
+                invited.append(uid)
+                changed = True
+        if changed:
+            data[str(cid)] = session
+            _save(data)
+        return changed
+
+
+def handle_new_members(message):
+    if getattr(message.chat, "type", "") not in ("group", "supergroup"):
+        return
+    if not is_active(message.chat.id):
+        return
+    inviter = getattr(getattr(message, "from_user", None), "id", None)
+    members = getattr(message, "new_chat_members", None) or []
+    ids = [getattr(u, "id", None) for u in members]
+    if _count_direct_add(message.chat.id, inviter, ids):
+        LOG.info("contest invite log: chat=%s inviter=%s added=%s", message.chat.id, inviter, ids)
+
+
+def handle_chat_member(update):
+    """Совместимость для входов по invite-link.
+
+    Без уникальных ссылок Telegram не сообщает, какой участник поделился
+    общей ссылкой, поэтому такие входы НЕ засчитываем. Реальный учёт идёт
+    по service-message new_chat_members, то есть по факту прямого добавления.
+    """
+    return
 
 
 def tick(bot_instance=None):
@@ -324,6 +343,14 @@ def tick(bot_instance=None):
             _save(data)
 
 
+@bot.message_handler(content_types=["new_chat_members"])
+def _contest_new_members_router(message):
+    try:
+        handle_new_members(message)
+    except Exception as exc:
+        LOG.exception("contest new members handler failed")
+
+
 # Регистрация Telegram-обработчиков здесь, чтобы конкурсный режим был независим
 # от порядка импорта остальных обработчиков.
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("contest|"))
@@ -338,10 +365,3 @@ def _contest_callback_router(call):
             pass
 
 
-if hasattr(bot, "chat_member_handler"):
-    @bot.chat_member_handler()
-    def _contest_chat_member_router(update):
-        try:
-            handle_chat_member(update)
-        except Exception as exc:
-            LOG.exception("contest chat member handler failed")
