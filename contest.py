@@ -4,8 +4,6 @@ import html
 import logging
 import threading
 import time
-from urllib.parse import quote
-
 from utils import _lookup_username
 
 from telebot import types
@@ -47,9 +45,10 @@ def _username(user):
 
 
 def _button_markup(cid, session):
-    required = int(session.get("required", 0))
-    return types.InlineKeyboardMarkup(row_width=2).add(
-        types.InlineKeyboardButton("➕ Пригласить людей", callback_data=f"contest|invite|{cid}"),
+    # Пользователь сам открывает профиль/карточку группы и нажимает
+    # системную кнопку Telegram «Добавить участников». Лиза отслеживает
+    # фактические добавления по service-message new_chat_members.
+    return types.InlineKeyboardMarkup(row_width=1).add(
         types.InlineKeyboardButton("📝 Записаться", callback_data=f"contest|register|{cid}"),
     )
 
@@ -142,38 +141,6 @@ def cmd_stop(message):
     bot.reply_to(message, "🛑 Запись остановлена.")
 
 
-def _get_share_target(cid):
-    """Получает уже существующую ссылку группы, ничего не создавая.
-
-    Для публичной группы используем @username. Для приватной — primary invite
-    link, который Telegram возвращает через get_chat() для администраторских ботов.
-    """
-    chat = bot.get_chat(cid)
-    username = getattr(chat, "username", None)
-    if username:
-        return f"https://t.me/{username}"
-    invite_link = getattr(chat, "invite_link", None)
-    if invite_link:
-        return invite_link
-    raise RuntimeError("У группы нет доступной существующей ссылки-приглашения")
-
-
-def _share_url(invite_url, text):
-    # Это штатное Telegram-окно выбора чатов для отправки уже существующей
-    # ссылки. Бот не создаёт новую персональную invite-ссылку.
-    return "https://t.me/share/url?url=" + quote(invite_url, safe="") + "&text=" + quote(text, safe="")
-
-
-def _invite_text(cid, uid, session):
-    n = int(session.get("required", 0))
-    current = len(session.setdefault("invited_users", {}).get(str(uid), []))
-    invite_url = _get_share_target(cid)
-    share_text = f"{session.get('text', 'Приглашение на конкурс')}\n\nПрисоединяйся: {invite_url}"
-    share_url = _share_url(invite_url, share_text)
-    return (f"➕ Пригласи <b>{n}</b> человек.\n\n"
-            "Telegram откроет меню выбора чатов для отправки приглашения. "
-            "Количество реально добавленных людей Лиза считает по событиям входа/добавления в группе.\n\n"
-            f"Твой прогресс: <b>{current}/{n}</b>"), share_url
 
 
 def _register(call, cid, session):
@@ -254,15 +221,7 @@ def handle_callback(call):
     session = _get(cid)
     if not session or not session.get("active"):
         return bot.answer_callback_query(call.id, "Эта запись уже остановлена.", show_alert=True)
-    if action == "invite":
-        uid = call.from_user.id
-        try:
-            text, share_url = _invite_text(cid, uid, session)
-            bot.answer_callback_query(call.id, "Открываю меню приглашения.", url=share_url)
-        except Exception as e:
-            LOG.exception("invite share failed")
-            bot.answer_callback_query(call.id, "Не удалось открыть меню приглашения: у группы нет доступной ссылки.", show_alert=True)
-    elif action == "register":
+    if action == "register":
         _register(call, cid, session)
     else:
         bot.answer_callback_query(call.id)
@@ -312,7 +271,17 @@ def handle_new_members(message):
     members = getattr(message, "new_chat_members", None) or []
     ids = [getattr(u, "id", None) for u in members]
     if _count_direct_add(message.chat.id, inviter, ids):
-        LOG.info("contest invite log: chat=%s inviter=%s added=%s", message.chat.id, inviter, ids)
+        added = [uid for uid in ids if uid]
+        LOG.info(
+            "contest invite log: chat=%s who_added=%s whom=%s",
+            message.chat.id, inviter, added,
+        )
+        for added_uid in added:
+            if added_uid != inviter and added_uid != BOT_ID:
+                LOG.info(
+                    "contest invite event: chat=%s inviter=%s added_user=%s",
+                    message.chat.id, inviter, added_uid,
+                )
 
 
 def handle_chat_member(update):
