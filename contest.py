@@ -168,7 +168,11 @@ def _register(call, cid, session):
 
 
 def cmd_add_participant(message, args):
-    """Админская ручная запись: «Лиза добавить @username»."""
+    """Админская ручная запись по username: «Лиза записать @username».
+
+    Для ручной записи намеренно не нужен Telegram user ID и не выполняется
+    поиск пользователя через Bot API. В список сохраняется ровно username.
+    """
     cid = message.chat.id
     if message.chat.type not in ("group", "supergroup"):
         return bot.reply_to(message, "⚠️ Команда работает только в группе.")
@@ -176,50 +180,46 @@ def cmd_add_participant(message, args):
         return bot.reply_to(message, "⛔ Только администратор может добавлять участников.")
     if not is_active(cid):
         return bot.reply_to(message, "ℹ️ Активной записи нет.")
+
     raw = (args or "").strip()
-    if not raw or not raw.split()[0].startswith("@"):
-        return bot.reply_to(message, "⚠️ Формат: <code>Лиза добавить @username</code>")
-    username = raw.split()[0].lstrip("@").strip().lower()
-    target_id, target_name = _lookup_username(cid, username)
-    if not target_id:
-        # Telegram Bot API не умеет находить произвольного пользователя по @username.
-        # Если команда является reply на его сообщение, ID можно получить напрямую.
-        if message.reply_to_message and message.reply_to_message.from_user:
-            target = message.reply_to_message.from_user
-            target_id = target.id
-            target_name = target.first_name or target.username or username
-            if target.username and target.username.lower() != username:
-                return bot.reply_to(message, f"⚠️ В ответе указан другой username: @{_escape(target.username)}.", parse_mode="HTML")
-        else:
-            LOG.info("manual contest add: username=%s not resolvable in chat=%s", username, cid)
-            return bot.reply_to(message, "⚠️ Не могу получить ID @username через Telegram. Ответь командой на сообщение этого пользователя: <code>Лиза записать @username</code>.", parse_mode="HTML")
+    token = raw.split()[0] if raw else ""
+    if not token.startswith("@") or len(token) < 2:
+        return bot.reply_to(message, "⚠️ Формат: <code>Лиза записать @username</code>")
+
+    username = token[1:].strip().lower()
     if not username:
-        return bot.reply_to(message, "⚠️ У пользователя нет username.")
+        return bot.reply_to(message, "⚠️ Укажи username после @.")
+
     with _LOCK:
         data = _store()
         session = data.get(str(cid))
         if not session or not session.get("active"):
             return bot.reply_to(message, "ℹ️ Активной записи нет.")
+
         participants = session.setdefault("participants", {})
-        if str(target_id) in participants:
-            return bot.reply_to(message, "ℹ️ Этот пользователь уже записан.")
-        participants[str(target_id)] = {
-            "id": target_id,
+        # Ключом является username — Telegram ID вообще не требуется.
+        participant_key = f"username:{username}"
+        if participant_key in participants:
+            return bot.reply_to(message, f"ℹ️ @{_escape(username)} уже записан(а).", parse_mode="HTML")
+
+        participants[participant_key] = {
             "username": username,
-            "name": target_name or username,
+            "name": username,
             "registered_at": time.time(),
             "manual": True,
         }
         data[str(cid)] = session
         _save(data)
+
     bot.reply_to(message, f"✅ @{_escape(username)} добавлен(а) в список участников.", parse_mode="HTML")
     try:
         if session.get("last_message_id"):
-            bot.edit_message_text(_render(cid, session), cid, session["last_message_id"],
-                                  reply_markup=_button_markup(cid, session), parse_mode="HTML")
+            bot.edit_message_text(
+                _render(cid, session), cid, session["last_message_id"],
+                reply_markup=_button_markup(cid, session), parse_mode="HTML"
+            )
     except Exception:
         LOG.exception("failed to update contest participant list")
-
 
 def handle_callback(call):
     parts = (call.data or "").split("|")
