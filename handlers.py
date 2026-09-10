@@ -280,18 +280,26 @@ def text_handler(message):
         # продолжает отвечать, если к ней обращаются по имени: «Лиза ...».
         # Команды управления записью остаются отдельными исключениями.
         if is_group and contest_is_active(cid):
+            # Во время конкурса сначала безусловно проверяем управляющие
+            # команды. Это важно: они не должны попадать в AI даже если
+            # пользователь написал их без обращения «Лиза».
             active_wake = WAKE_RE.match(text)
-            if active_wake:
-                active_text = active_wake.group(1).strip().rstrip("?!. ")
-                active_cmd = active_text.lower()
-                if active_cmd in ("стоп запись", "добавить", "записать"):
-                    logging.info(
-                        "contest command received: chat=%s user=%s command=%r",
-                        cid, getattr(message.from_user, "id", None), active_text
-                    )
-                    _dispatch(message, active_text)
-                    return
+            active_text = active_wake.group(1).strip().rstrip("?!. ") if active_wake else text.strip().rstrip("?!. ")
+            active_low = active_text.lower()
+            is_contest_command = (
+                active_low.startswith("стоп запись")
+                or active_low.startswith("добавить @")
+                or active_low.startswith("записать @")
+            )
+            if is_contest_command:
+                logging.info(
+                    "contest command received: chat=%s user=%s command=%r wake=%s",
+                    cid, getattr(message.from_user, "id", None), active_text, bool(active_wake)
+                )
+                _dispatch(message, active_text)
+                return
 
+            if active_wake:
                 # Любое другое обращение «Лиза ...» во время записи
                 # отправляем в обычный AI-диалог.
                 logging.info(
