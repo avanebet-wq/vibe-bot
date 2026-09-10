@@ -276,14 +276,41 @@ def text_handler(message):
         text = message.text or ""
         is_group = message.chat.type in ("group", "supergroup")
 
-        # Во время активной записи Лиза не участвует в обычном диалоге.
-        # Единственное текстовое исключение — команда администратора «Лиза стоп запись».
+        # Во время активной записи Лиза молчит в обычном разговоре, но
+        # продолжает отвечать, если к ней обращаются по имени: «Лиза ...».
+        # Команды управления записью остаются отдельными исключениями.
         if is_group and contest_is_active(cid):
             active_wake = WAKE_RE.match(text)
-            active_cmd = active_wake.group(1).strip().rstrip("?!. ").lower() if active_wake else ""
-            if active_cmd in ("стоп запись", "добавить", "записать"):
-                logging.info("contest command received: chat=%s user=%s command=%r", cid, getattr(message.from_user, "id", None), active_wake.group(1))
-                _dispatch(message, active_wake.group(1))
+            if active_wake:
+                active_text = active_wake.group(1).strip().rstrip("?!. ")
+                active_cmd = active_text.lower()
+                if active_cmd in ("стоп запись", "добавить", "записать"):
+                    logging.info(
+                        "contest command received: chat=%s user=%s command=%r",
+                        cid, getattr(message.from_user, "id", None), active_text
+                    )
+                    _dispatch(message, active_text)
+                    return
+
+                # Любое другое обращение «Лиза ...» во время записи
+                # отправляем в обычный AI-диалог.
+                logging.info(
+                    "contest addressed dialogue: chat=%s user=%s text=%r",
+                    cid, getattr(message.from_user, "id", None), active_text
+                )
+                record_liza_request(cid, getattr(message.from_user, "id", None))
+                reply = ask_liza(
+                    active_text,
+                    angry=is_angry(cid),
+                    chat_id=cid,
+                    user_id=getattr(message.from_user, "id", None),
+                    group_context=_liza_ai_context(message),
+                )
+                record_liza_response(cid, getattr(message.from_user, "id", None))
+                reply = _apply_polite_filter(cid, reply)
+                _safe_reply(message, reply)
+                return
+
             return
 
         if is_group:
