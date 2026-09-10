@@ -61,6 +61,7 @@ _COMPOUND_COMMANDS = [
     ("статистика пользователя", lambda m, a: cmd_stats(m, "пользователь " + a)),
     ("стоп запись", lambda m, a: contest_stop(m)),
     ("добавить", lambda m, a: contest_add_participant(m, a)),
+    ("записать", lambda m, a: contest_add_participant(m, a)),
 ]
 _COMPOUND_COMMANDS.sort(key=lambda x: -len(x[0]))
 
@@ -280,7 +281,7 @@ def text_handler(message):
         if is_group and contest_is_active(cid):
             active_wake = WAKE_RE.match(text)
             active_cmd = active_wake.group(1).strip().rstrip("?!. ").lower() if active_wake else ""
-            if active_cmd in ("стоп запись", "добавить"):
+            if active_cmd in ("стоп запись", "добавить", "записать"):
                 _dispatch(message, active_wake.group(1))
             return
 

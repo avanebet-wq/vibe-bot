@@ -8,3 +8,9 @@ Changes from V25:
 - The inviter and every added user are written to the contest log by Telegram user IDs.
 - The same added user is counted only once for the same inviter within the contest.
 - No invite links are created and no share URL is generated.
+
+
+### V26.1 fix
+- Added admin alias `Лиза записать @username` for manual registration.
+- During an active contest this command is allowed alongside `Лиза добавить @username`.
+- Direct-add invitation logs remain based on Telegram `new_chat_members` service messages.
