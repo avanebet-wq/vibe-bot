@@ -5,8 +5,7 @@ import os
 import logging
 import time
 
-DB_DIR = "data"
-os.makedirs(DB_DIR, exist_ok=True)
+DB_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(DB_DIR, "bot.db")
 
 db_lock = threading.RLock()
@@ -60,3 +59,17 @@ def db_invalidate(key=None):
             _cache.clear()
         else:
             _cache.pop(key, None)
+
+
+def db_checkpoint():
+    with db_lock:
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            return True
+        except Exception as e:
+            logging.error("DB checkpoint error: %s", e); return False
+
+def db_close():
+    with db_lock:
+        try: conn.close()
+        except Exception: pass

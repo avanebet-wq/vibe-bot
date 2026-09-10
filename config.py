@@ -45,3 +45,15 @@ DEFAULT_WARN_ACTION = "mute"      # mute | ban | kick
 DEFAULT_WARN_MUTE_SECONDS = 3600  # 1 час
 
 BAD_WORDS = ["бляд", "хуй", "хуе", "пизд", "ебат", "ебал", "сука ", "мудак", "гандон", "долбо"]
+
+
+# Liza personality defaults (0–100).
+PERSONALITY_DEFAULTS = {
+    "humor": 70,
+    "sarcasm": 55,
+    "friendliness": 65,
+    "rudeness": 25,
+    "seriousness": 35,
+    "verbosity": 25,
+}
+PERSONALITY_LIMITS = {key: (0, 100) for key in PERSONALITY_DEFAULTS}

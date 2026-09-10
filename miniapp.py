@@ -5,6 +5,8 @@ The bot itself remains on pyTelegramBotAPI. This module uses only the
 Python standard library and the already-created runtime.bot instance.
 """
 import hashlib
+from security import allow
+from reliability import health
 import hmac
 import json
 import logging
@@ -18,11 +20,12 @@ from urllib.parse import parse_qs, parse_qsl, urlparse
 from config import TOKEN
 from runtime import bot
 import settings_store as store
+from admin_api import dashboard
 
 log = logging.getLogger("miniapp")
 
 BASE_DIR = Path(__file__).resolve().parent
-INDEX_PATH = BASE_DIR / "miniapp" / "index.html"
+INDEX_PATH = BASE_DIR / "miniapp_index.html"
 MAX_INIT_DATA_AGE = 3600
 MAX_BODY = 256 * 1024
 ALLOWED_TYPES = {
@@ -222,6 +225,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -246,6 +252,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if not allow("miniapp:" + self.client_address[0], limit=60, window=60):
+                return self._error(429, "rate limit")
             parsed = urlparse(self.path)
 
             if parsed.path == "/":
@@ -258,7 +266,15 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send(200, data, "text/html; charset=utf-8")
 
             if parsed.path == "/health":
-                return self._send(200, b"Liza Mini App is alive!", "text/plain; charset=utf-8")
+                return self._json(200, {"ok": True, "service": "liza-miniapp", "health": health()})
+
+            if parsed.path == "/api/dashboard":
+                user = _auth_user(self)
+                qs = parse_qs(parsed.query)
+                try: chat_id = int((qs.get("chat_id") or [""])[0])
+                except ValueError: raise ValueError("invalid chat_id")
+                _require_admin(user["id"], chat_id)
+                return self._json(200, dashboard(chat_id))
 
             if parsed.path == "/api/context":
                 user = _auth_user(self)
@@ -286,8 +302,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             log.exception("Mini App GET failed")
             return self._error(500, "internal server error")
 
+    def do_OPTIONS(self):
+        self._send(204, b"", "text/plain; charset=utf-8")
+
     def do_POST(self):
         try:
+            if not allow("miniapp:" + self.client_address[0], limit=30, window=60):
+                return self._error(429, "rate limit")
             parsed = urlparse(self.path)
             if parsed.path != "/api/save-buttons":
                 return self._error(404, "not found")

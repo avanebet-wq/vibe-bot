@@ -14,6 +14,7 @@ from telebot.types import ChatPermissions
 
 from config import TOKEN, OPENROUTER_KEY, LOG_CHAT_ID, TZ
 from database import db_get, db_set
+from reliability import mark_ok, mark_error
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -27,9 +28,6 @@ ME = bot.get_me()
 BOT_ID = ME.id
 BOT_USERNAME = (ME.username or "").lower()
 
-# Railway health port is now used by the Telegram Mini App/API server.
-from miniapp import start_miniapp_server
-start_miniapp_server()
 
 executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="liza-fast")
 ai_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="liza-ai")
