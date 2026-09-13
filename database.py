@@ -277,12 +277,20 @@ def db_invalidate(key=None):
 
 
 def db_checkpoint():
-    # PostgreSQL does not need SQLite WAL checkpoints.
+    # PostgreSQL does not need SQLite WAL checkpoints. This is a lightweight
+    # health check, but it also recovers a connection left in an aborted
+    # transaction by any unexpected direct DB caller.
     try:
         with db_lock:
             conn.execute("SELECT 1")
+            conn.rollback()
         return True
     except Exception as e:
+        with db_lock:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         LOG.error("DB health check error: %s", e)
         return False
 

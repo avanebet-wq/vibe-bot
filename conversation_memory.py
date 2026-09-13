@@ -16,24 +16,28 @@ class PersistentConversationMemory:
 
     def _init_db(self):
         with self._lock, db_lock:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversation_memory (
-                    id BIGSERIAL PRIMARY KEY,
-                    chat_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_memory (
+                        id BIGSERIAL PRIMARY KEY,
+                        chat_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_conversation_memory_chat_id
-                ON conversation_memory(chat_id, id)
-                """
-            )
-            conn.commit()
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_conversation_memory_chat_id
+                    ON conversation_memory(chat_id, id)
+                    """
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def add(self, chat_id, role: str, content: str):
         if chat_id is None or not content:
@@ -46,40 +50,48 @@ class PersistentConversationMemory:
             return
 
         with self._lock, db_lock:
-            conn.execute(
-                "INSERT INTO conversation_memory(chat_id, role, content) VALUES (%s, %s, %s)",
-                (str(chat_id), role, content),
-            )
-            conn.execute(
-                """
-                DELETE FROM conversation_memory
-                WHERE chat_id = %s
-                  AND id NOT IN (
-                    SELECT id FROM conversation_memory
+            try:
+                conn.execute(
+                    "INSERT INTO conversation_memory(chat_id, role, content) VALUES (%s, %s, %s)",
+                    (str(chat_id), role, content),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM conversation_memory
                     WHERE chat_id = %s
-                    ORDER BY id DESC
-                    LIMIT %s
-                  )
-                """,
-                (str(chat_id), str(chat_id), self.max_messages),
-            )
-            conn.commit()
+                      AND id NOT IN (
+                        SELECT id FROM conversation_memory
+                        WHERE chat_id = %s
+                        ORDER BY id DESC
+                        LIMIT %s
+                      )
+                    """,
+                    (str(chat_id), str(chat_id), self.max_messages),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def get(self, chat_id, limit: Optional[int] = None) -> List[Dict[str, str]]:
         if chat_id is None:
             return []
         limit = max(1, min(int(limit or self.max_messages), self.max_messages))
         with self._lock, db_lock:
-            rows = conn.execute(
-                """
-                SELECT role, content
-                FROM conversation_memory
-                WHERE chat_id = %s
-                ORDER BY id DESC
-                LIMIT %s
-                """,
-                (str(chat_id), limit),
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT role, content
+                    FROM conversation_memory
+                    WHERE chat_id = %s
+                    ORDER BY id DESC
+                    LIMIT %s
+                    """,
+                    (str(chat_id), limit),
+                ).fetchall()
+            except Exception:
+                conn.rollback()
+                raise
         rows.reverse()
         return [{"role": role, "content": content} for role, content in rows]
 
@@ -87,17 +99,25 @@ class PersistentConversationMemory:
         if chat_id is None:
             return
         with self._lock, db_lock:
-            conn.execute("DELETE FROM conversation_memory WHERE chat_id = %s", (str(chat_id),))
-            conn.commit()
+            try:
+                conn.execute("DELETE FROM conversation_memory WHERE chat_id = %s", (str(chat_id),))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def count(self, chat_id) -> int:
         if chat_id is None:
             return 0
         with self._lock, db_lock:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM conversation_memory WHERE chat_id = %s",
-                (str(chat_id),),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM conversation_memory WHERE chat_id = %s",
+                    (str(chat_id),),
+                ).fetchone()
+            except Exception:
+                conn.rollback()
+                raise
         return int(row[0] or 0)
 
 

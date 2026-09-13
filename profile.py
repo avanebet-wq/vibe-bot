@@ -13,21 +13,31 @@ RANKS = [
 
 def ensure_profile_schema():
     with db_lock:
-        conn.execute('''CREATE TABLE IF NOT EXISTS chat_user_presence (
-            chat_id TEXT NOT NULL, user_id TEXT NOT NULL, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
-            PRIMARY KEY(chat_id,user_id))''')
-        conn.execute('''CREATE TABLE IF NOT EXISTS profile_xp (
-            chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(chat_id,user_id))''')
-        conn.commit()
+        try:
+            conn.execute('''CREATE TABLE IF NOT EXISTS chat_user_presence (
+                chat_id TEXT NOT NULL, user_id TEXT NOT NULL, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+                PRIMARY KEY(chat_id,user_id))''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS profile_xp (
+                chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(chat_id,user_id))''')
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 def touch_user(message):
-    if not getattr(message, 'from_user', None): return
+    if not getattr(message, 'from_user', None):
+        return
     ensure_profile_schema(); now=time.time()
     with db_lock:
-        conn.execute('''INSERT INTO chat_user_presence(chat_id,user_id,first_seen,last_seen) VALUES(?,?,?,?)
-        ON CONFLICT(chat_id,user_id) DO UPDATE SET last_seen=excluded.last_seen''',
-        (str(message.chat.id), str(message.from_user.id), now, now)); conn.commit()
+        try:
+            conn.execute('''INSERT INTO chat_user_presence(chat_id,user_id,first_seen,last_seen) VALUES(?,?,?,?)
+            ON CONFLICT(chat_id,user_id) DO UPDATE SET last_seen=excluded.last_seen''',
+            (str(message.chat.id), str(message.from_user.id), now, now))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 def rank_for(xp):
     current=RANKS[0]
@@ -48,10 +58,19 @@ def fmt_duration(seconds):
 
 def _count(chat_id,user_id,kind):
     with db_lock:
-        return int(conn.execute('SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?',(str(chat_id),str(user_id),kind)).fetchone()[0])
+        try:
+            return int(conn.execute('SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?',(str(chat_id),str(user_id),kind)).fetchone()[0])
+        except Exception:
+            conn.rollback()
+            raise
+
 def _drink_stats(chat_id,user_id):
     with db_lock:
-        row=conn.execute('SELECT COUNT(*), COALESCE(SUM(volume_liters),0) FROM drink_game_events WHERE chat_id=? AND user_id=?',(str(chat_id),str(user_id))).fetchone()
+        try:
+            row=conn.execute('SELECT COUNT(*), COALESCE(SUM(volume_liters),0) FROM drink_game_events WHERE chat_id=? AND user_id=?',(str(chat_id),str(user_id))).fetchone()
+        except Exception:
+            conn.rollback()
+            raise
     return int(row[0]),float(row[1] or 0)
 
 def cmd_profile(message):
@@ -61,7 +80,12 @@ def cmd_profile(message):
     tag='@'+u.username if u.username else '—'
     xp=get_xp(cid,uid); rank,remaining=rank_for(xp)
     cups=_count(cid,uid,'coffee'); cigs=_count(cid,uid,'smoke'); drinks,liters=_drink_stats(cid,uid)
-    with db_lock: row=conn.execute('SELECT first_seen FROM chat_user_presence WHERE chat_id=? AND user_id=?',(cid,uid)).fetchone()
+    with db_lock:
+        try:
+            row=conn.execute('SELECT first_seen FROM chat_user_presence WHERE chat_id=? AND user_id=?',(cid,uid)).fetchone()
+        except Exception:
+            conn.rollback()
+            raise
     since=float(row[0]) if row else time.time()
     lines=[f'👤 <b>Профиль</b>', '', f'🆔 ID: <code>{html.escape(str(u.id))}</code>',f'👤 Ник: <b>{html.escape(nick)}</b>',f'🏷 Тег: <b>{html.escape(tag)}</b>',
            f'🏆 Ранг: <b>{html.escape(rank[1])}</b>',f'⭐ Опыт: <b>{xp} XP</b>']

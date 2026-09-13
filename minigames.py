@@ -50,48 +50,52 @@ REVO_NAMES = (
 
 def ensure_schema():
     with db_lock:
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS minigame_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                username TEXT,
-                display_name TEXT,
-                kind TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )"""
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_kind_time "
-            "ON minigame_events(chat_id, kind, created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_user_kind_time "
-            "ON minigame_events(chat_id, user_id, kind, created_at)"
-        )
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS drink_game_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                username TEXT,
-                display_name TEXT,
-                revo_name TEXT NOT NULL,
-                fruit_emoji TEXT NOT NULL,
-                multiplier REAL NOT NULL,
-                volume_liters REAL NOT NULL,
-                created_at REAL NOT NULL
-            )"""
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_user_time "
-            "ON drink_game_events(chat_id, user_id, created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_time "
-            "ON drink_game_events(chat_id, created_at)"
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS minigame_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    username TEXT,
+                    display_name TEXT,
+                    kind TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_kind_time "
+                "ON minigame_events(chat_id, kind, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_user_kind_time "
+                "ON minigame_events(chat_id, user_id, kind, created_at)"
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS drink_game_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    username TEXT,
+                    display_name TEXT,
+                    revo_name TEXT NOT NULL,
+                    fruit_emoji TEXT NOT NULL,
+                    multiplier REAL NOT NULL,
+                    volume_liters REAL NOT NULL,
+                    created_at REAL NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_user_time "
+                "ON drink_game_events(chat_id, user_id, created_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_time "
+                "ON drink_game_events(chat_id, created_at)"
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _user_info(message):
@@ -106,12 +110,16 @@ def _user_info(message):
 
 def _last_use(chat_id, user_id, kind):
     with db_lock:
-        row = conn.execute(
+        try:
+            row = conn.execute(
             "SELECT created_at FROM minigame_events "
             "WHERE chat_id=? AND user_id=? AND kind=? "
             "ORDER BY created_at DESC LIMIT 1",
-            (str(chat_id), str(user_id), kind),
-        ).fetchone()
+                (str(chat_id), str(user_id), kind),
+            ).fetchone()
+        except Exception:
+            conn.rollback()
+            raise
     return float(row[0]) if row else None
 
 
@@ -142,26 +150,38 @@ def _award_xp(chat_id, user_id, kind):
 
 def get_xp(chat_id, user_id):
     with db_lock:
-        row = conn.execute("SELECT xp FROM profile_xp WHERE chat_id=? AND user_id=?", (str(chat_id), str(user_id))).fetchone()
+        try:
+            row = conn.execute("SELECT xp FROM profile_xp WHERE chat_id=? AND user_id=?", (str(chat_id), str(user_id))).fetchone()
+        except Exception:
+            conn.rollback()
+            raise
     return int(row[0]) if row else 0
 
 
 def _record(chat_id, user_id, username, display_name, kind, now):
     with db_lock:
-        conn.execute(
-            "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at) "
-            "VALUES(?,?,?,?,?,?)",
-            (str(chat_id), str(user_id), username, display_name, kind, now),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (str(chat_id), str(user_id), username, display_name, kind, now),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _count_all(chat_id, user_id, kind):
     with db_lock:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?",
-            (str(chat_id), str(user_id), kind),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?",
+                (str(chat_id), str(user_id), kind),
+            ).fetchone()
+        except Exception:
+            conn.rollback()
+            raise
     return int(row[0] or 0)
 
 
@@ -179,33 +199,66 @@ def _format_wait(seconds):
     return " ".join(parts)
 
 
+def _xp_roll(kind):
+    choices = XP_REWARDS[kind]
+    values = [x[0] for x in choices]
+    weights = [x[1] for x in choices]
+    base = random.choices(values, weights=weights, k=1)[0]
+    multiplier = random.choices([0.8, 1.0, 1.5, 2.0, 3.0], weights=[20, 50, 20, 8, 2], k=1)[0]
+    return int(round(base * multiplier)), multiplier
+
+
+def _award_xp_in_transaction(chat_id, user_id, kind):
+    xp, multiplier = _xp_roll(kind)
+    conn.execute("""CREATE TABLE IF NOT EXISTS profile_xp (
+        chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(chat_id,user_id)
+    )""")
+    conn.execute(
+        "INSERT INTO profile_xp(chat_id,user_id,xp) VALUES(?,?,?) "
+        "ON CONFLICT(chat_id,user_id) DO UPDATE SET xp=profile_xp.xp+excluded.xp",
+        (str(chat_id), str(user_id), xp),
+    )
+    return xp, multiplier
+
+
 def _try_use(message, kind):
-    try:
-        ensure_schema()
-        chat_id = message.chat.id
-        user_id, username, display_name = _user_info(message)
-        if user_id == "None":
-            return None
+    ensure_schema()
+    chat_id = message.chat.id
+    user_id, username, display_name = _user_info(message)
+    if user_id == "None":
+        return None
 
-        now = time.time()
-        last = _last_use(chat_id, user_id, kind)
-        if last is not None:
-            remaining = COOLDOWN - (now - last)
-            if remaining > 0:
-                # Keep a stable return shape for all callers.
-                return remaining, None, None, None
+    now = time.time()
+    with db_lock:
+        try:
+            row = conn.execute(
+                "SELECT created_at FROM minigame_events "
+                "WHERE chat_id=? AND user_id=? AND kind=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (str(chat_id), str(user_id), kind),
+            ).fetchone()
+            last = float(row[0]) if row else None
+            if last is not None:
+                remaining = COOLDOWN - (now - last)
+                if remaining > 0:
+                    return remaining, None, None, None
 
-        _record(chat_id, user_id, username, display_name, kind, now)
-        total = _count_all(chat_id, user_id, kind)
-        xp, xp_mult = _award_xp(chat_id, user_id, kind)
-        return 0, total, xp, xp_mult
-    except Exception:
-        # psycopg2 leaves the transaction aborted after a failed statement.
-        # Always rollback here so the next bot command can use the connection.
-        with db_lock:
+            conn.execute(
+                "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (str(chat_id), str(user_id), username, display_name, kind, now),
+            )
+            total = int(conn.execute(
+                "SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?",
+                (str(chat_id), str(user_id), kind),
+            ).fetchone()[0])
+            xp, xp_mult = _award_xp_in_transaction(chat_id, user_id, kind)
+            conn.commit()
+            return 0, total, xp, xp_mult
+        except Exception:
             conn.rollback()
-        raise
-
+            raise
 
 
 def _random_drink_result():
@@ -220,14 +273,18 @@ def _random_drink_result():
 
 def _record_drink(chat_id, user_id, username, display_name, revo_name, fruit_emoji, multiplier, volume_liters, now):
     with db_lock:
-        conn.execute(
-            "INSERT INTO drink_game_events "
-            "(chat_id,user_id,username,display_name,revo_name,fruit_emoji,multiplier,volume_liters,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (str(chat_id), str(user_id), username, display_name, revo_name, fruit_emoji,
-             float(multiplier), float(volume_liters), now),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO drink_game_events "
+                "(chat_id,user_id,username,display_name,revo_name,fruit_emoji,multiplier,volume_liters,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (str(chat_id), str(user_id), username, display_name, revo_name, fruit_emoji,
+                 float(multiplier), float(volume_liters), now),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def cmd_drink(message):
@@ -239,22 +296,50 @@ def cmd_drink(message):
         if user_id == "None":
             return
         now = time.time()
-        last = _last_use(chat_id, user_id, "drink")
-        if last is not None and COOLDOWN - (now - last) > 0:
-            bot.reply_to(message, f"🕐 Следующая попытка через: <b>{_format_wait(COOLDOWN - (now - last))}</b>", parse_mode="HTML")
-            return
-        revo_name, fruit_emoji, multiplier, volume_liters = _random_drink_result()
-        _record_drink(chat_id, user_id, username, display_name, revo_name, fruit_emoji, multiplier, volume_liters, now)
-        _record(chat_id, user_id, username, display_name, "drink", now)
-        xp, xp_mult = _award_xp(chat_id, user_id, "drink")
+        with db_lock:
+            try:
+                row = conn.execute(
+                    "SELECT created_at FROM minigame_events "
+                    "WHERE chat_id=? AND user_id=? AND kind=? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (str(chat_id), str(user_id), "drink"),
+                ).fetchone()
+                last = float(row[0]) if row else None
+                if last is not None:
+                    remaining = COOLDOWN - (now - last)
+                    if remaining > 0:
+                        bot.reply_to(message, f"🕐 Следующая попытка через: <b>{_format_wait(remaining)}</b>", parse_mode="HTML")
+                        return
+
+                revo_name, fruit_emoji, multiplier, volume_liters = _random_drink_result()
+                conn.execute(
+                    "INSERT INTO drink_game_events "
+                    "(chat_id,user_id,username,display_name,revo_name,fruit_emoji,multiplier,volume_liters,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    (str(chat_id), str(user_id), username, display_name, revo_name, fruit_emoji,
+                     float(multiplier), float(volume_liters), now),
+                )
+                conn.execute(
+                    "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (str(chat_id), str(user_id), username, display_name, "drink", now),
+                )
+                total = int(conn.execute(
+                    "SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?",
+                    (str(chat_id), str(user_id), "drink"),
+                ).fetchone()[0])
+                xp, xp_mult = _award_xp_in_transaction(chat_id, user_id, "drink")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
         bot.reply_to(message,
             f"🥤 Вы выпили <b>{html.escape(revo_name)}</b> {fruit_emoji}\n"
             f"🎲 Вам выпал множитель <b>{multiplier:g}х</b> = <b>{volume_liters:g} л Рево</b>\n"
             f"⭐ Опыт: <b>+{xp} XP</b> (×{xp_mult:g})\n"
             f"🕐 Следующая попытка: через <b>{_format_wait(COOLDOWN)}</b>", parse_mode="HTML")
     except Exception:
-        with db_lock:
-            conn.rollback()
         LOG.exception("drink command failed")
 
 def cmd_smoke(message):
@@ -328,8 +413,9 @@ def _rows(chat_id, kind, days=None):
         where += " AND created_at>=?"
         params.append(time.time() - days * 86400)
     with db_lock:
-        return conn.execute(
-            f"""SELECT user_id,
+        try:
+            return conn.execute(
+                f"""SELECT user_id,
                        COALESCE(NULLIF(username,''), ''),
                        COALESCE(NULLIF(display_name,''), ''),
                        COUNT(*) AS total,
@@ -337,8 +423,11 @@ def _rows(chat_id, kind, days=None):
                 FROM minigame_events {where}
                 GROUP BY user_id
                 ORDER BY total DESC, last_at ASC""",
-            params,
-        ).fetchall()
+                params,
+            ).fetchall()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _person_label(username, display_name, user_id):
@@ -372,18 +461,22 @@ def _drink_rows(chat_id, days=None):
         where += " AND created_at>=?"
         params.append(time.time() - days * 86400)
     with db_lock:
-        return conn.execute(
-            f"""SELECT user_id,
+        try:
+            return conn.execute(
+                f"""SELECT user_id,
                        COALESCE(NULLIF(username,''), ''),
                        COALESCE(NULLIF(display_name,''), ''),
                        COUNT(*) AS total,
-                       ROUND(SUM(volume_liters), 1) AS liters,
+                       ROUND(SUM(volume_liters)::numeric, 1) AS liters,
                        MAX(created_at) AS last_at
                 FROM drink_game_events {where}
                 GROUP BY user_id
                 ORDER BY total DESC, last_at ASC""",
-            params,
-        ).fetchall()
+                params,
+            ).fetchall()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _drink_table(title, rows):
