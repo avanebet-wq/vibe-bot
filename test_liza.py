@@ -24,3 +24,7 @@ def run():
     test_security(); test_goals(); print("offline smoke tests: OK")
 
 if __name__ == "__main__": run()
+
+# V32 mini-games: schema/import smoke check
+from minigames import ensure_schema as _ensure_minigame_schema
+_ensure_minigame_schema()

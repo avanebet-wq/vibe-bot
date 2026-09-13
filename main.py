@@ -9,13 +9,14 @@ from db_schema import ensure_schema
 from lifecycle import install
 from miniapp import start_miniapp_server
 from goals import due, complete
+from minigames import ensure_schema as ensure_minigame_schema
 
 def _goal_tick():
     # Goals are intentionally passive unless a future notification channel is configured.
     return None
 
 if __name__ == "__main__":
-    ensure_schema(); start_miniapp_server(); settings.start_scheduler(); start_moderation_scheduler(); install(bot)
+    ensure_schema(); ensure_minigame_schema(); start_miniapp_server(); settings.start_scheduler(); start_moderation_scheduler(); install(bot)
     try: bot.remove_webhook()
     except Exception: logging.exception("[REMOVE WEBHOOK]")
     logging.info("Лиза запущена и готова к работе!")

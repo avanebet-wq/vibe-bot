@@ -6,6 +6,7 @@ from mood_state import on_message as update_mood, on_event as update_mood_event
 from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_user_memory
 from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
+from minigames import cmd_smoke, cmd_coffee, cmd_stats as cmd_minigame_stats
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
@@ -99,6 +100,9 @@ _SINGLE_COMMANDS = {
     "удалить цель": lambda m, a: _cmd_goal_delete(m, a),
     "характер": lambda m, a: _cmd_personality(m, a),
     "запись": lambda m, a: contest_start(m, a),
+    "пыхнуть": lambda m, a: cmd_smoke(m),
+    "заварить": lambda m, a: cmd_coffee(m),
+    "стата": lambda m, a: cmd_minigame_stats(m, a),
 }
 
 
@@ -290,6 +294,9 @@ def text_handler(message):
                 active_low.startswith("стоп запись")
                 or active_low.startswith("добавить @")
                 or active_low.startswith("записать @")
+                or active_low == "пыхнуть"
+                or active_low.startswith("заварить")
+                or active_low.startswith("стата")
             )
             if is_contest_command:
                 logging.info(

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Schema/migration marker for legacy JSON plus normalized tables introduced in v20."""
 from database import conn, db_lock
-SCHEMA_VERSION=20
+SCHEMA_VERSION=21
 
 def ensure_schema():
     with db_lock:
@@ -10,6 +10,9 @@ def ensure_schema():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_user_facts_chat_user ON user_facts(chat_id,user_id)")
         conn.execute("CREATE TABLE IF NOT EXISTS app_events (chat_id TEXT, event_type TEXT, actor_id TEXT, target_id TEXT, created_at REAL NOT NULL, payload TEXT)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_app_events_chat_time ON app_events(chat_id,created_at)")
+        conn.execute("CREATE TABLE IF NOT EXISTS minigame_events (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT, display_name TEXT, kind TEXT NOT NULL, created_at REAL NOT NULL)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_kind_time ON minigame_events(chat_id,kind,created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_user_kind_time ON minigame_events(chat_id,user_id,kind,created_at)")
         conn.execute("INSERT OR REPLACE INTO migration_meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         conn.commit()
     return SCHEMA_VERSION
