@@ -63,6 +63,11 @@ _COMPOUND_COMMANDS = [
     ("стоп запись", lambda m, a: contest_stop(m)),
     ("добавить", lambda m, a: contest_add_participant(m, a)),
     ("записать", lambda m, a: contest_add_participant(m, a)),
+    ("очистить память", lambda m, a: _cmd_clear_memory(m)),
+    ("удаляй нарушения", lambda m, a: cmd_set_auto_delete(m, True)),
+    ("не удаляй нарушения", lambda m, a: cmd_set_auto_delete(m, False)),
+    ("защищай админов", lambda m, a: cmd_set_protect_admins(m, True)),
+    ("не защищай админов", lambda m, a: cmd_set_protect_admins(m, False)),
 ]
 _COMPOUND_COMMANDS.sort(key=lambda x: -len(x[0]))
 
@@ -85,15 +90,10 @@ _SINGLE_COMMANDS = {
     "успокойся": lambda m, a: cmd_calm_down(m),
     "помощь": lambda m, a: cmd_help(m),
     "память": lambda m, a: _cmd_memory(m),
-    "очистить память": lambda m, a: _cmd_clear_memory(m),
     "команды": lambda m, a: cmd_help(m),
     "настройки": lambda m, a: cmd_settings_command(m),
     "модерация": lambda m, a: cmd_moderation_settings(m),
     "модлог": lambda m, a: cmd_modlog(m),
-    "удаляй нарушения": lambda m, a: cmd_set_auto_delete(m, True),
-    "не удаляй нарушения": lambda m, a: cmd_set_auto_delete(m, False),
-    "защищай админов": lambda m, a: cmd_set_protect_admins(m, True),
-    "не защищай админов": lambda m, a: cmd_set_protect_admins(m, False),
     "цель": lambda m, a: _cmd_goal(m, a),
     "цели": lambda m, a: _cmd_goals(m),
     "закрыть цель": lambda m, a: _cmd_goal_done(m, a),
@@ -281,7 +281,8 @@ def text_handler(message):
         is_group = message.chat.type in ("group", "supergroup")
 
         # Во время активной записи Лиза молчит в обычном разговоре, но
-        # продолжает отвечать, если к ней обращаются по имени: «Лиза ...».
+        # прямые команды работают без приставки «Лиза», а обращение «Лиза ...»
+        # по-прежнему отправляется в обычный AI-диалог.
         # Команды управления записью остаются отдельными исключениями.
         if is_group and contest_is_active(cid):
             # Во время конкурса сначала безусловно проверяем управляющие
@@ -336,6 +337,13 @@ def text_handler(message):
             track_message(cid, message.message_id)
 
         if try_handle_pending_input(message):
+            return
+
+        # Все команды работают напрямую, без обязательной приставки «Лиза».
+        # В группах обычный текст по-прежнему не считается командой и дальше
+        # обрабатывается как обычный разговор/AI по старым правилам.
+        direct_command_text = text.strip()
+        if _dispatch(message, direct_command_text):
             return
 
         if message.from_user:
