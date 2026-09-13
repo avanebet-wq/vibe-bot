@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Schema/migration marker for legacy JSON plus normalized tables introduced in v20."""
 from database import conn, db_lock
-SCHEMA_VERSION=22
+SCHEMA_VERSION=23
 
 def ensure_schema():
     with db_lock:
@@ -21,6 +21,8 @@ def ensure_schema():
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_drink_game_chat_user_time ON drink_game_events(chat_id,user_id,created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_drink_game_chat_time ON drink_game_events(chat_id,created_at)")
+        conn.execute("CREATE TABLE IF NOT EXISTS chat_user_presence (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, first_seen REAL NOT NULL, last_seen REAL NOT NULL, PRIMARY KEY(chat_id,user_id))")
+        conn.execute("CREATE TABLE IF NOT EXISTS profile_xp (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat_id,user_id))")
         conn.execute("INSERT OR REPLACE INTO migration_meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         conn.commit()
     return SCHEMA_VERSION

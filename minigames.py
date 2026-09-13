@@ -2,8 +2,8 @@
 """Мини-игры «Пыхнуть» и «Заварить» + накопительная статистика."""
 import html
 import logging
-import random
 import time
+import random
 from collections import defaultdict
 
 from database import conn, db_lock
@@ -11,6 +11,11 @@ from runtime import bot
 
 LOG = logging.getLogger("minigames")
 COOLDOWN = 60 * 60
+XP_REWARDS = {
+    "smoke": [(5, 0.55), (10, 0.25), (20, 0.12), (35, 0.06), (50, 0.02)],
+    "coffee": [(8, 0.55), (15, 0.25), (25, 0.12), (40, 0.06), (60, 0.02)],
+    "drink": [(10, 0.55), (20, 0.25), (35, 0.12), (55, 0.06), (80, 0.02)],
+}
 KINDS = ("smoke", "coffee", "drink")
 
 # Результаты игры «Выпить». Мелкие множители имеют основной вес,
@@ -110,6 +115,29 @@ def _last_use(chat_id, user_id, kind):
     return float(row[0]) if row else None
 
 
+def _award_xp(chat_id, user_id, kind):
+    choices = XP_REWARDS[kind]
+    values = [x[0] for x in choices]
+    weights = [x[1] for x in choices]
+    base = random.choices(values, weights=weights, k=1)[0]
+    multiplier = random.choices([0.8, 1.0, 1.5, 2.0, 3.0], weights=[20, 50, 20, 8, 2], k=1)[0]
+    xp = int(round(base * multiplier))
+    with db_lock:
+        conn.execute("""CREATE TABLE IF NOT EXISTS profile_xp (
+            chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(chat_id,user_id)
+        )""")
+        conn.execute("INSERT INTO profile_xp(chat_id,user_id,xp) VALUES(?,?,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET xp=xp+excluded.xp", (str(chat_id), str(user_id), xp))
+        conn.commit()
+    return xp, multiplier
+
+
+def get_xp(chat_id, user_id):
+    with db_lock:
+        row = conn.execute("SELECT xp FROM profile_xp WHERE chat_id=? AND user_id=?", (str(chat_id), str(user_id))).fetchone()
+    return int(row[0]) if row else 0
+
+
 def _record(chat_id, user_id, username, display_name, kind, now):
     with db_lock:
         conn.execute(
@@ -159,7 +187,8 @@ def _try_use(message, kind):
 
     _record(chat_id, user_id, username, display_name, kind, now)
     total = _count_all(chat_id, user_id, kind)
-    return 0, total
+    xp, xp_mult = _award_xp(chat_id, user_id, kind)
+    return 0, total, xp, xp_mult
 
 
 
@@ -186,40 +215,43 @@ def _record_drink(chat_id, user_id, username, display_name, revo_name, fruit_emo
 
 
 def cmd_drink(message):
-    """Игра «Выпить»: случайный Revo + взвешенный множитель, результат сохраняется."""
+    """Игра «Выпить»: КД 1 час, случайный Revo, множитель и XP."""
     try:
         ensure_schema()
         chat_id = message.chat.id
         user_id, username, display_name = _user_info(message)
         if user_id == "None":
             return
+        now = time.time()
+        last = _last_use(chat_id, user_id, "drink")
+        if last is not None and COOLDOWN - (now - last) > 0:
+            bot.reply_to(message, f"🕐 Следующая попытка через: <b>{_format_wait(COOLDOWN - (now - last))}</b>", parse_mode="HTML")
+            return
         revo_name, fruit_emoji, multiplier, volume_liters = _random_drink_result()
-        _record_drink(
-            chat_id, user_id, username, display_name,
-            revo_name, fruit_emoji, multiplier, volume_liters, time.time(),
-        )
-        bot.reply_to(
-            message,
+        _record_drink(chat_id, user_id, username, display_name, revo_name, fruit_emoji, multiplier, volume_liters, now)
+        _record(chat_id, user_id, username, display_name, "drink", now)
+        xp, xp_mult = _award_xp(chat_id, user_id, "drink")
+        bot.reply_to(message,
             f"🥤 Вы выпили <b>{html.escape(revo_name)}</b> {fruit_emoji}\n"
-            f"🎲 Вам выпал множитель <b>{multiplier:g}х</b> = <b>{volume_liters:g} л Рево</b>",
-            parse_mode="HTML",
-        )
+            f"🎲 Вам выпал множитель <b>{multiplier:g}х</b> = <b>{volume_liters:g} л Рево</b>\n"
+            f"⭐ Опыт: <b>+{xp} XP</b> (×{xp_mult:g})\n"
+            f"🕐 Следующая попытка: через <b>{_format_wait(COOLDOWN)}</b>", parse_mode="HTML")
     except Exception:
         LOG.exception("drink command failed")
-
 
 def cmd_smoke(message):
     try:
         result = _try_use(message, "smoke")
         if result is None:
             return
-        remaining, total = result
+        remaining, total, xp, xp_mult = result
         if remaining > 0:
             bot.reply_to(message, f"🕐 Следующая попытка через: {_format_wait(remaining)}")
             return
         bot.reply_to(
             message,
             f"Вы пыхнули сигаретку 🚬 | Вы уже скурили: <b>{total}</b> сигарет\n"
+            f"⭐ Опыт: <b>+{xp} XP</b> (×{xp_mult:g})\n"
             f"🕐 Следующая попытка: через <b>{_format_wait(COOLDOWN)}</b>",
             parse_mode="HTML",
         )
@@ -232,13 +264,14 @@ def cmd_coffee(message):
         result = _try_use(message, "coffee")
         if result is None:
             return
-        remaining, total = result
+        remaining, total, xp, xp_mult = result
         if remaining > 0:
             bot.reply_to(message, f"🕐 Следующая попытка через: {_format_wait(remaining)}")
             return
         bot.reply_to(
             message,
             f"Вы заварили и выпили ароматный бодрящий кофе ☕ | Вы выпили чашек: <b>{total}</b>\n"
+            f"⭐ Опыт: <b>+{xp} XP</b> (×{xp_mult:g})\n"
             f"🕐 Следующая попытка через: <b>{_format_wait(COOLDOWN)}</b>",
             parse_mode="HTML",
         )

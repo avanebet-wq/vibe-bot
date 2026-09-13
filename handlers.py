@@ -7,6 +7,7 @@ from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_use
 from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
 from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
+from profile import cmd_profile, touch_user
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
@@ -103,6 +104,7 @@ _SINGLE_COMMANDS = {
     "пыхнуть": lambda m, a: cmd_smoke(m),
     "заварить": lambda m, a: cmd_coffee(m),
     "выпить": lambda m, a: cmd_drink(m),
+    "профиль": lambda m, a: cmd_profile(m),
     "стата": lambda m, a: cmd_minigame_stats(m, a),
 }
 
@@ -350,6 +352,7 @@ def text_handler(message):
         # Все команды работают напрямую, без обязательной приставки «Лиза».
         # В группах обычный текст по-прежнему не считается командой и дальше
         # обрабатывается как обычный разговор/AI по старым правилам.
+        touch_user(message)
         direct_command_text = text.strip()
         if _dispatch(message, direct_command_text):
             return
