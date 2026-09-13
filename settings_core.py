@@ -61,6 +61,36 @@ def _chat_title(gid):
 def _render(target, gid, pid=None):
     if target == "root":
         return ui.root_text(_chat_title(gid)), ui.root_kb(gid)
+    if target == "liza":
+        return ui.liza_text(gid), ui.liza_kb(gid)
+    if target == "chance":
+        return ui.chance_text(gid), ui.chance_kb(gid)
+    if target == "sleep":
+        return ui.sleep_text(gid), ui.sleep_kb(gid)
+    if target == "mem":
+        return ui.memory_text(gid), ui.memory_kb(gid)
+    if target == "mem_clear_confirm":
+        return ("⚠️ <b>Очистить память чата?</b>\n\nБудут удалены все сохранённые факты пользователей этого чата. Другие чаты и настройки не затрагиваются."), ui._kb([
+            [ui._btn("✅ Да, очистить", "mem_clear", gid), ui._btn("❌ Отмена", "back", gid, "mem")]
+        ])
+    if target == "fun":
+        return ui.fun_text(gid), ui.fun_kb(gid)
+    if target == "chat":
+        return ui.chat_text(gid), ui.chat_kb(gid)
+    if target == "mod":
+        return ui.mod_text(gid), ui.mod_kb(gid)
+    if target == "pers":
+        return ui.personality_text(gid), ui.personality_kb(gid)
+    if target == "status":
+        return ui.status_text(gid), ui.status_kb(gid)
+    if target == "reset":
+        return ui.reset_text(), ui.reset_kb(gid)
+    if target == "reset_confirm":
+        return ("⚠️ <b>Подтверждение сброса</b>\n\n"
+                "Будут сброшены только настройки поведения Лизы: ответы, активность, память-флаг, развлечения и стиль.\n\n"
+                "Действие можно повторить, но вернуть пользовательские данные из этого меню нельзя."), ui._kb([
+                    [ui._btn("✅ Да, сбросить", "reset_do", gid), ui._btn("❌ Отмена", "back", gid, "reset")]
+                ])
     if target == "cap":
         return ui.captcha_text(gid), ui.captcha_kb(gid)
     if target == "pst":
@@ -994,6 +1024,176 @@ def _dispatch_callback(call):
                 )
 
         return bot.answer_callback_query(call.id)
+
+    if action == "liza":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "liza", gid)
+
+    if action == "chance":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "chance", gid)
+
+    if action == "chance_set":
+        try: value = max(0, min(35, int(rest[0])))
+        except Exception: return bot.answer_callback_query(call.id, "⚠️ Некорректное значение.", show_alert=True)
+        store.set_liza_value(gid, "chatter_chance", value / 100.0)
+        try:
+            from utils import set_setting
+            set_setting(gid, "chatter_chance", value / 100.0)
+        except Exception: pass
+        bot.answer_callback_query(call.id, f"✅ Активность: {value}%")
+        return _show(chat_id, message_id, "chance", gid)
+
+    if action == "sleep":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "sleep", gid)
+
+    if action == "sleep_set":
+        try: seconds = max(0, int(rest[0]))
+        except Exception: seconds = 0
+        try:
+            from utils import set_setting
+            import time as _time
+            set_setting(gid, "sleep_until", _time.time() + seconds if seconds else 0)
+        except Exception: pass
+        bot.answer_callback_query(call.id, "☀️ Лиза проснулась." if not seconds else "😴 Режим сна включён.")
+        return _show(chat_id, message_id, "sleep", gid)
+
+    if action == "liza_toggle":
+        key = rest[0] if rest else ""
+        if key not in {"autoactivity", "stories", "memory", "minigames", "polite", "angry"}:
+            return bot.answer_callback_query(call.id, "⚠️ Неизвестная настройка.", show_alert=True)
+        l = store.get_liza(gid)
+        new = not bool(l.get(key, False))
+        store.set_liza_value(gid, key, new)
+        try:
+            from utils import set_setting
+            if key == "autoactivity": set_setting(gid, "autoactivity", new)
+            elif key == "stories": set_setting(gid, "stories_enabled", new)
+            elif key == "polite": set_setting(gid, "polite_filter", new)
+            elif key == "angry": set_setting(gid, "angry_mode", new)
+            elif key == "memory": set_setting(gid, "memory_enabled", new)
+        except Exception: pass
+        bot.answer_callback_query(call.id, "✅ Настройка обновлена.")
+        target = "liza" if key == "autoactivity" else ("fun" if key in {"stories","minigames"} else "chat")
+        return _show(chat_id, message_id, target, gid)
+
+    if action == "reply":
+        mode = rest[0] if rest else "everyone"
+        if mode not in {"everyone", "mention", "silent"}:
+            return bot.answer_callback_query(call.id, "⚠️ Неизвестный режим.", show_alert=True)
+        store.set_liza_value(gid, "reply_mode", mode)
+        bot.answer_callback_query(call.id, "✅ Режим ответов изменён.")
+        return _show(chat_id, message_id, "liza", gid)
+
+    if action == "mem":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "mem", gid)
+
+    if action == "mem_toggle":
+        from utils import get_setting, set_setting
+        enabled = not bool(get_setting(gid, "memory_enabled", True))
+        set_setting(gid, "memory_enabled", enabled); store.set_liza_value(gid, "memory", enabled)
+        bot.answer_callback_query(call.id, "🧠 Память " + ("включена." if enabled else "выключена."))
+        return _show(chat_id, message_id, "mem", gid)
+
+    if action == "mem_clear_confirm":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "mem_clear_confirm", gid)
+
+    if action == "mem_clear":
+        from database import db_get, db_set
+        data = db_get("user_memory", {})
+        prefix = str(gid) + ":"
+        data = {k:v for k,v in data.items() if not k.startswith(prefix)}
+        db_set("user_memory", data)
+        bot.answer_callback_query(call.id, "🧹 Память этого чата очищена.")
+        return _show(chat_id, message_id, "mem", gid)
+
+    if action == "fun":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "fun", gid)
+
+    if action == "chat":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "chat", gid)
+
+    if action == "mod":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "mod", gid)
+
+    if action == "modtoggle":
+        key = rest[0] if rest else ""
+        if key == "auto_delete":
+            from moderation import _chat_bucket, _store, _save
+            st=_store(); bucket=_chat_bucket(gid); bucket["config"][key]=not bool(bucket["config"].get(key)); _save(st)
+        elif key == "protect_admins":
+            from moderation import _chat_bucket, _store, _save
+            st=_store(); bucket=_chat_bucket(gid); bucket["config"][key]=not bool(bucket["config"].get(key)); _save(st)
+        else:
+            return bot.answer_callback_query(call.id, "⚠️ Неизвестная настройка.", show_alert=True)
+        bot.answer_callback_query(call.id, "✅ Модерация обновлена.")
+        return _show(chat_id, message_id, "mod", gid)
+
+    if action == "warnlimit":
+        from moderation import _chat_bucket, _store, _save
+        st=_store(); bucket=_chat_bucket(gid); current=int(bucket["config"].get("warn_limit",3))
+        values=[1,2,3,5,10,20]
+        try: idx=values.index(current)
+        except ValueError: idx=2
+        new=values[(idx+1)%len(values)]
+        bucket["config"]["warn_limit"]=new; _save(st)
+        bot.answer_callback_query(call.id, f"✅ Лимит варнов: {new}")
+        return _show(chat_id, message_id, "mod", gid)
+
+    if action == "warnaction":
+        action_name = rest[0] if rest else "mute"
+        if action_name not in {"mute","ban","kick"}:
+            return bot.answer_callback_query(call.id, "⚠️ Некорректное действие.", show_alert=True)
+        from moderation import _chat_bucket, _store, _save
+        st=_store(); bucket=_chat_bucket(gid); bucket["config"]["warn_action"]=action_name; _save(st)
+        bot.answer_callback_query(call.id, "✅ Автодействие изменено.")
+        return _show(chat_id, message_id, "mod", gid)
+
+    if action == "modlegacy":
+        try:
+            from moderation import cmd_moderation_settings
+            cmd_moderation_settings(call.message)
+        except Exception: pass
+        return bot.answer_callback_query(call.id)
+
+    if action == "pers":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "pers", gid)
+
+    if action == "pers_adj":
+        key = rest[0] if rest else ""
+        try: delta = int(rest[1])
+        except Exception: delta = 0
+        from chat_personality import get, set_value
+        current = get(gid).get(key)
+        if current is None:
+            return bot.answer_callback_query(call.id, "⚠️ Неизвестный параметр.", show_alert=True)
+        set_value(gid, key, max(0, min(100, current + delta)))
+        bot.answer_callback_query(call.id, f"✅ {max(0, min(100, current + delta))}/100")
+        return _show(chat_id, message_id, "pers", gid)
+
+    if action == "perscmd":
+        try:
+            from handlers import _cmd_personality
+            _cmd_personality(call.message, "")
+        except Exception: pass
+        return bot.answer_callback_query(call.id)
+
+    if action == "status":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "status", gid)
+
+    if action == "reset":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "reset", gid)
+
+    if action == "reset_confirm":
+        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "reset_confirm", gid)
+
+    if action == "reset_do":
+        store.update_liza(gid, reply_mode="everyone", autoactivity=False, chatter_chance=0.05, stories=True, memory=True, minigames=True, polite=False, angry=False)
+        try:
+            from utils import set_setting
+            defaults={"autoactivity":False,"chatter_chance":0.05,"stories_enabled":True,"memory_enabled":True,"polite_filter":False,"angry_mode":False,"sleep_until":0}
+            for k,v in defaults.items(): set_setting(gid,k,v)
+        except Exception: pass
+        bot.answer_callback_query(call.id, "✅ Настройки Лизы сброшены.")
+        return _show(chat_id, message_id, "root", gid)
 
     if action == "back":
         target = rest[0]

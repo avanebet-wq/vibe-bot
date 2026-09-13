@@ -151,6 +151,10 @@ def _cmd_personality(message,args):
     else: bot.reply_to(message,"⚠️ Неизвестный параметр характера.")
 
 
+def _game_enabled(message):
+    return bool(get_setting(message.chat.id, "minigames_enabled", True)) and bool(__import__('settings_store').get_liza(message.chat.id).get("minigames", True))
+
+
 def _dispatch(message, cmd_text):
     text = cmd_text.strip().rstrip("?!. ")
     low = text.lower()
@@ -171,6 +175,9 @@ def _dispatch(message, cmd_text):
     key = first.lower()
     if key in _SINGLE_COMMANDS:
         try:
+            if key in {"пыхнуть", "заварить", "стата"} and not _game_enabled(message):
+                bot.reply_to(message, "🎮 Мини-игры сейчас отключены администратором.")
+                return True
             record_command(message.chat.id, key)
             _SINGLE_COMMANDS[key](message, rest.strip())
         except Exception as e:
@@ -348,7 +355,7 @@ def text_handler(message):
 
         if message.from_user:
             remember_user(message.from_user)
-            fact = infer_safe_fact(text)
+            fact = infer_safe_fact(text) if get_setting(cid, "memory_enabled", True) else None
             if fact and is_group:
                 try: add_fact(cid, message.from_user.id, fact)
                 except Exception: pass
@@ -366,6 +373,16 @@ def text_handler(message):
 
         # Обращение "Лиза, ..."
         wake_match = WAKE_RE.match(text)
+        try:
+            from settings_store import get_liza
+            reply_mode = get_liza(cid).get("reply_mode", "everyone")
+        except Exception:
+            reply_mode = "everyone"
+
+        # Тишина влияет только на обычные ответы; команды выше уже обработаны.
+        if is_group and reply_mode == "silent":
+            return
+
         addressed = bool(wake_match) or (not is_group) or (
             message.reply_to_message
             and message.reply_to_message.from_user
@@ -388,6 +405,9 @@ def text_handler(message):
             record_liza_response(cid, getattr(message.from_user, "id", None))
             reply = _apply_polite_filter(cid, reply)
             _safe_reply(message, reply)
+            return
+
+        if is_group and reply_mode == "mention" and not addressed:
             return
 
         if not is_group:

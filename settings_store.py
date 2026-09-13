@@ -34,6 +34,16 @@ def _default_settings():
             "silence": False,
             "system": {key: False for key, _ in SYSTEM_MESSAGE_TYPES},
         },
+        "liza": {
+            "reply_mode": "everyone",  # everyone | mention | silent
+            "autoactivity": False,
+            "chatter_chance": 0.05,
+            "stories": True,
+            "memory": True,
+            "minigames": True,
+            "polite": False,
+            "angry": False,
+        },
     }
 
 
@@ -80,6 +90,12 @@ def get_all_settings(gid):
             if "system" not in chat.get("deletion", {}):
                 chat["deletion"]["system"] = {key: False for key, _ in SYSTEM_MESSAGE_TYPES}
                 changed = True
+            liza_defaults = defaults.get("liza", {})
+            chat.setdefault("liza", {})
+            for key, value in liza_defaults.items():
+                if key not in chat["liza"]:
+                    chat["liza"][key] = value
+                    changed = True
             for key, _ in SYSTEM_MESSAGE_TYPES:
                 if key not in chat["deletion"]["system"]:
                     chat["deletion"]["system"][key] = False
@@ -95,6 +111,25 @@ def save_all_settings(gid, chat):
         store = db_get("group_settings", {})
         store[str(gid)] = chat
         db_set("group_settings", store)
+
+
+def get_liza(gid):
+    return get_all_settings(gid)["liza"]
+
+
+def set_liza_value(gid, key, value):
+    with _lock:
+        chat = get_all_settings(gid)
+        chat["liza"][key] = value
+        save_all_settings(gid, chat)
+
+
+def update_liza(gid, **fields):
+    with _lock:
+        chat = get_all_settings(gid)
+        chat["liza"].update(fields)
+        save_all_settings(gid, chat)
+        return chat["liza"]
 
 
 def get_captcha(gid):

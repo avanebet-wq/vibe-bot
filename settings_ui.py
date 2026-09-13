@@ -3,7 +3,7 @@
 from telebot import types
 
 from utils import format_seconds
-from settings_store import SYSTEM_MESSAGE_TYPES, WEEKDAYS, get_posts, get_post, get_captcha, get_deletion
+from settings_store import SYSTEM_MESSAGE_TYPES, WEEKDAYS, get_posts, get_post, get_captcha, get_deletion, get_liza
 
 CB = "cf"  # префикс callback_data, чтобы не путать с другими кнопками бота
 
@@ -28,19 +28,214 @@ def _kb(rows):
 
 def root_text(chat_title):
     return (
-        "📓 <b>ПАРАМЕТРЫ</b>\n"
+        "⚙️ <b>НАСТРОЙКИ ЛИЗЫ</b>\n"
         f"Группа: «{chat_title}»\n\n"
-        "Выберите один из параметров которые хотите изменить👇"
+        "Здесь можно управлять ответами, активностью, памятью, модерацией и автоматическими функциями.\n\n"
+        "👇 Выберите раздел:"
     )
 
 
 def root_kb(gid):
     return _kb([
-        [_btn("🧠 Капча", "cap", gid)],
-        [_btn("🕓 Повторяющиеся сообщения", "pst", gid)],
-        [_btn("🗑️ Удаление сообщений", "del", gid)],
+        [_btn("👅 Ответы и активность", "liza", gid)],
+        [_btn("🧠 Память", "mem", gid), _btn("🎭 Характер", "pers", gid)],
+        [_btn("🛡️ Модерация", "mod", gid)],
+        [_btn("🎮 Развлечения", "fun", gid)],
+        [_btn("⚙️ Функции чата", "chat", gid)],
+        [_btn("📊 Статус Лизы", "status", gid)],
+        [_btn("🔄 Сброс настроек", "reset", gid)],
         [_btn("✅ Закрыть", "close", gid)],
     ])
+
+
+# --------------------------------------------------------- LIZA BEHAVIOUR --
+
+def _on(v):
+    return "вкл ✅" if bool(v) else "выкл ❌"
+
+def liza_text(gid):
+    l = get_liza(gid)
+    mode = {"everyone": "Отвечает всем", "mention": "Только по обращению", "silent": "Полностью молчит"}.get(l.get("reply_mode"), "Не задано")
+    chance = int(round(float(l.get("chatter_chance", 0.05)) * 100))
+    return (
+        "👅 <b>Ответы и активность</b>\n\n"
+        f"💬 Ответы: <b>{mode}</b>\n"
+        f"🎲 Самостоятельная активность: <b>{_on(l.get('autoactivity'))}</b>\n"
+        f"📈 Вероятность вмешаться: <b>{chance}%</b>\n"
+        f"😴 Режим сна: {'вкл ✅' if __import__('mood').is_asleep(gid) else 'выкл ❌'}\n\n"
+        "Кнопки ниже меняют настройки без лишних сообщений в чате."
+    )
+
+def liza_kb(gid):
+    l = get_liza(gid)
+    mode = l.get("reply_mode", "everyone")
+    rows = [
+        [_btn(("✅ " if mode == "everyone" else "▫️ ") + "Отвечать всем", "reply", gid, "everyone")],
+        [_btn(("✅ " if mode == "mention" else "▫️ ") + "Только при обращении", "reply", gid, "mention")],
+        [_btn(("✅ " if mode == "silent" else "▫️ ") + "Полная тишина", "reply", gid, "silent")],
+        [_btn(("🟢 " if l.get("autoactivity") else "⚪ ") + "Автоактивность", "liza_toggle", gid, "autoactivity")],
+        [_btn("📈 Уровень активности", "chance", gid)],
+        [_btn("😴 Сон", "sleep", gid)],
+        [_btn("⬅️ Назад", "back", gid, "root")],
+    ]
+    return _kb(rows)
+
+def chance_text(gid):
+    chance = int(round(float(get_liza(gid).get("chatter_chance", 0.05)) * 100))
+    return ("📈 <b>Уровень активности</b>\n\n"
+            "Это шанс, с которым Лиза сама вмешается в обычный разговор.\n\n"
+            f"Текущее значение: <b>{chance}%</b>\n\n"
+            "При активном разговоре интеллектуальная автоактивность дополнительно снижает шанс вмешательства.")
+
+def chance_kb(gid):
+    cur = int(round(float(get_liza(gid).get("chatter_chance", 0.05)) * 100))
+    vals = [0, 2, 5, 10, 20, 35]
+    rows=[]
+    for i in range(0, len(vals), 3):
+        rows.append([_btn(("✅ " if v == cur else "") + f"{v}%", "chance_set", gid, v) for v in vals[i:i+3]])
+    rows.append([_btn("⬅️ Назад", "back", gid, "liza")])
+    return _kb(rows)
+
+def sleep_text(gid):
+    import time
+    from mood import sleep_until
+    until = sleep_until(gid)
+    status = "активен"
+    if until > time.time():
+        status = "до " + __import__('datetime').datetime.fromtimestamp(until).strftime("%d.%m %H:%M")
+    return ("😴 <b>Режим сна</b>\n\n"
+            f"Сейчас: <b>{status}</b>\n"
+            "Во сне Лиза не отвечает на обычные сообщения. Команды управления остаются доступны.")
+
+def sleep_kb(gid):
+    return _kb([
+        [_btn("😴 1 час", "sleep_set", gid, 3600), _btn("😴 6 часов", "sleep_set", gid, 21600)],
+        [_btn("😴 24 часа", "sleep_set", gid, 86400)],
+        [_btn("☀️ Разбудить", "sleep_set", gid, 0)],
+        [_btn("⬅️ Назад", "back", gid, "liza")],
+    ])
+
+
+# ---------------------------------------------------------------- MEMORY --
+def memory_text(gid):
+    from utils import get_setting
+    enabled = bool(get_setting(gid, "memory_enabled", True))
+    return ("🧠 <b>Память</b>\n\n"
+            f"Запоминание новых фактов: <b>{_on(enabled)}</b>\n"
+            "Память хранится отдельно для каждого пользователя и чата.\n"
+            "Отключение не удаляет уже сохранённые факты.")
+
+def memory_kb(gid):
+    from utils import get_setting
+    enabled = bool(get_setting(gid, "memory_enabled", True))
+    return _kb([
+        [_btn(("❌ Выключить память" if enabled else "✅ Включить память"), "mem_toggle", gid)],
+        [_btn("🧹 Очистить всю память чата", "mem_clear_confirm", gid)],
+        [_btn("⬅️ Назад", "back", gid, "root")],
+    ])
+
+# -------------------------------------------------------------- FUN ------
+def fun_text(gid):
+    l=get_liza(gid); enabled=bool(l.get("minigames", True)); stories=bool(l.get("stories", True))
+    return ("🎮 <b>Развлечения</b>\n\n"
+            f"Мини-игры: <b>{_on(enabled)}</b>\n"
+            f"Автоистории: <b>{_on(stories)}</b>\n\n"
+            "Выкл. мини-игр блокирует игровые команды. Ручная команда «расскажи историю» остаётся доступной.")
+
+def fun_kb(gid):
+    l=get_liza(gid)
+    return _kb([
+        [_btn(("🟢 " if l.get("minigames") else "⚪ ")+"Мини-игры", "liza_toggle", gid, "minigames")],
+        [_btn(("🟢 " if l.get("stories") else "⚪ ")+"Автоистории", "liza_toggle", gid, "stories")],
+        [_btn("⬅️ Назад", "back", gid, "root")],
+    ])
+
+# --------------------------------------------------------------- CHAT -----
+def chat_text(gid):
+    from utils import get_setting
+    l=get_liza(gid)
+    return ("⚙️ <b>ФУНКЦИИ ЧАТА</b>\n\n"
+            f"🎩 Вежливый стиль: <b>{_on(l.get('polite'))}</b>\n"
+            f"😠 Злой режим: <b>{_on(l.get('angry'))}</b>\n"
+            f"📖 Автоистории: <b>{_on(l.get('stories'))}</b>\n"
+            f"🧹 Удаление нарушений: <b>{_on(get_setting(gid,'auto_delete',False))}</b>\n"
+            f"🛡 Защита админов: <b>{_on(get_setting(gid,'protect_admins',True))}</b>")
+
+def chat_kb(gid):
+    l=get_liza(gid)
+    return _kb([
+        [_btn(("🟢 " if l.get("polite") else "⚪ ")+"Вежливый стиль", "liza_toggle", gid, "polite")],
+        [_btn(("🟢 " if l.get("angry") else "⚪ ")+"Злой режим", "liza_toggle", gid, "angry")],
+        [_btn("🛡️ Открыть модерацию", "mod", gid)],
+        [_btn("🎭 Открыть характер", "pers", gid)],
+        [_btn("⬅️ Назад", "back", gid, "root")],
+    ])
+
+def mod_text(gid):
+    from moderation import _chat_bucket
+    cfg=_chat_bucket(gid)["config"]
+    return ("🛡️ <b>МОДЕРАЦИЯ</b>\n\n"
+            f"⚠️ Лимит варнов: <b>{cfg['warn_limit']}</b>\n"
+            f"⚡ Автодействие: <b>{cfg['warn_action']}</b>\n"
+            f"🧹 Удаление нарушений: <b>{_on(cfg['auto_delete'])}</b>\n"
+            f"👑 Защита админов: <b>{_on(cfg['protect_admins'])}</b>")
+
+def mod_kb(gid):
+    from moderation import _chat_bucket
+    cfg=_chat_bucket(gid)["config"]
+    actions=[("mute","🔇 Мут"),("ban","🔨 Бан"),("kick","👢 Кик")]
+    return _kb([
+        [_btn(("✅ " if cfg['auto_delete'] else "❌ ")+"Удалять нарушения", "modtoggle", gid, "auto_delete"),
+         _btn(("✅ " if cfg['protect_admins'] else "❌ ")+"Защищать админов", "modtoggle", gid, "protect_admins")],
+        [_btn(f"⚠️ Лимит: {cfg['warn_limit']}", "warnlimit", gid)],
+        [_btn(("✅ " if cfg['warn_action']==a else "▫️ ")+label, "warnaction", gid, a) for a,label in actions],
+        [_btn("⬅️ Назад", "back", gid, "root")],
+    ])
+
+_PERS_LABELS = {
+    "humor": "Юмор", "sarcasm": "Сарказм", "friendliness": "Доброта",
+    "rudeness": "Грубость", "seriousness": "Серьёзность", "verbosity": "Разговорчивость",
+}
+
+def personality_text(gid):
+    from chat_personality import get
+    p=get(gid)
+    return ("🎭 <b>Характер Лизы</b>\n\n" + "\n".join(f"• {_PERS_LABELS.get(k,k)}: <b>{v}</b>/100" for k,v in p.items()) +
+            "\n\nКаждая кнопка меняет параметр на 5 пунктов. Диапазон: 0–100.")
+
+def personality_kb(gid):
+    from chat_personality import get
+    p=get(gid); rows=[]
+    for key, value in p.items():
+        label=_PERS_LABELS.get(key,key)
+        rows.append([_btn("−5", "pers_adj", gid, key, -5), _btn(f"{label}: {value}", "noop", gid), _btn("+5", "pers_adj", gid, key, 5)])
+    rows.append([_btn("⬅️ Назад", "back", gid, "root")])
+    return _kb(rows)
+
+def status_text(gid):
+    l=get_liza(gid)
+    mode={"everyone":"всем","mention":"только при обращении","silent":"полная тишина"}.get(l.get("reply_mode"),"—")
+    from utils import get_setting
+    return ("📊 <b>СТАТУС ЛИЗЫ</b>\n\n"
+            f"💬 Ответы: <b>{mode}</b>\n"
+            f"🎲 Автоактивность: <b>{_on(l.get('autoactivity'))}</b>\n"
+            f"📈 Шанс вмешательства: <b>{int(round(float(l.get('chatter_chance',.05))*100))}%</b>\n"
+            f"🧠 Память: <b>{_on(get_setting(gid,'memory_enabled',True))}</b>\n"
+            f"🎮 Мини-игры: <b>{_on(l.get('minigames'))}</b>\n"
+            f"📖 Автоистории: <b>{_on(l.get('stories'))}</b>\n"
+            f"🎩 Вежливость: <b>{_on(l.get('polite'))}</b>\n"
+            f"😠 Злость: <b>{_on(l.get('angry'))}</b>")
+
+def status_kb(gid):
+    return _kb([[_btn("🔄 Обновить", "status", gid)],[_btn("⬅️ Назад", "back", gid, "root")]])
+
+def reset_text():
+    return ("🔄 <b>СБРОС НАСТРОЕК</b>\n\n"
+            "Сброс вернёт настройки Лизы к безопасным значениям по умолчанию.\n"
+            "Посты, капча и накопленные данные пользователей не удаляются.")
+
+def reset_kb(gid):
+    return _kb([[_btn("✅ Сбросить настройки Лизы", "reset_confirm", gid)],[_btn("⬅️ Назад", "back", gid, "root")]])
 
 
 # --------------------------------------------------------------- CAPTCHA ----

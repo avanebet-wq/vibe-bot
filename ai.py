@@ -5,6 +5,7 @@ from user_memory import format_facts
 from social_context import summary as social_summary
 from chat_personality import get as get_chat_personality
 from security import allow
+from utils import get_setting
 import logging, random, requests, time
 from config import OPENROUTER_KEY, AI_MODEL, SYS_PROMPT_NORMAL, SYS_PROMPT_ANGRY
 
@@ -44,8 +45,9 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
         except Exception: pass
     if chat_id is not None and user_id is not None:
         try:
-            facts=format_facts(chat_id,user_id)
-            if facts: extra.append(facts)
+            if get_setting(chat_id, "memory_enabled", True):
+                facts=format_facts(chat_id,user_id)
+                if facts: extra.append(facts)
             social=social_summary(chat_id,user_id)
             if social: extra.append("Связи только по текущему разговору, используй осторожно: "+str(social)[:1200])
         except Exception: pass
