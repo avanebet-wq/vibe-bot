@@ -130,7 +130,7 @@ def _cmd_goals(message):
     if not items: return bot.reply_to(message, "🎯 Открытых целей нет.")
     lines=["🎯 <b>Цели:</b>"]
     for i,x in enumerate(items[:15],1): lines.append(f"{i}. <b>{x['id']}</b> — {x['title']}")
-    lines.append("\nЗакрыть: <code>Лиза, закрыть цель ID</code>")
+    lines.append("\nЗакрыть: <code>закрыть цель ID</code>")
     bot.reply_to(message,"\n".join(lines))
 
 def _cmd_goal(message,args):
@@ -153,7 +153,7 @@ def _cmd_personality(message,args):
     aliases={'юмор':'humor','сарказм':'sarcasm','доброта':'friendliness','грубость':'rudeness','серьёзность':'seriousness','серьезность':'seriousness','разговорчивость':'verbosity'}
     key=aliases.get(parts[0].lower(),parts[0].lower())
     try: value=int(parts[1])
-    except Exception: return bot.reply_to(message,"⚠️ Формат: <code>Лиза, характер юмор 80</code>")
+    except Exception: return bot.reply_to(message,"⚠️ Формат: <code>характер юмор 80</code>")
     if set_chat_personality(cid,key,value): bot.reply_to(message,f"✅ {key}: {max(0,min(100,value))}/100")
     else: bot.reply_to(message,"⚠️ Неизвестный параметр характера.")
 

@@ -30,6 +30,14 @@ _recent_lock = threading.RLock()
 
 
 def track_message(chat_id, message_id):
+    # Любое сообщение из группы подтверждает, что бот находится в этом чате.
+    # Это поддерживает постоянный реестр для команды «настройки» в личке.
+    try:
+        chat = bot.get_chat(chat_id)
+        if getattr(chat, "type", "") in ("group", "supergroup"):
+            store.register_known_group(chat_id, getattr(chat, "title", None) or str(chat_id))
+    except Exception as e:
+        log.debug("[known_groups] не удалось обновить чат %s: %s", chat_id, e)
     with _recent_lock:
         dq = _recent_messages.setdefault(chat_id, deque(maxlen=_MAX_TRACKED))
         dq.append(message_id)
@@ -161,7 +169,7 @@ def send_dm_start_intro(chat_id):
         "• ⚙️ Гибко настраиваться под правила и формат вашего чата\n"
         "• 🧠 Использовать ИИ для общения и помощи участникам\n\n"
         "Чтобы попробовать мои возможности, просто добавь меня в свой чат и напиши:\n\n"
-        "«Лиза настройки»\n\n"
+        "«настройки»\n\n"
         "Я покажу доступные функции и помогу всё настроить.\n\n"
         f'👀 <a href="{MANUAL_URL}">Все команды и возможности</a>'
     )
@@ -171,18 +179,43 @@ def send_dm_start_intro(chat_id):
     track_message(chat_id, msg.message_id)
 
 
+def _bot_is_in_chat(gid):
+    """Проверяет, что бот всё ещё состоит в чате из постоянного реестра."""
+    try:
+        member = bot.get_chat_member(gid, BOT_ID)
+        return member.status not in ("left", "kicked")
+    except Exception:
+        return False
+
+
 def send_dm_start_group_picker(chat_id, user_id):
-    """Если пользователь — админ хотя бы одной из групп, где сейчас есть Лиза,
-    показывает список этих чатов. Возвращает True, если список был показан."""
+    """Показывает чаты из постоянного реестра, где бот состоит, а пользователь админ.
+
+    Telegram Bot API не предоставляет способа перечислить все группы бота из лички,
+    поэтому реестр пополняется событиями вступления и обычной активностью бота.
+    Перед показом каждого чата дополнительно проверяются оба условия.
+    """
     groups = store.get_known_groups()
     my_groups = []
+    stale = []
     for gid_str, title in groups.items():
         try:
             gid = int(gid_str)
-        except ValueError:
+        except (TypeError, ValueError):
+            continue
+        if not _bot_is_in_chat(gid):
+            stale.append(gid)
             continue
         if _authorized(gid, user_id):
-            my_groups.append((gid, title))
+            # Получаем актуальное название, а не полагаемся на старую запись.
+            actual_title = _chat_title(gid)
+            my_groups.append((gid, actual_title if actual_title != str(gid) else (title or str(gid))))
+
+    for gid in stale:
+        try:
+            store.remove_known_group(gid)
+        except Exception:
+            log.exception("[known_groups] failed to remove stale chat %s", gid)
 
     if not my_groups:
         return False
@@ -226,7 +259,7 @@ def open_settings_in_dm(user_id, gid):
 
 
 def cmd_settings_command(message):
-    """«Лиза, настройки» — в группе открывает настройки этого чата,
+    """«настройки» — в группе открывает настройки этого чата,
     а в личке показывает список чатов, где Лиза есть и пользователь админ."""
     if message.chat.type == "private":
         if send_dm_start_group_picker(message.chat.id, message.from_user.id):

@@ -68,7 +68,7 @@ def cmd_sleep(message):
     cid = message.chat.id
     until = time.time() + SLEEP_HOURS * 3600
     set_setting(cid, "sleep_until", until)
-    bot.reply_to(message, f"😴 Ухожу в отключку на {SLEEP_HOURS} часов. Разбудите командой «Лиза, включись».")
+    bot.reply_to(message, f"😴 Ухожу в отключку на {SLEEP_HOURS} часов. Разбудите командой «включись».")
 
 
 def cmd_wakeup(message):

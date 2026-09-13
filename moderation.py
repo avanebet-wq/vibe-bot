@@ -88,7 +88,7 @@ def _need_target(message):
     bot.reply_to(
         message,
         "🤔 Не поняла, кого. Ответь этой командой на сообщение человека "
-        "или укажи @username.\n\nПример: <code>Лиза, бан @username причина</code>",
+        "или укажи @username.\n\nПример: <code>бан @username причина</code>",
     )
 
 

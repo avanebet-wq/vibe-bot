@@ -56,7 +56,7 @@ def cmd_stories_on(message):
 
 def cmd_stories_off(message):
     set_enabled(message.chat.id, False)
-    bot.reply_to(message, "🤐 Ладно, историй больше не будет — только по запросу «Лиза, расскажи историю».")
+    bot.reply_to(message, "🤐 Ладно, историй больше не будет — только по запросу «расскажи историю».")
 
 
 def maybe_autotell(message, chance):

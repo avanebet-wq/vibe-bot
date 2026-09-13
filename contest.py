@@ -158,10 +158,10 @@ def cmd_start(message, args):
         return bot.reply_to(message, "⛔ Только администратор может запустить запись.")
     raw = (args or "").strip(); parts = raw.split(maxsplit=1)
     if len(parts) < 2 or not parts[0].isdigit() or int(parts[0]) < 1:
-        return bot.reply_to(message, "⚠️ Формат: <code>Лиза запись 2 текст конкурса</code>")
+        return bot.reply_to(message, "⚠️ Формат: <code>запись 2 текст конкурса</code>")
     required = int(parts[0]); text = parts[1].strip()
     if not text: return bot.reply_to(message, "⚠️ Укажи текст конкурса.")
-    if is_active(cid): return bot.reply_to(message, "⚠️ Запись уже идёт. Сначала: <code>Лиза стоп запись</code>")
+    if is_active(cid): return bot.reply_to(message, "⚠️ Запись уже идёт. Сначала: <code>стоп запись</code>")
     cfg = __import__("contest_settings").get_config(cid)
     cfg.update({"text": text, "requirement": "invite", "required": required, "start_mode": "now"})
     return start_from_config(message, cfg)
@@ -293,7 +293,7 @@ def clear_participants(cid):
 
 
 def cmd_add_participant(message, args):
-    """Админская ручная запись по username: «Лиза записать @username»."""
+    """Админская ручная запись по username: «записать @username»."""
     cid = message.chat.id
     if message.chat.type not in ("group", "supergroup"):
         return bot.reply_to(message, "⚠️ Команда работает только в группе.")
@@ -302,7 +302,7 @@ def cmd_add_participant(message, args):
     raw = (args or "").strip()
     token = raw.split()[0] if raw else ""
     if not token.startswith("@") or len(token) < 2:
-        return bot.reply_to(message, "⚠️ Формат: <code>Лиза записать @username</code>")
+        return bot.reply_to(message, "⚠️ Формат: <code>записать @username</code>")
     ok, text = add_participant_by_username(cid, token)
     return bot.reply_to(message, text, parse_mode="HTML")
 
@@ -365,7 +365,7 @@ def handle_new_members(message):
     inviter = getattr(getattr(message, "from_user", None), "id", None)
     members = getattr(message, "new_chat_members", None) or []
     # Запоминаем username/ID новых участников, чтобы админ мог позже
-    # использовать «Лиза записать @username».
+    # использовать «записать @username».
     for member in members:
         try:
             remember_user(member)

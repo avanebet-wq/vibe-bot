@@ -11,6 +11,6 @@ Changes from V25:
 
 
 ### V26.1 fix
-- Added admin alias `Лиза записать @username` for manual registration.
-- During an active contest this command is allowed alongside `Лиза добавить @username`.
+- Added admin alias `записать @username` for manual registration.
+- During an active contest this command is allowed alongside `добавить @username`.
 - Direct-add invitation logs remain based on Telegram `new_chat_members` service messages.
