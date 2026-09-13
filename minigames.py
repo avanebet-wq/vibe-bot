@@ -10,7 +10,36 @@ from runtime import bot
 
 LOG = logging.getLogger("minigames")
 COOLDOWN = 60 * 60
-KINDS = ("smoke", "coffee")
+KINDS = ("smoke", "coffee", "drink")
+
+# Результаты игры «Выпить». Мелкие множители имеют основной вес,
+# а максимальные значения специально сделаны крайне редкими.
+DRINK_RESULTS = [
+    (0.5, 22.0),
+    (0.7, 28.0),
+    (0.9, 20.0),
+    (1.0, 12.0),
+    (1.2, 7.0),
+    (1.5, 5.0),
+    (2.0, 3.0),
+    (2.5, 1.5),
+    (3.0, 0.8),
+    (4.0, 0.5),
+    (5.0, 0.2),
+]
+
+# Только названия + ассоциирующийся фрукт/цвет. Описания вкусов намеренно не выводятся.
+REVO_NAMES = (
+    ("Revo Cherry", "🍒"),
+    ("Revo Original", "🍊"),
+    ("Revo Love Is", "🍓"),
+    ("Revo Black", "🫐"),
+    ("Revo Манго", "🥭"),
+    ("Revo Grapefruit", "🍊"),
+    ("Revo Pitahaya", "🍓"),
+    ("Revo Shizandra", "🍋"),
+    ("Revo Blue Ice", "🫐"),
+)
 
 
 def ensure_schema():
@@ -33,6 +62,28 @@ def ensure_schema():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_user_kind_time "
             "ON minigame_events(chat_id, user_id, kind, created_at)"
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS drink_game_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                display_name TEXT,
+                revo_name TEXT NOT NULL,
+                fruit_emoji TEXT NOT NULL,
+                multiplier REAL NOT NULL,
+                volume_liters REAL NOT NULL,
+                created_at REAL NOT NULL
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_user_time "
+            "ON drink_game_events(chat_id, user_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_time "
+            "ON drink_game_events(chat_id, created_at)"
         )
         conn.commit()
 
@@ -108,6 +159,52 @@ def _try_use(message, kind):
     _record(chat_id, user_id, username, display_name, kind, now)
     total = _count_all(chat_id, user_id, kind)
     return 0, total
+
+
+
+def _random_drink_result():
+    values = [x[0] for x in DRINK_RESULTS]
+    weights = [x[1] for x in DRINK_RESULTS]
+    multiplier = random.choices(values, weights=weights, k=1)[0]
+    revo_name, fruit_emoji = random.choice(REVO_NAMES)
+    # Формула подобрана под заявленный пример: 1.5x = 2.5 л.
+    volume_liters = round(1.0 + multiplier, 1)
+    return revo_name, fruit_emoji, multiplier, volume_liters
+
+
+def _record_drink(chat_id, user_id, username, display_name, revo_name, fruit_emoji, multiplier, volume_liters, now):
+    with db_lock:
+        conn.execute(
+            "INSERT INTO drink_game_events "
+            "(chat_id,user_id,username,display_name,revo_name,fruit_emoji,multiplier,volume_liters,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (str(chat_id), str(user_id), username, display_name, revo_name, fruit_emoji,
+             float(multiplier), float(volume_liters), now),
+        )
+        conn.commit()
+
+
+def cmd_drink(message):
+    """Игра «Выпить»: случайный Revo + взвешенный множитель, результат сохраняется."""
+    try:
+        ensure_schema()
+        chat_id = message.chat.id
+        user_id, username, display_name = _user_info(message)
+        if user_id == "None":
+            return
+        revo_name, fruit_emoji, multiplier, volume_liters = _random_drink_result()
+        _record_drink(
+            chat_id, user_id, username, display_name,
+            revo_name, fruit_emoji, multiplier, volume_liters, time.time(),
+        )
+        bot.reply_to(
+            message,
+            f"🥤 Вы выпили <b>{html.escape(revo_name)}</b> {fruit_emoji}\n"
+            f"🎲 Вам выпал множитель <b>{multiplier:g}х</b> = <b>{volume_liters:g} л Рево</b>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        LOG.exception("drink command failed")
 
 
 def cmd_smoke(message):
@@ -216,6 +313,42 @@ def _table(title, rows, emoji):
     return lines
 
 
+def _drink_rows(chat_id, days=None):
+    params = [str(chat_id)]
+    where = "WHERE chat_id=?"
+    if days is not None:
+        where += " AND created_at>=?"
+        params.append(time.time() - days * 86400)
+    with db_lock:
+        return conn.execute(
+            f"""SELECT user_id,
+                       COALESCE(NULLIF(username,''), ''),
+                       COALESCE(NULLIF(display_name,''), ''),
+                       COUNT(*) AS total,
+                       ROUND(SUM(volume_liters), 1) AS liters,
+                       MAX(created_at) AS last_at
+                FROM drink_game_events {where}
+                GROUP BY user_id
+                ORDER BY total DESC, last_at ASC""",
+            params,
+        ).fetchall()
+
+
+def _drink_table(title, rows):
+    lines = [f"🥤 <b>{html.escape(title)}</b>"]
+    if not rows:
+        lines.append("— пока нет данных")
+        return lines
+    lines.append("<pre>№  Пользователь                 Игры   Литры</pre>")
+    for idx, (uid, username, display_name, total, liters, _last) in enumerate(rows[:50], 1):
+        label = html.escape(_person_label(username, display_name, uid))
+        if len(label) > 25:
+            label = label[:22] + "..."
+        lines.append(f"<code>{idx:>2}. {label:<25} {int(total):>4}   {float(liters or 0):>5.1f}</code>")
+    if len(rows) > 50:
+        lines.append(f"… и ещё {len(rows) - 50} пользователей")
+    return lines
+
 def cmd_stats(message, args=""):
     try:
         label = _period_label(args)
@@ -225,10 +358,13 @@ def cmd_stats(message, args=""):
         days = _period_days(args)
         smoke = _rows(message.chat.id, "smoke", days)
         coffee = _rows(message.chat.id, "coffee", days)
+        drink = _drink_rows(message.chat.id, days)
         lines = [f"📊 <b>Стата мини-игр — {label}</b>", ""]
         lines.extend(_table("Сигареты", smoke, "🚬"))
         lines.append("")
         lines.extend(_table("Кофе", coffee, "☕"))
+        lines.append("")
+        lines.extend(_drink_table("Выпить", drink))
         text = "\n".join(lines)
         if len(text) <= 4000:
             bot.reply_to(message, text, parse_mode="HTML")

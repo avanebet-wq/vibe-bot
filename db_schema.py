@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Schema/migration marker for legacy JSON plus normalized tables introduced in v20."""
 from database import conn, db_lock
-SCHEMA_VERSION=21
+SCHEMA_VERSION=22
 
 def ensure_schema():
     with db_lock:
@@ -13,6 +13,14 @@ def ensure_schema():
         conn.execute("CREATE TABLE IF NOT EXISTS minigame_events (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT, display_name TEXT, kind TEXT NOT NULL, created_at REAL NOT NULL)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_kind_time ON minigame_events(chat_id,kind,created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_user_kind_time ON minigame_events(chat_id,user_id,kind,created_at)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS drink_game_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT, display_name TEXT,
+            revo_name TEXT NOT NULL, fruit_emoji TEXT NOT NULL, multiplier REAL NOT NULL,
+            volume_liters REAL NOT NULL, created_at REAL NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_drink_game_chat_user_time ON drink_game_events(chat_id,user_id,created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_drink_game_chat_time ON drink_game_events(chat_id,created_at)")
         conn.execute("INSERT OR REPLACE INTO migration_meta(key,value) VALUES('schema_version',?)",(str(SCHEMA_VERSION),))
         conn.commit()
     return SCHEMA_VERSION

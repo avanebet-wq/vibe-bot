@@ -6,7 +6,7 @@ from mood_state import on_message as update_mood, on_event as update_mood_event
 from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_user_memory
 from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
-from minigames import cmd_smoke, cmd_coffee, cmd_stats as cmd_minigame_stats
+from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
@@ -102,6 +102,7 @@ _SINGLE_COMMANDS = {
     "запись": lambda m, a: contest_start(m, a),
     "пыхнуть": lambda m, a: cmd_smoke(m),
     "заварить": lambda m, a: cmd_coffee(m),
+    "выпить": lambda m, a: cmd_drink(m),
     "стата": lambda m, a: cmd_minigame_stats(m, a),
 }
 
@@ -175,7 +176,7 @@ def _dispatch(message, cmd_text):
     key = first.lower()
     if key in _SINGLE_COMMANDS:
         try:
-            if key in {"пыхнуть", "заварить", "стата"} and not _game_enabled(message):
+            if key in {"пыхнуть", "заварить", "выпить", "стата"} and not _game_enabled(message):
                 bot.reply_to(message, "🎮 Мини-игры сейчас отключены администратором.")
                 return True
             record_command(message.chat.id, key)

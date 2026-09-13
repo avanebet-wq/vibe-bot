@@ -139,7 +139,8 @@ def fun_text(gid):
     l=get_liza(gid); enabled=bool(l.get("minigames", True)); stories=bool(l.get("stories", True))
     return ("🎮 <b>Развлечения</b>\n\n"
             f"Мини-игры: <b>{_on(enabled)}</b>\n"
-            f"Автоистории: <b>{_on(stories)}</b>\n\n"
+            f"Автоистории: <b>{_on(stories)}</b>\n"
+            "Игра «Выпить»: <b>доступна вместе с мини-играми</b>\n\n"
             "Выкл. мини-игр блокирует игровые команды. Ручная команда «расскажи историю» остаётся доступной.")
 
 def fun_kb(gid):
