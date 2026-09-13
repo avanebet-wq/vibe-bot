@@ -222,41 +222,20 @@ def _register(call, cid, session):
     _refresh_message(cid, session)
 
 
-def cmd_add_participant(message, args):
-    """Админская ручная запись по username: «Лиза записать @username».
-
-    Для ручной записи намеренно не нужен Telegram user ID и не выполняется
-    поиск пользователя через Bot API. В список сохраняется ровно username.
-    """
-    cid = message.chat.id
-    if message.chat.type not in ("group", "supergroup"):
-        return bot.reply_to(message, "⚠️ Команда работает только в группе.")
-    if not is_chat_admin(cid, message.from_user.id):
-        return bot.reply_to(message, "⛔ Только администратор может добавлять участников.")
-    if not is_active(cid):
-        return bot.reply_to(message, "ℹ️ Активной записи нет.")
-
-    raw = (args or "").strip()
-    token = raw.split()[0] if raw else ""
-    if not token.startswith("@") or len(token) < 2:
-        return bot.reply_to(message, "⚠️ Формат: <code>Лиза записать @username</code>")
-
-    username = token[1:].strip().lower()
+def add_participant_by_username(cid, username):
+    """Добавляет username в активный конкурс. Возвращает (ok, message)."""
+    username = str(username or "").strip().lstrip("@").lower()
     if not username:
-        return bot.reply_to(message, "⚠️ Укажи username после @.")
-
+        return False, "⚠️ Укажи username после @."
     with _LOCK:
         data = _store()
         session = data.get(str(cid))
         if not session or not session.get("active"):
-            return bot.reply_to(message, "ℹ️ Активной записи нет.")
-
+            return False, "ℹ️ Активной записи нет."
         participants = session.setdefault("participants", {})
-        # Ключом является username — Telegram ID вообще не требуется.
         participant_key = f"username:{username}"
         if participant_key in participants:
-            return bot.reply_to(message, f"ℹ️ @{_escape(username)} уже записан(а).", parse_mode="HTML")
-
+            return False, f"ℹ️ @{_escape(username)} уже записан(а)."
         participants[participant_key] = {
             "username": username,
             "name": username,
@@ -265,13 +244,67 @@ def cmd_add_participant(message, args):
         }
         data[str(cid)] = session
         _save(data)
-
-    bot.reply_to(message, f"✅ @{_escape(username)} добавлен(а) в список участников.", parse_mode="HTML")
-    try:
-        if session.get("last_message_id"):
+    if session.get("last_message_id"):
+        try:
             _refresh_message(cid, session)
+        except Exception:
+            LOG.exception("failed to update contest participant list")
+    return True, f"✅ @{_escape(username)} добавлен(а) в список участников."
+
+
+def remove_participant(cid, participant_key):
+    """Удаляет только участие в текущем конкурсе; историю приглашений не меняет."""
+    with _LOCK:
+        data = _store()
+        session = data.get(str(cid))
+        if not session or not session.get("active"):
+            return False, "ℹ️ Активной записи нет."
+        participants = session.setdefault("participants", {})
+        participant = participants.pop(str(participant_key), None)
+        if participant is None:
+            return False, "ℹ️ Участник уже удалён или не найден."
+        data[str(cid)] = session
+        _save(data)
+    try:
+        _refresh_message(cid, session)
     except Exception:
-        LOG.exception("failed to update contest participant list")
+        LOG.exception("failed to update contest after participant removal")
+    username = participant.get("username")
+    label = f"@{_escape(username)}" if username else _escape(participant.get("name") or participant.get("id") or "участник")
+    return True, f"🗑 {label} удалён(а) из списка участников."
+
+
+def clear_participants(cid):
+    """Очищает только текущий список участников, не трогая приглашения."""
+    with _LOCK:
+        data = _store()
+        session = data.get(str(cid))
+        if not session or not session.get("active"):
+            return False, "ℹ️ Активной записи нет."
+        count = len(session.get("participants", {}) or {})
+        session["participants"] = {}
+        data[str(cid)] = session
+        _save(data)
+    try:
+        _refresh_message(cid, session)
+    except Exception:
+        LOG.exception("failed to update contest after clearing participants")
+    return True, f"🗑 Список участников очищен. Удалено: {count}."
+
+
+def cmd_add_participant(message, args):
+    """Админская ручная запись по username: «Лиза записать @username»."""
+    cid = message.chat.id
+    if message.chat.type not in ("group", "supergroup"):
+        return bot.reply_to(message, "⚠️ Команда работает только в группе.")
+    if not is_chat_admin(cid, message.from_user.id):
+        return bot.reply_to(message, "⛔ Только администратор может добавлять участников.")
+    raw = (args or "").strip()
+    token = raw.split()[0] if raw else ""
+    if not token.startswith("@") or len(token) < 2:
+        return bot.reply_to(message, "⚠️ Формат: <code>Лиза записать @username</code>")
+    ok, text = add_participant_by_username(cid, token)
+    return bot.reply_to(message, text, parse_mode="HTML")
 
 def handle_callback(call):
     parts = (call.data or "").split("|")

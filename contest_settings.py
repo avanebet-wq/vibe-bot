@@ -104,6 +104,7 @@ def settings_kb(gid):
         types.InlineKeyboardButton("⏰ Первая публикация", callback_data=f"rgs|start|{gid}"),
         types.InlineKeyboardButton("📋 Требования", callback_data=f"rgs|req|{gid}"),
         types.InlineKeyboardButton("👥 Количество людей" if req else "👥 Количество людей (выкл)", callback_data=f"rgs|count|{gid}"),
+        types.InlineKeyboardButton("👤 Участники", callback_data=f"rgs|participants|{gid}"),
         types.InlineKeyboardButton("👀 Посмотреть сообщение", callback_data=f"rgs|preview|{gid}"),
         types.InlineKeyboardButton("🗑 Удалить фото", callback_data=f"rgs|photodel|{gid}"),
         types.InlineKeyboardButton("🚀 Запустить", callback_data=f"rgs|launch|{gid}"),
@@ -136,6 +137,43 @@ def _prompt(call, kind, text):
     bot.send_message(call.message.chat.id, text)
 
 
+def _participants_view(gid):
+    from contest import _get
+    session = _get(gid)
+    if not session or not session.get("active"):
+        return ("👤 <b>УЧАСТНИКИ</b>\n\nℹ️ Активного розыгрыша сейчас нет.", types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("◀️ Назад", callback_data=f"rgs|back|{gid}")))
+    participants = session.get("participants", {}) or {}
+    lines = ["👤 <b>УЧАСТНИКИ</b>", ""]
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    if participants:
+        for i, (key, participant) in enumerate(participants.items(), 1):
+            username = participant.get("username")
+            name = participant.get("name") or participant.get("id") or "участник"
+            label = f"@{username}" if username else str(name)
+            lines.append(f"{i}. {_esc(label)}")
+            button_label = f"{i}. {label} — ❌ Удалить"
+            if len(button_label) > 60:
+                button_label = button_label[:57] + "..."
+            kb.add(types.InlineKeyboardButton(button_label, callback_data=f"rgs|pdel|{gid}|{key}"))
+        lines += ["", "Нажмите на участника, чтобы удалить его из текущего списка."]
+    else:
+        lines.append("Список пока пуст.")
+    kb.add(types.InlineKeyboardButton("➕ Добавить участника", callback_data=f"rgs|padd|{gid}"))
+    if participants:
+        kb.add(types.InlineKeyboardButton("🗑 Очистить список", callback_data=f"rgs|pclear|{gid}"))
+    kb.add(types.InlineKeyboardButton("◀️ Назад", callback_data=f"rgs|back|{gid}"))
+    return "\n".join(lines), kb
+
+
+def _edit_participants(call, gid):
+    text, kb = _participants_view(gid)
+    try:
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+
+
 def _require_admin(call, gid):
     if not is_chat_admin(gid, call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Только администратор.", show_alert=True); return False
@@ -158,6 +196,33 @@ def handle_callback(call):
     try: gid = int(parts[2])
     except ValueError: return True
     if not _require_admin(call, gid): return True
+    if action == "participants":
+        bot.answer_callback_query(call.id)
+        return _edit_participants(call, gid)
+    if action == "padd":
+        return _prompt(call, "participant_add", "➕ Введите username участника в формате <code>@username</code>.")
+    if action == "pdel":
+        if len(parts) < 4:
+            bot.answer_callback_query(call.id, "Некорректный участник.", show_alert=True); return True
+        from contest import remove_participant
+        ok, text = remove_participant(gid, parts[3])
+        bot.answer_callback_query(call.id, text, show_alert=True)
+        return _edit_participants(call, gid)
+    if action == "pclear":
+        bot.answer_callback_query(call.id)
+        kb = types.InlineKeyboardMarkup(row_width=2).add(
+            types.InlineKeyboardButton("✅ Да, очистить", callback_data=f"rgs|pclear_yes|{gid}"),
+            types.InlineKeyboardButton("↩️ Отмена", callback_data=f"rgs|participants|{gid}"),
+        )
+        return bot.edit_message_text("🗑 <b>Очистить список участников?</b>\n\nБудут удалены только текущие записи участников. Счётчики приглашений останутся без изменений.", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    if action == "pclear_yes":
+        from contest import clear_participants
+        ok, text = clear_participants(gid)
+        bot.answer_callback_query(call.id, text, show_alert=True)
+        return _edit_participants(call, gid)
+    if action == "back":
+        bot.answer_callback_query(call.id)
+        return _edit(call)
     if action == "text": return _prompt(call, "text", "📝 Отправьте новый текст сообщения розыгрыша одним сообщением.")
     if action == "photo": return _prompt(call, "photo", "📷 Отправьте фотографию для розыгрыша. Подпись у фото будет проигнорирована — текст берётся из настройки сообщения.")
     if action == "photodel":
@@ -236,6 +301,16 @@ def handle_pending(message):
     if not kind: return False
     if not is_chat_admin(message.chat.id,message.from_user.id): _clear_pending(message.chat.id,message.from_user.id); return False
     gid=message.chat.id
+    if kind == "participant_add":
+        raw = (message.text or "").strip()
+        token = raw.split()[0] if raw else ""
+        if not token.startswith("@") or len(token) < 2:
+            bot.reply_to(message, "⚠️ Формат: <code>@username</code>.", parse_mode="HTML"); return True
+        from contest import add_participant_by_username
+        ok, text = add_participant_by_username(gid, token)
+        _clear_pending(gid, message.from_user.id)
+        bot.reply_to(message, text, parse_mode="HTML")
+        return True
     if kind == "text":
         if not message.text: bot.reply_to(message,"⚠️ Нужен текст."); return True
         if len(message.text)>3900: bot.reply_to(message,"⚠️ Текст слишком длинный. Максимум 3900 символов."); return True
