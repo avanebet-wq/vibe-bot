@@ -127,8 +127,16 @@ def _award_xp(chat_id, user_id, kind):
             chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(chat_id,user_id)
         )""")
-        conn.execute("INSERT INTO profile_xp(chat_id,user_id,xp) VALUES(?,?,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET xp=xp+excluded.xp", (str(chat_id), str(user_id), xp))
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO profile_xp(chat_id,user_id,xp) VALUES(?,?,?) "
+                "ON CONFLICT(chat_id,user_id) DO UPDATE SET xp=profile_xp.xp+excluded.xp",
+                (str(chat_id), str(user_id), xp),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return xp, multiplier
 
 
@@ -172,23 +180,31 @@ def _format_wait(seconds):
 
 
 def _try_use(message, kind):
-    ensure_schema()
-    chat_id = message.chat.id
-    user_id, username, display_name = _user_info(message)
-    if user_id == "None":
-        return None
+    try:
+        ensure_schema()
+        chat_id = message.chat.id
+        user_id, username, display_name = _user_info(message)
+        if user_id == "None":
+            return None
 
-    now = time.time()
-    last = _last_use(chat_id, user_id, kind)
-    if last is not None:
-        remaining = COOLDOWN - (now - last)
-        if remaining > 0:
-            return remaining, None
+        now = time.time()
+        last = _last_use(chat_id, user_id, kind)
+        if last is not None:
+            remaining = COOLDOWN - (now - last)
+            if remaining > 0:
+                # Keep a stable return shape for all callers.
+                return remaining, None, None, None
 
-    _record(chat_id, user_id, username, display_name, kind, now)
-    total = _count_all(chat_id, user_id, kind)
-    xp, xp_mult = _award_xp(chat_id, user_id, kind)
-    return 0, total, xp, xp_mult
+        _record(chat_id, user_id, username, display_name, kind, now)
+        total = _count_all(chat_id, user_id, kind)
+        xp, xp_mult = _award_xp(chat_id, user_id, kind)
+        return 0, total, xp, xp_mult
+    except Exception:
+        # psycopg2 leaves the transaction aborted after a failed statement.
+        # Always rollback here so the next bot command can use the connection.
+        with db_lock:
+            conn.rollback()
+        raise
 
 
 
@@ -237,6 +253,8 @@ def cmd_drink(message):
             f"⭐ Опыт: <b>+{xp} XP</b> (×{xp_mult:g})\n"
             f"🕐 Следующая попытка: через <b>{_format_wait(COOLDOWN)}</b>", parse_mode="HTML")
     except Exception:
+        with db_lock:
+            conn.rollback()
         LOG.exception("drink command failed")
 
 def cmd_smoke(message):
