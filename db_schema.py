@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Schema/migration marker for legacy JSON plus normalized tables introduced in v20."""
 from database import conn, db_lock
-SCHEMA_VERSION=23
+SCHEMA_VERSION=24
 
 def ensure_schema():
     with db_lock:

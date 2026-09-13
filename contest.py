@@ -18,6 +18,10 @@ KEY = "contest_sessions"
 INTERVAL = 60
 
 
+def _config_from_session(session):
+    return session.get("config", {}) or {}
+
+
 def _store():
     return db_get(KEY, {}) or {}
 
@@ -45,82 +49,122 @@ def _username(user):
 
 
 def _button_markup(cid, session):
-    # Пользователь сам открывает профиль/карточку группы и нажимает
-    # системную кнопку Telegram «Добавить участников». Лиза отслеживает
-    # фактические добавления по service-message new_chat_members.
     return types.InlineKeyboardMarkup(row_width=1).add(
         types.InlineKeyboardButton("📝 Записаться", callback_data=f"contest|register|{cid}"),
     )
 
 
 def _render(cid, session):
-    required = int(session.get("required", 0))
+    cfg = _config_from_session(session)
+    requirement = cfg.get("requirement", "invite")
+    required = int(cfg.get("required", 1) or 1)
     participants = session.get("participants", {}) or {}
-    lines = [_escape(session.get("text", "")), "", "👥 <b>Участники:</b>"]
+    text = _escape(cfg.get("text") or session.get("text") or "🎉 Розыгрыш!")
+    lines = [text, "", "👥 <b>Участники:</b>"]
     if participants:
         for i, p in enumerate(participants.values(), 1):
-            lines.append(f"{i}. @{_escape(p.get('username'))}")
+            username = p.get("username") or p.get("name") or str(p.get("id", ""))
+            prefix = "@" if p.get("username") else ""
+            lines.append(f"{i}. {prefix}{_escape(username)}")
     else:
         lines.append("Пока никто не записался.")
-    lines += ["", f"➕ Для записи нужно пригласить: <b>{required}</b> чел."]
+    if requirement == "invite":
+        lines += ["", f"📋 Условие участия: пригласить <b>{required}</b> чел. в группу."]
+    else:
+        lines += ["", "📋 Условие участия: <b>без дополнительных требований</b>."]
     return "\n".join(lines)
 
 
 def _send(cid, session):
-    # Перед новой публикацией удаляем предыдущую, чтобы в чате оставалось
-    # только актуальное сообщение с текущим списком участников.
     previous_message_id = session.get("last_message_id")
     if previous_message_id:
-        try:
-            bot.delete_message(cid, previous_message_id)
-        except Exception as exc:
-            # Сообщение могло быть удалено вручную или Telegram мог запретить
-            # удаление из-за срока/прав. Это не должно останавливать запись.
-            LOG.warning("Не удалось удалить предыдущее сообщение конкурса %s/%s: %s", cid, previous_message_id, exc)
-
-    msg = bot.send_message(cid, _render(cid, session), reply_markup=_button_markup(cid, session), parse_mode="HTML")
+        try: bot.delete_message(cid, previous_message_id)
+        except Exception as exc: LOG.warning("Не удалось удалить предыдущее сообщение конкурса %s/%s: %s", cid, previous_message_id, exc)
+    cfg = _config_from_session(session)
+    markup = _button_markup(cid, session)
+    photo = cfg.get("photo")
+    if photo and photo.get("file_id"):
+        msg = bot.send_photo(cid, photo["file_id"], caption=_render(cid, session), reply_markup=markup, parse_mode="HTML")
+    else:
+        msg = bot.send_message(cid, _render(cid, session), reply_markup=markup, parse_mode="HTML")
     session["last_message_id"] = getattr(msg, "message_id", None)
     session["last_sent_at"] = time.time()
     data = _store(); data[str(cid)] = session; _save(data)
     return msg
 
 
+def preview_config(gid, chat_id):
+    cfg = __import__("contest_settings").get_config(gid)
+    session = {"config": cfg, "participants": {
+        "preview1": {"username": "пример_участника"},
+        "preview2": {"username": "ещё_один"},
+    }}
+    if cfg.get("photo", {}).get("file_id"):
+        return bot.send_photo(chat_id, cfg["photo"]["file_id"], caption=_render(gid, session), reply_markup=_button_markup(gid, session), parse_mode="HTML")
+    return bot.send_message(chat_id, _render(gid, session), reply_markup=_button_markup(gid, session), parse_mode="HTML")
+
+
+def _next_run_from_config(cfg):
+    if cfg.get("start_mode") == "now":
+        return time.time()
+    raw = cfg.get("start_time")
+    if not raw: return time.time()
+    try:
+        import datetime
+        now = datetime.datetime.now().astimezone()
+        hh, mm = map(int, raw.split(":"))
+        dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if dt <= now: dt += datetime.timedelta(days=1)
+        return dt.timestamp()
+    except Exception:
+        return time.time()
+
+
+def start_from_config(message, cfg):
+    cid = message.chat.id
+    if not is_chat_admin(cid, message.from_user.id):
+        return bot.reply_to(message, "⛔ Только администратор может запустить розыгрыш.")
+    if not (cfg.get("text") or cfg.get("photo")):
+        return bot.reply_to(message, "⚠️ Сначала настройте текст или фото розыгрыша.")
+    with _LOCK:
+        data = _store()
+        old = data.get(str(cid))
+        if old and old.get("active"):
+            old["active"] = False
+            old["stopped_at"] = time.time()
+        session = {
+            "active": True, "config": dict(cfg), "owner_id": message.from_user.id,
+            "started_at": time.time(), "last_sent_at": 0, "last_message_id": None,
+            "participants": {}, "invites": {}, "invited_users": {},
+            "next_run": _next_run_from_config(cfg),
+        }
+        data[str(cid)] = session; _save(data)
+    if session["next_run"] <= time.time():
+        _send(cid, session)
+        interval = cfg.get("interval_seconds")
+        if interval:
+            session["next_run"] = time.time() + int(interval)
+            data = _store(); data[str(cid)] = session; _save(data)
+    else:
+        bot.reply_to(message, f"⏰ Розыгрыш запланирован на {cfg.get('start_time')}.")
+    return session
+
+
 def cmd_start(message, args):
     cid = message.chat.id
     if message.chat.type not in ("group", "supergroup"):
-        bot.reply_to(message, "⚠️ Команда записи работает только в группе.")
-        return
+        return bot.reply_to(message, "⚠️ Команда записи работает только в группе.")
     if not is_chat_admin(cid, message.from_user.id):
-        bot.reply_to(message, "⛔ Только администратор может запустить запись.")
-        return
-    raw = (args or "").strip()
-    parts = raw.split(maxsplit=1)
+        return bot.reply_to(message, "⛔ Только администратор может запустить запись.")
+    raw = (args or "").strip(); parts = raw.split(maxsplit=1)
     if len(parts) < 2 or not parts[0].isdigit() or int(parts[0]) < 1:
-        bot.reply_to(message, "⚠️ Формат: <code>Лиза запись 2 текст конкурса</code>")
-        return
-    required = int(parts[0])
-    text = parts[1].strip()
-    if not text:
-        bot.reply_to(message, "⚠️ Укажи текст конкурса.")
-        return
-    if is_active(cid):
-        bot.reply_to(message, "⚠️ Запись уже идёт. Сначала: <code>Лиза стоп запись</code>")
-        return
-    session = {
-        "active": True,
-        "required": required,
-        "text": text,
-        "owner_id": message.from_user.id,
-        "started_at": time.time(),
-        "last_sent_at": 0,
-        "last_message_id": None,
-        "participants": {},
-        "invites": {},
-        "invited_users": {},
-    }
-    with _LOCK:
-        data = _store(); data[str(cid)] = session; _save(data)
-    _send(cid, session)
+        return bot.reply_to(message, "⚠️ Формат: <code>Лиза запись 2 текст конкурса</code>")
+    required = int(parts[0]); text = parts[1].strip()
+    if not text: return bot.reply_to(message, "⚠️ Укажи текст конкурса.")
+    if is_active(cid): return bot.reply_to(message, "⚠️ Запись уже идёт. Сначала: <code>Лиза стоп запись</code>")
+    cfg = __import__("contest_settings").get_config(cid)
+    cfg.update({"text": text, "requirement": "invite", "required": required, "start_mode": "now"})
+    return start_from_config(message, cfg)
 
 
 def cmd_stop(message):
@@ -143,6 +187,19 @@ def cmd_stop(message):
 
 
 
+
+def _refresh_message(cid, session):
+    mid = session.get("last_message_id")
+    if not mid: return
+    cfg = _config_from_session(session)
+    try:
+        if cfg.get("photo", {}).get("file_id"):
+            bot.edit_message_caption(_render(cid, session), cid, mid, reply_markup=_button_markup(cid, session), parse_mode="HTML")
+        else:
+            bot.edit_message_text(_render(cid, session), cid, mid, reply_markup=_button_markup(cid, session), parse_mode="HTML")
+    except Exception:
+        LOG.exception("failed to refresh contest message %s/%s", cid, mid)
+
 def _register(call, cid, session):
     user = call.from_user
     uid = user.id
@@ -152,19 +209,17 @@ def _register(call, cid, session):
     participants = session.setdefault("participants", {})
     if str(uid) in participants:
         return bot.answer_callback_query(call.id, "Ты уже записан(а).", show_alert=True)
-    invited = session.setdefault("invited_users", {}).get(str(uid), [])
-    # Уникальные люди, которых этот пользователь реально добавил в группу.
-    invited_count = len(invited)
-    required = int(session.get("required", 0))
-    if invited_count < required:
-        return bot.answer_callback_query(call.id, f"Нужно пригласить ещё {required - invited_count} чел.", show_alert=True)
+    cfg = _config_from_session(session)
+    if cfg.get("requirement", "invite") == "invite":
+        invited = session.setdefault("invited_users", {}).get(str(uid), [])
+        invited_count = len(invited)
+        required = int(cfg.get("required", 1) or 1)
+        if invited_count < required:
+            return bot.answer_callback_query(call.id, f"Нужно пригласить ещё {required - invited_count} чел.", show_alert=True)
     participants[str(uid)] = {"id": uid, "username": username, "name": user.first_name or username, "registered_at": time.time()}
     data = _store(); data[str(cid)] = session; _save(data)
     bot.answer_callback_query(call.id, "✅ Ты записан(а) в конкурс!")
-    try:
-        bot.edit_message_text(_render(cid, session), cid, call.message.message_id, reply_markup=_button_markup(cid, session), parse_mode="HTML")
-    except Exception:
-        pass
+    _refresh_message(cid, session)
 
 
 def cmd_add_participant(message, args):
@@ -214,10 +269,7 @@ def cmd_add_participant(message, args):
     bot.reply_to(message, f"✅ @{_escape(username)} добавлен(а) в список участников.", parse_mode="HTML")
     try:
         if session.get("last_message_id"):
-            bot.edit_message_text(
-                _render(cid, session), cid, session["last_message_id"],
-                reply_markup=_button_markup(cid, session), parse_mode="HTML"
-            )
+            _refresh_message(cid, session)
     except Exception:
         LOG.exception("failed to update contest participant list")
 
@@ -313,20 +365,27 @@ def handle_chat_member(update):
 
 def tick(bot_instance=None):
     now = time.time()
-    changed = False
     with _LOCK:
         data = _store()
+        dirty = False
         for cid_text, session in list(data.items()):
-            if not session.get("active"):
-                continue
-            if now - float(session.get("last_sent_at") or 0) < INTERVAL:
-                continue
+            if not session.get("active"): continue
+            next_run = float(session.get("next_run") or 0)
+            if next_run > now: continue
             try:
-                _send(int(cid_text), session)
+                cid = int(cid_text)
+                _send(cid, session)
+                interval = _config_from_session(session).get("interval_seconds")
+                if interval:
+                    nr = next_run
+                    while nr <= now: nr += int(interval)
+                    session["next_run"] = nr
+                else:
+                    session["active"] = False
+                data[str(cid)] = session; dirty = True
             except Exception:
                 LOG.exception("contest periodic send failed for %s", cid_text)
-        if changed:
-            _save(data)
+        if dirty: _save(data)
 
 
 @bot.message_handler(content_types=["new_chat_members"])

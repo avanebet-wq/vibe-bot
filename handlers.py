@@ -8,6 +8,7 @@ from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
 from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
 from profile import cmd_profile, touch_user
+from contest_settings import open_settings as contest_settings_open, handle_pending as contest_settings_pending
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
@@ -61,6 +62,7 @@ _COMPOUND_COMMANDS = [
     ("мут за варны", cmd_set_warn_mute_duration),
     ("моя статистика", lambda m, a: cmd_stats(m, "моя")),
     ("статистика пользователя", lambda m, a: cmd_stats(m, "пользователь " + a)),
+    ("настройки розыгрыша", lambda m, a: contest_settings_open(m)),
     ("стоп запись", lambda m, a: contest_stop(m)),
     ("добавить", lambda m, a: contest_add_participant(m, a)),
     ("записать", lambda m, a: contest_add_participant(m, a)),
@@ -346,6 +348,8 @@ def text_handler(message):
                 return
             track_message(cid, message.message_id)
 
+        if contest_settings_pending(message):
+            return
         if try_handle_pending_input(message):
             return
 

@@ -865,6 +865,12 @@ def _on_media_message(message):
             if enforce_silence(message):
                 return
             track_message(message.chat.id, message.message_id)
+        try:
+            from contest_settings import handle_pending as contest_settings_pending
+            if contest_settings_pending(message):
+                return
+        except Exception:
+            pass
         if try_handle_pending_input(message):
             return
     except Exception as e:
