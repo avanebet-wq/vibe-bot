@@ -65,7 +65,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
             if role in ("user","assistant") and content: messages.append({"role":role,"content":str(content)[:2600]})
     except Exception: pass
     messages.append({"role":"user","content":str(user_text or "")[:2200]})
-    payload={"model":AI_MODEL,"messages":messages,"max_tokens":max(40,min(int(max_tokens),800)),"temperature":0.72}
+    payload={"model":AI_MODEL,"messages":messages,"max_completion_tokens":max(80,min(int(max_tokens),1200)),"temperature":0.68,"reasoning_effort":"high","include_reasoning":False}
     for attempt in range(max(1,len(_key_list))):
         key=_current_key()
         if not key: break

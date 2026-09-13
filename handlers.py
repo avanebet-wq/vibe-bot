@@ -17,6 +17,8 @@ from mood_state import decay as decay_mood
 """Разбор сообщений и маршрутизация команд Лизы."""
 import random
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from runtime import bot, WAKE_RE, BOT_ID
 from config import STORY_AUTOTELL_CHANCE, BAD_WORDS
@@ -205,6 +207,38 @@ def _apply_polite_filter(cid, text):
     return text
 
 
+def _ask_liza_with_typing(message, *args, **kwargs):
+    """Ask the AI in the background while showing Telegram's typing indicator.
+
+    The indicator stays visible for roughly 2–4 seconds depending on the
+    message length, and is refreshed every few seconds because Telegram
+    expires chat actions automatically.
+    """
+    text_for_delay = str(args[0] if args else kwargs.get("user_text", "") or "")
+    target_duration = 2.0 + min(2.0, len(text_for_delay) / 300.0)
+    started = time.monotonic()
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="liza-ai-reply")
+    future = executor.submit(ask_liza, *args, **kwargs)
+    try:
+        while not future.done():
+            try:
+                bot.send_chat_action(message.chat.id, "typing")
+            except Exception:
+                pass
+            time.sleep(1.0)
+        elapsed = time.monotonic() - started
+        while elapsed < target_duration:
+            try:
+                bot.send_chat_action(message.chat.id, "typing")
+            except Exception:
+                pass
+            time.sleep(min(1.0, target_duration - elapsed))
+            elapsed = time.monotonic() - started
+        return future.result()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=False)
+
+
 def _safe_reply(message, text):
     """reply_to, но никогда не отправляет пустое сообщение (Telegram это запрещает)."""
     if not text or not text.strip():
@@ -327,7 +361,7 @@ def text_handler(message):
                     cid, getattr(message.from_user, "id", None), active_text
                 )
                 record_liza_request(cid, getattr(message.from_user, "id", None))
-                reply = ask_liza(
+                reply = _ask_liza_with_typing(message,
                     active_text,
                     angry=is_angry(cid),
                     chat_id=cid,
@@ -409,7 +443,7 @@ def text_handler(message):
                 return
             # Обратились по имени, но это не команда — считаем, что это вопрос к AI.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = ask_liza(cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
+            reply = _ask_liza_with_typing(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
             record_liza_response(cid, getattr(message.from_user, "id", None))
             reply = _apply_polite_filter(cid, reply)
             _safe_reply(message, reply)
@@ -421,7 +455,7 @@ def text_handler(message):
         if not is_group:
             # Личка — общаемся без обращения по имени.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = ask_liza(text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
+            reply = _ask_liza_with_typing(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
             record_liza_response(cid, getattr(message.from_user, "id", None))
             reply = _apply_polite_filter(cid, reply)
             _safe_reply(message, reply)
@@ -430,7 +464,7 @@ def text_handler(message):
         # Групповой чат, сообщение не адресовано напрямую.
         if addressed:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = ask_liza(text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
+            reply = _ask_liza_with_typing(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
             record_liza_response(cid, getattr(message.from_user, "id", None))
             reply = _apply_polite_filter(cid, reply)
             _safe_reply(message, reply)
@@ -447,7 +481,7 @@ def text_handler(message):
         chance = get_chatter_chance(cid)
         if random.random() < chance:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = ask_liza(text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
+            reply = _ask_liza_with_typing(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
             record_liza_response(cid, getattr(message.from_user, "id", None))
             reply = _apply_polite_filter(cid, reply)
             _safe_send(cid, reply)
