@@ -6,26 +6,24 @@ from social_context import summary as social_summary
 from chat_personality import get as get_chat_personality
 from security import allow
 from utils import get_setting
-import logging, random, requests, time
+import logging, threading, requests, time
 from config import GROQ_KEY, AI_MODEL, SYS_PROMPT_NORMAL, SYS_PROMPT_ANGRY
 
 _key_list=[k.strip() for k in GROQ_KEY.split(",") if k.strip()]
 _key_idx=0
-class ConversationMemory:
-    def __init__(self,max_messages=12): self.max_messages=max_messages; self._data={}
-    def get(self,chat_id): return list(self._data.get(str(chat_id),[]))
-    def add(self,chat_id,role,content):
-        key=str(chat_id); self._data.setdefault(key,[]).append({"role":role,"content":str(content)[:4000]}); self._data[key]=self._data[key][-self.max_messages:]
-    def clear(self,chat_id): self._data.pop(str(chat_id),None)
-    def trim(self,chat_id,max_messages=None): self._data.setdefault(str(chat_id),[]); self._data[str(chat_id)]=self._data[str(chat_id)][-(max_messages or self.max_messages):]
-conversation_memory=ConversationMemory()
+_key_lock=threading.Lock()
 try:
     from conversation_memory import conversation_memory as persistent_conversation_memory
 except Exception: persistent_conversation_memory=None
 
-def _current_key(): return _key_list[_key_idx%len(_key_list)] if _key_list else None
+def _current_key():
+    with _key_lock:
+        return _key_list[_key_idx % len(_key_list)] if _key_list else None
+
 def _switch_key():
-    global _key_idx; _key_idx+=1
+    global _key_idx
+    with _key_lock:
+        _key_idx += 1
 def clean_response(text):
     text=str(text or "").strip().replace("<think>","").replace("</think>","").replace("```","")
     text=text.replace("(","").replace(")","")
@@ -35,10 +33,11 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
     # Do not show rate-limit or transport fallbacks to the user. The AI layer
     # keeps retrying until it gets an actual answer (or an available key).
     if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}",8,20):
-        logging.info("[ai] rate limit reached; still processing request for %s", chat_id)
+        logging.warning("[ai] rate limit reached for %s", chat_id)
+        return "Слишком много запросов подряд. Подожди немного и повтори обращение."
     if not _key_list:
         logging.error("[ai] GROQ_API_KEY is not configured")
-        return "Сейчас не могу получить ответ от сервиса ИИ."
+        return "Сервис ИИ временно недоступен. Попробуй обратиться чуть позже."
     sys_prompt=SYS_PROMPT_ANGRY if angry else SYS_PROMPT_NORMAL; extra=[]
     try: extra.append(build_personality_prompt(personality or (get_chat_personality(chat_id) if chat_id is not None else None)))
     except Exception: pass
@@ -55,13 +54,19 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
         except Exception: pass
         try:
             dc=_format_dialogue_context(chat_id,limit=10)
-            if dc: extra.append("Структурированный диалог:\n"+dc[:6500])
-        except Exception: pass
+            if dc:
+                dc_text = "\n".join(
+                    f"{item.get('role','user')}: {item.get('content','')}"
+                    for item in dc if isinstance(item, dict)
+                )
+                extra.append("Структурированный диалог:\n"+dc_text[:6500])
+        except Exception:
+            logging.exception("[ai] failed to build structured dialogue context")
     if group_context: extra.append("Контекст последних сообщений группы:\n"+str(group_context)[:6500])
     if extra: sys_prompt += "\n\n"+"\n".join(extra)
     messages=[{"role":"system","content":sys_prompt}]
     try:
-        mem=persistent_conversation_memory or conversation_memory
+        mem=persistent_conversation_memory
         for item in mem.get(chat_id)[-10:] if chat_id is not None else []:
             role=item.get("role") if isinstance(item,dict) else "user"; content=item.get("content","") if isinstance(item,dict) else str(item)
             if role in ("user","assistant") and content: messages.append({"role":role,"content":str(content)[:2600]})
@@ -73,7 +78,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
     # malformed answer, retry with progressively simpler settings. This avoids
     # exposing artificial fallback phrases to the user.
     reasoning_modes=("high","medium","low")
-    total_attempts=max(3,len(_key_list)*2)
+    total_attempts=min(4, max(3, len(_key_list)))
     last_error=None
     for attempt in range(total_attempts):
         key=_current_key()
@@ -103,7 +108,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                 if cleaned:
                     if chat_id is not None:
                         try:
-                            mem=persistent_conversation_memory or conversation_memory
+                            mem=persistent_conversation_memory
                             mem.add(chat_id,"user",user_text)
                             mem.add(chat_id,"assistant",cleaned)
                         except Exception: pass
@@ -150,7 +155,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                 if cleaned:
                     if chat_id is not None:
                         try:
-                            mem=persistent_conversation_memory or conversation_memory
+                            mem=persistent_conversation_memory
                             mem.add(chat_id,"user",user_text); mem.add(chat_id,"assistant",cleaned)
                         except Exception: pass
                     return cleaned
@@ -158,5 +163,5 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
             logging.error("[ai] final retry failed: %s",exc)
 
     logging.error("[ai] no answer after all retries: %s",last_error)
-    return "Я не смогла получить ответ от ИИ прямо сейчас."
+    return "Сервис ИИ временно недоступен. Попробуй обратиться чуть позже."
 

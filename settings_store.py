@@ -2,7 +2,7 @@
 """Хранилище данных для меню настроек: капча, повторяющиеся публикации, удаление."""
 import threading
 
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
 
 _lock = threading.RLock()
 
@@ -108,9 +108,10 @@ def get_all_settings(gid):
 
 def save_all_settings(gid, chat):
     with _lock:
-        store = db_get("group_settings", {})
-        store[str(gid)] = chat
-        db_set("group_settings", store)
+        def mutate(store):
+            store[str(gid)] = chat
+            return store
+        db_update_json("group_settings", mutate, {})
 
 
 def get_liza(gid):
@@ -240,16 +241,18 @@ def get_known_groups():
 
 def register_known_group(gid, title):
     with _lock:
-        groups = db_get("known_groups", {})
-        groups[str(gid)] = title or str(gid)
-        db_set("known_groups", groups)
+        def mutate(groups):
+            groups[str(gid)] = title or str(gid)
+            return groups
+        db_update_json("known_groups", mutate, {})
 
 
 def remove_known_group(gid):
     with _lock:
-        groups = db_get("known_groups", {})
-        if groups.pop(str(gid), None) is not None:
-            db_set("known_groups", groups)
+        def mutate(groups):
+            groups.pop(str(gid), None)
+            return groups
+        db_update_json("known_groups", mutate, {})
 
 
 # ---------------------------------------------------------------------------

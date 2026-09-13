@@ -18,9 +18,8 @@ from mood_state import decay as decay_mood
 import random
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
 
-from runtime import bot, WAKE_RE, BOT_ID
+from runtime import bot, WAKE_RE, BOT_ID, ai_executor
 from config import STORY_AUTOTELL_CHANCE, BAD_WORDS
 from utils import get_setting, set_setting, remember_user
 from mood import (
@@ -217,8 +216,7 @@ def _ask_liza_with_typing(message, *args, **kwargs):
     text_for_delay = str(args[0] if args else kwargs.get("user_text", "") or "")
     target_duration = 2.0 + min(2.0, len(text_for_delay) / 300.0)
     started = time.monotonic()
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="liza-ai-reply")
-    future = executor.submit(ask_liza, *args, **kwargs)
+    future = ai_executor.submit(ask_liza, *args, **kwargs)
     try:
         while not future.done():
             try:
@@ -236,13 +234,13 @@ def _ask_liza_with_typing(message, *args, **kwargs):
             elapsed = time.monotonic() - started
         return future.result()
     finally:
-        executor.shutdown(wait=False, cancel_futures=False)
+        pass
 
 
 def _safe_reply(message, text):
     """reply_to, но никогда не отправляет пустое сообщение (Telegram это запрещает)."""
     if not text or not text.strip():
-        text = "🙃 Не нашлась, что ответить."
+        text = "Не получилось сформировать ответ. Попробуй ещё раз через мгновение."
     bot.reply_to(message, text)
 
 

@@ -16,6 +16,7 @@ from telebot.types import ChatPermissions
 from runtime import bot, BOT_ID, BOT_USERNAME
 from config import TZ
 from utils import is_chat_admin, parse_duration, format_seconds, get_mention
+from reliability import stopped
 
 import settings_store as store
 import settings_ui as ui
@@ -695,11 +696,13 @@ def _delayed_delete(chat_id, message_id):
 
 
 def _scheduler_loop():
-    while True:
+    while not stopped():
         try:
             _scheduler_tick()
         except Exception as e:
             log.error(f"[scheduler] {e}", exc_info=True)
+        if stopped():
+            break
         time.sleep(20)
 
 

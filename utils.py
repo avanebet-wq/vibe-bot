@@ -6,7 +6,7 @@ import html
 import logging
 
 from runtime import bot
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
 
 # ---------- Настройки чата (простое key/value по чатам) ----------
 
@@ -16,10 +16,10 @@ def get_setting(cid, key, default=None):
 
 
 def set_setting(cid, key, value):
-    store = db_get("chat_settings", {})
-    chat = store.setdefault(str(cid), {})
-    chat[key] = value
-    db_set("chat_settings", store)
+    def mutate(store):
+        store.setdefault(str(cid), {})[key] = value
+        return store
+    db_update_json("chat_settings", mutate, {})
 
 
 # ---------- Разбор длительности ("10м", "2ч", "1д", "навсегда") ----------
@@ -44,9 +44,9 @@ def parse_duration(time_str):
         return 0, False
     value = int(m.group(1))
     unit = m.group(2)
-    for prefix, mult in sorted(_UNITS.items(), key=lambda x: -len(x[0])):
-        if unit.startswith(prefix):
-            return value * mult, True
+    mult = _UNITS.get(unit)
+    if mult is not None:
+        return value * mult, True
     return 0, False
 
 
@@ -77,9 +77,10 @@ def remember_user(user):
     """Кэш username -> id, чтобы потом можно было банить/мутить по @username."""
     if not user or not user.username:
         return
-    cache = db_get("known_users", {})
-    cache[user.username.lower()] = {"id": user.id, "name": user.first_name or user.username}
-    db_set("known_users", cache)
+    def mutate(cache):
+        cache[user.username.lower()] = {"id": user.id, "name": user.first_name or user.username}
+        return cache
+    db_update_json("known_users", mutate, {})
 
 
 def _lookup_username(chat_id, username):

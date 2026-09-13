@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Application lifecycle: health, backups, plugins and graceful shutdown."""
-import atexit, logging, signal
+"""Application lifecycle: health, plugins and graceful shutdown."""
+import logging, signal
 from plugins import discover
-from reliability import stop, safe_loop, health
+from reliability import stop, safe_loop
 from goals import due, mark_notified
 from contest import tick as contest_tick
 LOG=logging.getLogger(__name__)

@@ -2,7 +2,7 @@
 """Persistent per-chat mood/energy state with bounded decay."""
 import time
 from collections import defaultdict
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
 _LOCK=None
 _DEFAULT={"mood":60,"energy":65,"irritation":10,"talkativeness":55,"updated":0.0}
 _STATE=defaultdict(dict)
@@ -15,7 +15,11 @@ def _load(chat_id):
 
 def get(chat_id): return dict(_load(chat_id))
 def _save(chat_id):
-    st=_load(chat_id); store=db_get("mood_state",{}); store[str(chat_id)]=dict(st); db_set("mood_state",store)
+    st=_load(chat_id)
+    def mutate(store):
+        store[str(chat_id)] = dict(st)
+        return store
+    db_update_json("mood_state", mutate, {})
 
 def change(chat_id,*,mood=0,energy=0,irritation=0,talkativeness=0):
     st=_load(chat_id); st["mood"]=_clamp(st["mood"]+mood); st["energy"]=_clamp(st["energy"]+energy); st["irritation"]=_clamp(st["irritation"]+irritation); st["talkativeness"]=_clamp(st["talkativeness"]+talkativeness); st["updated"]=time.time(); _save(chat_id); return dict(st)

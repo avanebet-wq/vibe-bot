@@ -8,10 +8,11 @@ from database import conn, db_lock
 
 
 class PersistentConversationMemory:
-    def __init__(self, db_path: str = "liza_memory.sqlite3", max_messages: int = 20):
-        # db_path is kept for API compatibility; storage is now PostgreSQL.
+    def __init__(self, db_path: str | None = None, max_messages: int = 20):
+        # db_path is ignored; storage is PostgreSQL. Kept only for compatibility.
         self.max_messages = max(2, int(max_messages))
         self._lock = Lock()
+        self._cleanup_counter = {}
         self._init_db()
 
     def _init_db(self):
@@ -55,19 +56,23 @@ class PersistentConversationMemory:
                     "INSERT INTO conversation_memory(chat_id, role, content) VALUES (%s, %s, %s)",
                     (str(chat_id), role, content),
                 )
-                conn.execute(
-                    """
-                    DELETE FROM conversation_memory
-                    WHERE chat_id = %s
-                      AND id NOT IN (
-                        SELECT id FROM conversation_memory
+                key = str(chat_id)
+                self._cleanup_counter[key] = self._cleanup_counter.get(key, 0) + 1
+                if self._cleanup_counter[key] >= 5:
+                    conn.execute(
+                        """
+                        DELETE FROM conversation_memory
                         WHERE chat_id = %s
-                        ORDER BY id DESC
-                        LIMIT %s
-                      )
-                    """,
-                    (str(chat_id), str(chat_id), self.max_messages),
-                )
+                          AND id NOT IN (
+                            SELECT id FROM conversation_memory
+                            WHERE chat_id = %s
+                            ORDER BY id DESC
+                            LIMIT %s
+                          )
+                        """,
+                        (key, key, self.max_messages),
+                    )
+                    self._cleanup_counter[key] = 0
                 conn.commit()
             except Exception:
                 conn.rollback()

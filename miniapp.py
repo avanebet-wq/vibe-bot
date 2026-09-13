@@ -26,7 +26,10 @@ log = logging.getLogger("miniapp")
 
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_PATH = BASE_DIR / "miniapp_index.html"
-MAX_INIT_DATA_AGE = 3600
+MAX_INIT_DATA_AGE = 300
+_REPLAY_TTL = MAX_INIT_DATA_AGE
+_replay_lock = threading.RLock()
+_replay_seen = {}
 MAX_BODY = 256 * 1024
 ALLOWED_TYPES = {
     "url", "popup", "alert", "share", "copy", "rules",
@@ -64,6 +67,17 @@ def validate_init_data(init_data: str) -> dict:
 
     if not hmac.compare_digest(calculated, received_hash):
         raise ValueError("invalid initData hash")
+
+    query_id = pairs.get("query_id")
+    if query_id:
+        now = time.time()
+        with _replay_lock:
+            expired = [k for k, ts in _replay_seen.items() if now - ts > _REPLAY_TTL]
+            for k in expired:
+                _replay_seen.pop(k, None)
+            if query_id in _replay_seen:
+                raise ValueError("initData replay detected")
+            _replay_seen[query_id] = now
 
     user_raw = pairs.get("user")
     if not user_raw:
@@ -266,6 +280,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._send(200, data, "text/html; charset=utf-8")
 
             if parsed.path == "/health":
+                return self._json(200, {"ok": True, "service": "liza-miniapp"})
+
+            if parsed.path == "/api/health":
+                _auth_user(self)
                 return self._json(200, {"ok": True, "service": "liza-miniapp", "health": health()})
 
             if parsed.path == "/api/dashboard":
@@ -350,9 +368,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
 
 def start_server():
     port = int(os.environ.get("PORT", "8080"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), MiniAppHandler)
-    log.info("Mini App server started on 0.0.0.0:%s", port)
-    server.serve_forever()
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", port), MiniAppHandler)
+        log.info("Mini App server started on 0.0.0.0:%s", port)
+        server.serve_forever()
+    except Exception:
+        log.exception("Mini App server stopped unexpectedly")
 
 
 def start_miniapp_server():

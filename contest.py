@@ -8,7 +8,7 @@ from utils import _lookup_username, remember_user
 
 from telebot import types
 
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
 from runtime import bot, BOT_ID
 from utils import is_chat_admin
 

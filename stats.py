@@ -12,7 +12,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from runtime import bot
 from config import TZ
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
 
 DAYS_KEPT = 30
 
@@ -66,61 +66,72 @@ def record_message(message):
         day = now.strftime("%Y-%m-%d")
         hour = str(now.hour)
 
-        store = _store()
-        chat = _ensure_chat(store, cid)
-        chat["names"][uid] = name
-        day_bucket = chat["days"].setdefault(day, {})
-        day_bucket[uid] = day_bucket.get(uid, 0) + 1
-        hour_bucket = chat["hours"].setdefault(day, {})
-        hour_bucket[hour] = hour_bucket.get(hour, 0) + 1
-        _trim(chat)
-        _save(store)
-    except Exception as e:
-        logging.error(f"[record_message] {e}")
+        def mutate(store):
+            chat = _ensure_chat(store, cid)
+            chat["names"][uid] = name
+            day_bucket = chat["days"].setdefault(day, {})
+            day_bucket[uid] = day_bucket.get(uid, 0) + 1
+            hour_bucket = chat["hours"].setdefault(day, {})
+            hour_bucket[hour] = hour_bucket.get(hour, 0) + 1
+            _trim(chat)
+            return store
+
+        db_update_json("stats", mutate, {})
+    except Exception:
+        logging.exception("stats.record_message failed")
 
 
 def record_command(cid, command):
     try:
-        store = _store(); chat = _ensure_chat(store, cid)
         key = str(command).strip().lower()[:40]
-        if key:
+        if not key: return
+        def mutate(store):
+            chat = _ensure_chat(store, cid)
             chat["commands"][key] = int(chat["commands"].get(key, 0)) + 1
-        _save(store)
+            return store
+        db_update_json("stats", mutate, {})
     except Exception as e:
-        logging.error(f"[record_command] {e}")
+        logging.error(f"[record_command] {e}", exc_info=True)
 
 
 def record_liza_request(cid, user_id=None):
     try:
-        store = _store(); chat = _ensure_chat(store, cid)
-        chat["liza"]["requests"] = int(chat["liza"].get("requests", 0)) + 1
-        if user_id is not None:
-            u = chat["liza_users"].setdefault(str(user_id), {"requests": 0, "replies": 0})
-            u["requests"] = int(u.get("requests", 0)) + 1
-        _save(store)
+        def mutate(store):
+            chat = _ensure_chat(store, cid)
+            chat["liza"]["requests"] = int(chat["liza"].get("requests", 0)) + 1
+            if user_id is not None:
+                u = chat["liza_users"].setdefault(str(user_id), {"requests": 0, "replies": 0})
+                u["requests"] = int(u.get("requests", 0)) + 1
+            return store
+        db_update_json("stats", mutate, {})
     except Exception as e:
-        logging.error(f"[record_liza_request] {e}")
+        logging.error(f"[record_liza_request] {e}", exc_info=True)
 
 
 def record_liza_response(cid, user_id=None):
     try:
-        store = _store(); chat = _ensure_chat(store, cid)
-        chat["liza"]["replies"] = int(chat["liza"].get("replies", 0)) + 1
-        if user_id is not None:
-            u = chat["liza_users"].setdefault(str(user_id), {"requests": 0, "replies": 0})
-            u["replies"] = int(u.get("replies", 0)) + 1
-        _save(store)
+        def mutate(store):
+            chat = _ensure_chat(store, cid)
+            chat["liza"]["replies"] = int(chat["liza"].get("replies", 0)) + 1
+            if user_id is not None:
+                u = chat["liza_users"].setdefault(str(user_id), {"requests": 0, "replies": 0})
+                u["replies"] = int(u.get("replies", 0)) + 1
+            return store
+        db_update_json("stats", mutate, {})
     except Exception as e:
-        logging.error(f"[record_liza_response] {e}")
+        logging.error(f"[record_liza_response] {e}", exc_info=True)
 
 
 def record_moderation(cid, action):
     try:
-        store = _store(); chat = _ensure_chat(store, cid)
-        chat["moderation"][action] = int(chat["moderation"].get(action, 0)) + 1
-        _save(store)
+        def mutate(store):
+            chat = _ensure_chat(store, cid)
+            chat["moderation"][action] = int(chat["moderation"].get(action, 0)) + 1
+            return store
+        db_update_json("stats", mutate, {})
     except Exception as e:
-        logging.error(f"[record_moderation] {e}")
+        logging.error(f"[record_moderation] {e}", exc_info=True)
+
 
 
 def _period_days(period):

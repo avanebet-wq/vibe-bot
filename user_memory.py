@@ -2,7 +2,7 @@
 """Persistent per-user facts with bounded storage and privacy-friendly controls."""
 import re
 import time
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
 
 MAX_FACTS = 40
 MIN_FACT_IMPORTANCE = 0
@@ -24,24 +24,39 @@ def get_facts(chat_id, user_id, limit=12):
 def add_fact(chat_id, user_id, fact, source="conversation"):
     fact = re.sub(r"\s+", " ", str(fact or "")).strip()[:MAX_FACT_LEN]
     if len(fact) < 3: return False
-    s = _store(); key = _key(chat_id, user_id); row = s.setdefault(key, {"facts": []})
-    facts = row.setdefault("facts", [])
-    normalized = fact.casefold()
-    if any(x.get("text", "").casefold() == normalized for x in facts): return False
-    facts.append({"text": fact, "source": str(source)[:40], "at": time.time(), "importance": 1})
-    row["facts"] = facts[-MAX_FACTS:]
-    _save(s); return True
+    added = False
+    def mutate(s):
+        nonlocal added
+        key = _key(chat_id, user_id); row = s.setdefault(key, {"facts": []})
+        facts = row.setdefault("facts", [])
+        normalized = fact.casefold()
+        if any(x.get("text", "").casefold() == normalized for x in facts): return s
+        facts.append({"text": fact, "source": str(source)[:40], "at": time.time(), "importance": 1})
+        row["facts"] = facts[-MAX_FACTS:]
+        added = True
+        return s
+    db_update_json("user_memory", mutate, {})
+    return added
 
 def clear(chat_id, user_id):
-    s = _store(); s.pop(_key(chat_id, user_id), None); _save(s)
+    def mutate(s):
+        s.pop(_key(chat_id, user_id), None)
+        return s
+    db_update_json("user_memory", mutate, {})
 
 def forget_fact(chat_id, user_id, index):
-    s = _store(); key = _key(chat_id, user_id); row = s.get(key)
-    if not row: return False
-    facts = row.get("facts", [])
-    try: facts.pop(int(index)-1)
-    except (ValueError, IndexError): return False
-    row["facts"] = facts; _save(s); return True
+    removed = False
+    def mutate(s):
+        nonlocal removed
+        key = _key(chat_id, user_id); row = s.get(key)
+        if not row: return s
+        facts = row.get("facts", [])
+        try: facts.pop(int(index)-1)
+        except (ValueError, IndexError): return s
+        row["facts"] = facts; removed = True
+        return s
+    db_update_json("user_memory", mutate, {})
+    return removed
 
 def format_facts(chat_id, user_id):
     facts = get_facts(chat_id, user_id)

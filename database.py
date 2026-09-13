@@ -23,10 +23,8 @@ from pathlib import Path
 
 try:
     import psycopg2
-    from psycopg2.extras import RealDictCursor
 except Exception as exc:  # pragma: no cover - dependency is installed in production
     psycopg2 = None
-    RealDictCursor = None
     _PG_IMPORT_ERROR = exc
 else:
     _PG_IMPORT_ERROR = None
@@ -59,16 +57,54 @@ class _PGConnection:
     def __init__(self, raw):
         self.raw = raw
 
+    def _reconnect(self):
+        global _raw_conn
+        old = self.raw
+        try:
+            old.close()
+        except Exception:
+            pass
+        _require_pg()
+        new_raw = psycopg2.connect(DATABASE_URL, connect_timeout=10, application_name="liza")
+        new_raw.autocommit = False
+        self.raw = new_raw
+        _raw_conn = new_raw
+
     def execute(self, sql, params=None):
-        cur = self.raw.cursor()
-        cur.execute(_translate_sql(sql), params)
-        return cur
+        text = _translate_sql(sql)
+        for attempt in range(2):
+            try:
+                cur = self.raw.cursor()
+                cur.execute(text, params)
+                return cur
+            except psycopg2.OperationalError:
+                if attempt == 0:
+                    LOG.warning("PostgreSQL connection lost; reconnecting")
+                    self._reconnect()
+                    continue
+                raise
+
 
     def commit(self):
-        self.raw.commit()
+        for attempt in range(2):
+            try:
+                self.raw.commit()
+                return
+            except psycopg2.OperationalError:
+                if attempt == 0:
+                    LOG.warning("PostgreSQL commit failed; reconnecting")
+                    self._reconnect()
+                    continue
+                raise
 
     def rollback(self):
-        self.raw.rollback()
+        try:
+            self.raw.rollback()
+        except psycopg2.OperationalError:
+            try:
+                self._reconnect()
+            except Exception:
+                pass
 
     def close(self):
         self.raw.close()
@@ -266,6 +302,38 @@ def db_set(key, value):
             conn.rollback()
             logging.error(f"DB Write Error [{key}]: {e}")
             return False
+
+
+def db_update_json(key, mutator, default=None):
+    """Atomically read-modify-write one JSON value under the DB lock.
+
+    The mutator receives a mutable Python object and may return a replacement
+    value. The whole operation is serialized with other database operations,
+    preventing lost updates from concurrent Telegram handlers.
+    """
+    with db_lock:
+        try:
+            cur = conn.execute("SELECT value FROM store WHERE key=%s FOR UPDATE", (key,))
+            row = cur.fetchone()
+            current = json.loads(row[0]) if row else default
+            if current is None:
+                current = default
+            result = mutator(current)
+            if result is None:
+                result = current
+            encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            conn.execute(
+                "INSERT INTO store(key,value) VALUES(%s,%s) "
+                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+                (key, encoded),
+            )
+            conn.commit()
+            _cache[key] = (time.monotonic(), result)
+            return result
+        except Exception as exc:
+            conn.rollback()
+            LOG.error("DB Atomic JSON Update Error [%s]: %s", key, exc, exc_info=True)
+            raise
 
 
 def db_invalidate(key=None):

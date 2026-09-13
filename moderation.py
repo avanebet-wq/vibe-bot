@@ -7,7 +7,8 @@ from telebot.types import ChatPermissions
 
 from runtime import bot, BOT_ID
 from config import DEFAULT_WARN_LIMIT, DEFAULT_WARN_ACTION, DEFAULT_WARN_MUTE_SECONDS
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
+from reliability import stopped
 from utils import (
     extract_target, parse_duration, format_seconds, get_mention,
     is_chat_admin, is_protected,
@@ -443,8 +444,10 @@ def process_expired_moderation():
 
 def start_moderation_scheduler():
     def loop():
-        while True:
+        while not stopped():
             try: process_expired_moderation()
             except Exception as e: logging.error(f"[moderation scheduler] {e}", exc_info=True)
+            if stopped():
+                break
             time.sleep(30)
     threading.Thread(target=loop, daemon=True, name="liza-moderation-scheduler").start()
