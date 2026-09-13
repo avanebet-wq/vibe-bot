@@ -105,18 +105,24 @@ def _table_names(sqlite_conn):
     return [r[0] for r in rows]
 
 
-def _migrate_sqlite_file(path: str, label: str) -> int:
-    """Best-effort one-time migration of an old SQLite database into PG."""
+def _migrate_sqlite_file(path: str, label: str) -> tuple[int, bool]:
+    """Migrate an old SQLite database into PG without failing on existing tables.
+
+    Returns (migrated_rows, completed). ``completed`` is false when any table
+    could not be created/read/imported, so the global migration marker is not
+    written prematurely and the migration can safely retry on the next start.
+    """
     if not Path(path).exists():
-        return 0
+        return 0, True
     try:
         src = sqlite3.connect(path)
         src.row_factory = sqlite3.Row
     except Exception:
         LOG.exception("Cannot open legacy SQLite database %s", path)
-        return 0
+        return 0, False
 
     migrated = 0
+    completed = True
     try:
         with db_lock:
             for table in _table_names(src):
@@ -127,18 +133,23 @@ def _migrate_sqlite_file(path: str, label: str) -> int:
                 if not row or not row[0]:
                     continue
                 create_sql = _sqlite_schema_to_pg(row[0])
+                # PostgreSQL may already contain a table from a previous run.
+                # CREATE IF NOT EXISTS makes the migration idempotent.
+                create_sql = re.sub(r"^\s*CREATE\s+TABLE\s+", "CREATE TABLE IF NOT EXISTS ", create_sql, count=1, flags=re.I)
                 try:
                     conn.execute(create_sql)
                     conn.commit()
                 except Exception:
                     conn.rollback()
+                    completed = False
                     LOG.exception("Cannot create migrated table %s from %s", table, label)
                     continue
 
-                columns = [r[1] for r in src.execute(f'PRAGMA table_info({_pg_identifier(table)})').fetchall()]
+                escaped_table = table.replace(chr(34), chr(34) * 2)
+                columns = [r[1] for r in src.execute(f'PRAGMA table_info("{escaped_table}")').fetchall()]
                 if not columns:
-                    columns = [r[1] for r in src.execute(f'PRAGMA table_info("{table.replace(chr(34), chr(34)*2)}")').fetchall()]
-                if not columns:
+                    completed = False
+                    LOG.error("Cannot read columns for migrated table %s from %s", table, label)
                     continue
 
                 rows = src.execute(f'SELECT * FROM "{table.replace(chr(34), chr(34)*2)}"').fetchall()
@@ -160,24 +171,32 @@ def _migrate_sqlite_file(path: str, label: str) -> int:
                         migrated += 1
                     except Exception:
                         conn.rollback()
+                        completed = False
                         LOG.exception("Cannot migrate row in %s.%s", label, table)
                 conn.commit()
 
                 # Keep sequences ahead of imported IDs where applicable.
-                try:
-                    seq = conn.execute(
-                        "SELECT pg_get_serial_sequence(%s, %s)",
-                        (table, "id"),
-                    ).fetchone()[0]
-                    if seq:
-                        max_id = conn.execute(f"SELECT MAX({_pg_identifier('id')}) FROM {_pg_identifier(table)}").fetchone()[0]
-                        if max_id is not None:
-                            conn.execute("SELECT setval(%s, %s, true)", (seq, int(max_id)))
-                            conn.commit()
-                except Exception:
-                    conn.rollback()
+                # Do not roll back the imported rows for tables without an id
+                # column (many legacy tables do not have one).
+                if "id" in columns:
+                    try:
+                        seq = conn.execute(
+                            "SELECT pg_get_serial_sequence(%s, %s)",
+                            (table, "id"),
+                        ).fetchone()[0]
+                        if seq:
+                            max_id = conn.execute(
+                                f"SELECT MAX({_pg_identifier('id')}) FROM {_pg_identifier(table)}"
+                            ).fetchone()[0]
+                            if max_id is not None:
+                                conn.execute("SELECT setval(%s, %s, true)", (seq, int(max_id)))
+                                conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        completed = False
+                        LOG.exception("Cannot update sequence for migrated table %s from %s", table, label)
         LOG.info("Migrated %s rows from legacy %s", migrated, label)
-        return migrated
+        return migrated, completed
     finally:
         src.close()
 
@@ -196,15 +215,21 @@ with db_lock:
     legacy_done = bool(marker and str(marker[0]) == "1")
 
 if not legacy_done:
-    _migrate_sqlite_file(DB_PATH, "bot.db")
-    _migrate_sqlite_file(os.path.join(DB_DIR, "liza_memory.sqlite3"), "liza_memory.sqlite3")
-    with db_lock:
-        conn.execute(
-            "INSERT INTO migration_meta(key,value) VALUES(%s,%s) "
-            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
-            ("legacy_sqlite_migrated", "1"),
-        )
-        conn.commit()
+    _, bot_db_done = _migrate_sqlite_file(DB_PATH, "bot.db")
+    _, memory_db_done = _migrate_sqlite_file(
+        os.path.join(DB_DIR, "liza_memory.sqlite3"),
+        "liza_memory.sqlite3",
+    )
+    # Mark the migration only after every legacy source completed. This makes
+    # the process safe to retry after a transient/database/schema error.
+    if bot_db_done and memory_db_done:
+        with db_lock:
+            conn.execute(
+                "INSERT INTO migration_meta(key,value) VALUES(%s,%s) "
+                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+                ("legacy_sqlite_migrated", "1"),
+            )
+            conn.commit()
 
 
 def db_get(key, default=None):
