@@ -30,13 +30,15 @@ def clean_response(text):
     text=str(text or "").strip().replace("<think>","").replace("</think>","").replace("```","")
     text=text.replace("(","").replace(")","")
     return text.strip()
-FALLBACK_REPLIES=["🙃 Что-то я задумалась и не могу подобрать слов. Спроси ещё раз?","🤷 Хотела ответить умно, но мысль потерялась. Повтори вопрос.","😶 Кажется, я зависла. Спроси ещё разок."]
-def _fallback(): return random.choice(FALLBACK_REPLIES)
 
 def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,group_context=None,personality=None):
-    if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}",8,20): return "⏳ Слишком много сообщений подряд. Дай мне секунду."
-    key=_current_key()
-    if not key: return "🔌 AI сейчас недоступен — не настроен ключ GROQ_API_KEY."
+    # Do not show rate-limit or transport fallbacks to the user. The AI layer
+    # keeps retrying until it gets an actual answer (or an available key).
+    if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}",8,20):
+        logging.info("[ai] rate limit reached; still processing request for %s", chat_id)
+    if not _key_list:
+        logging.error("[ai] GROQ_API_KEY is not configured")
+        return "Сейчас не могу получить ответ от сервиса ИИ."
     sys_prompt=SYS_PROMPT_ANGRY if angry else SYS_PROMPT_NORMAL; extra=[]
     try: extra.append(build_personality_prompt(personality or (get_chat_personality(chat_id) if chat_id is not None else None)))
     except Exception: pass
@@ -64,27 +66,97 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
             role=item.get("role") if isinstance(item,dict) else "user"; content=item.get("content","") if isinstance(item,dict) else str(item)
             if role in ("user","assistant") and content: messages.append({"role":role,"content":str(content)[:2600]})
     except Exception: pass
-    messages.append({"role":"user","content":str(user_text or "")[:2200]})
-    payload={"model":AI_MODEL,"messages":messages,"max_completion_tokens":max(80,min(int(max_tokens),1200)),"temperature":0.68,"reasoning_effort":"high","include_reasoning":False}
-    for attempt in range(max(1,len(_key_list))):
+    user_content=str(user_text or "").strip()[:2200]
+    messages.append({"role":"user","content":user_content})
+
+    # First try the requested reasoning mode. If the model returns an empty or
+    # malformed answer, retry with progressively simpler settings. This avoids
+    # exposing artificial fallback phrases to the user.
+    reasoning_modes=("high","medium","low")
+    total_attempts=max(3,len(_key_list)*2)
+    last_error=None
+    for attempt in range(total_attempts):
         key=_current_key()
-        if not key: break
+        if not key:
+            break
+        mode=reasoning_modes[min(attempt, len(reasoning_modes)-1)]
+        payload={
+            "model":AI_MODEL,
+            "messages":messages,
+            "max_completion_tokens":max(80,min(int(max_tokens),1200)),
+            "temperature":0.68,
+            "reasoning_effort":mode,
+            "include_reasoning":False
+        }
         try:
-            resp=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"Liza-Telegram-Bot/1.0"},timeout=25)
+            resp=requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                json=payload,
+                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"Liza-Telegram-Bot/1.0"},
+                timeout=30
+            )
             if resp.status_code==200:
-                data=resp.json(); content=(data.get("choices") or [{}])[0].get("message",{}).get("content")
-                cleaned=clean_response(content) or _fallback()
-                if chat_id is not None:
-                    try:
-                        mem=persistent_conversation_memory or conversation_memory; mem.add(chat_id,"user",user_text); mem.add(chat_id,"assistant",cleaned)
-                    except Exception: pass
-                return cleaned
-            if resp.status_code in (401,402,429): _switch_key(); continue
-            logging.error("[ai] status=%s body=%s",resp.status_code,resp.text[:300]); return _fallback()
+                data=resp.json()
+                message_data=(data.get("choices") or [{}])[0].get("message") or {}
+                content=message_data.get("content")
+                cleaned=clean_response(content)
+                if cleaned:
+                    if chat_id is not None:
+                        try:
+                            mem=persistent_conversation_memory or conversation_memory
+                            mem.add(chat_id,"user",user_text)
+                            mem.add(chat_id,"assistant",cleaned)
+                        except Exception: pass
+                    return cleaned
+                last_error="empty AI response"
+                logging.warning("[ai] empty response, retrying (attempt %s/%s, reasoning=%s)",attempt+1,total_attempts,mode)
+            elif resp.status_code in (401,402,429):
+                last_error=f"HTTP {resp.status_code}"
+                _switch_key()
+                time.sleep(0.25)
+            else:
+                last_error=f"HTTP {resp.status_code}"
+                logging.error("[ai] status=%s body=%s",resp.status_code,resp.text[:300])
+                time.sleep(0.35)
         except requests.RequestException as exc:
-            logging.error("[ai] request error: %s",exc);
-            if attempt+1 < len(_key_list): _switch_key(); time.sleep(0.15); continue
-            return "🙃 Не получилось ответить, попробуй ещё раз."
+            last_error=str(exc)
+            logging.error("[ai] request error: %s",exc)
+            if len(_key_list)>1: _switch_key()
+            time.sleep(0.25)
         except Exception as exc:
-            logging.exception("[ai] unexpected error: %s",exc); return _fallback()
-    return "🔌 AI сейчас недоступен, все ключи исчерпаны."
+            last_error=str(exc)
+            logging.exception("[ai] unexpected error: %s",exc)
+            time.sleep(0.25)
+
+    # A final, independent request is preferable to returning a canned phrase.
+    # It uses the same model but asks explicitly for a direct answer with no
+    # reasoning output. This branch is reached only after the normal retries.
+    key=_current_key()
+    if key:
+        final_messages=[
+            {"role":"system","content":sys_prompt+"\nОтветь пользователю напрямую. Не объясняй внутренние рассуждения. Не отказывайся отвечать и не проси повторить уже понятный вопрос."},
+            {"role":"user","content":user_content}
+        ]
+        try:
+            resp=requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                json={"model":AI_MODEL,"messages":final_messages,"max_completion_tokens":max(100,min(int(max_tokens),1200)),"temperature":0.72,"reasoning_effort":"low","include_reasoning":False},
+                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"Liza-Telegram-Bot/1.0"},
+                timeout=30
+            )
+            if resp.status_code==200:
+                content=((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content")
+                cleaned=clean_response(content)
+                if cleaned:
+                    if chat_id is not None:
+                        try:
+                            mem=persistent_conversation_memory or conversation_memory
+                            mem.add(chat_id,"user",user_text); mem.add(chat_id,"assistant",cleaned)
+                        except Exception: pass
+                    return cleaned
+        except Exception as exc:
+            logging.error("[ai] final retry failed: %s",exc)
+
+    logging.error("[ai] no answer after all retries: %s",last_error)
+    return "Я не смогла получить ответ от ИИ прямо сейчас."
+
