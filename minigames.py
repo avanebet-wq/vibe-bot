@@ -2,6 +2,7 @@
 """Мини-игры «Пыхнуть» и «Заварить» + накопительная статистика."""
 import html
 import logging
+import random
 import time
 from collections import defaultdict
 
