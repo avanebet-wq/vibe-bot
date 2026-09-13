@@ -7,9 +7,9 @@ from chat_personality import get as get_chat_personality
 from security import allow
 from utils import get_setting
 import logging, random, requests, time
-from config import OPENROUTER_KEY, AI_MODEL, SYS_PROMPT_NORMAL, SYS_PROMPT_ANGRY
+from config import GROQ_KEY, AI_MODEL, SYS_PROMPT_NORMAL, SYS_PROMPT_ANGRY
 
-_key_list=[k.strip() for k in OPENROUTER_KEY.split(",") if k.strip()]
+_key_list=[k.strip() for k in GROQ_KEY.split(",") if k.strip()]
 _key_idx=0
 class ConversationMemory:
     def __init__(self,max_messages=12): self.max_messages=max_messages; self._data={}
@@ -36,7 +36,7 @@ def _fallback(): return random.choice(FALLBACK_REPLIES)
 def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,group_context=None,personality=None):
     if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}",8,20): return "⏳ Слишком много сообщений подряд. Дай мне секунду."
     key=_current_key()
-    if not key: return "🔌 AI сейчас недоступен — не настроен ключ OPENROUTER_KEY."
+    if not key: return "🔌 AI сейчас недоступен — не настроен ключ GROQ_API_KEY."
     sys_prompt=SYS_PROMPT_ANGRY if angry else SYS_PROMPT_NORMAL; extra=[]
     try: extra.append(build_personality_prompt(personality or (get_chat_personality(chat_id) if chat_id is not None else None)))
     except Exception: pass
@@ -70,7 +70,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
         key=_current_key()
         if not key: break
         try:
-            resp=requests.post("https://openrouter.ai/api/v1/chat/completions",json=payload,headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},timeout=25)
+            resp=requests.post("https://api.groq.com/openai/v1/chat/completions",json=payload,headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"Liza-Telegram-Bot/1.0"},timeout=25)
             if resp.status_code==200:
                 data=resp.json(); content=(data.get("choices") or [{}])[0].get("message",{}).get("content")
                 cleaned=clean_response(content) or _fallback()

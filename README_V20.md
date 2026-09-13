@@ -17,7 +17,7 @@
 
 ## Переменные окружения
 
-`BOT_TOKEN`, `OPENROUTER_KEY` — обязательные для запуска.
+`BOT_TOKEN`, `GROQ_API_KEY` — обязательные для запуска.
 `LIZA_PLUGINS` — список plugin-модулей через запятую.
 `LIZA_BACKUP_DIR` — каталог резервных копий SQLite.
 `LIZA_BACKUP_KEEP` — количество сохраняемых backup-файлов.

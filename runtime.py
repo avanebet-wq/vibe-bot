@@ -12,7 +12,7 @@ import telebot
 from telebot import types
 from telebot.types import ChatPermissions
 
-from config import TOKEN, OPENROUTER_KEY, LOG_CHAT_ID, TZ
+from config import TOKEN, LOG_CHAT_ID, TZ
 from database import db_get, db_set
 from reliability import mark_ok, mark_error
 

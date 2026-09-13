@@ -4,11 +4,11 @@ import os
 from zoneinfo import ZoneInfo
 
 TOKEN = os.environ.get("BOT_TOKEN")
-OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 LOG_CHAT_ID = os.environ.get("LOG_CHAT_ID")
 TZ = ZoneInfo("Europe/Kyiv")
 
-AI_MODEL = "inclusionai/ling-3.0-flash-fin:free"
+AI_MODEL = "openai/gpt-oss-20b"
 
 # Обычный (спокойный) характер
 SYS_PROMPT_NORMAL = (
