@@ -1,3 +1,4 @@
 pyTelegramBotAPI==4.14.0
 requests
 matplotlib
+psycopg2-binary

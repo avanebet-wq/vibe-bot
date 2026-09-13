@@ -1,36 +1,25 @@
-"""Persistent short-term conversation memory for Liza.
-
-Stores only a bounded number of recent messages per chat in SQLite.
-The module is intentionally independent from the AI provider so it can be
-used by handlers and the AI layer without coupling either to the database
-implementation.
-"""
+"""Persistent short-term conversation memory stored in Railway PostgreSQL."""
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional
+
+from database import conn, db_lock
 
 
 class PersistentConversationMemory:
     def __init__(self, db_path: str = "liza_memory.sqlite3", max_messages: int = 20):
-        self.db_path = str(Path(db_path))
+        # db_path is kept for API compatibility; storage is now PostgreSQL.
         self.max_messages = max(2, int(max_messages))
         self._lock = Lock()
         self._init_db()
 
-    def _connect(self):
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
-
     def _init_db(self):
-        with self._lock, self._connect() as conn:
+        with self._lock, db_lock:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_memory (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     chat_id TEXT NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
@@ -44,6 +33,7 @@ class PersistentConversationMemory:
                 ON conversation_memory(chat_id, id)
                 """
             )
+            conn.commit()
 
     def add(self, chat_id, role: str, content: str):
         if chat_id is None or not content:
@@ -55,37 +45,38 @@ class PersistentConversationMemory:
         if not content:
             return
 
-        with self._lock, self._connect() as conn:
+        with self._lock, db_lock:
             conn.execute(
-                "INSERT INTO conversation_memory(chat_id, role, content) VALUES (?, ?, ?)",
+                "INSERT INTO conversation_memory(chat_id, role, content) VALUES (%s, %s, %s)",
                 (str(chat_id), role, content),
             )
             conn.execute(
                 """
                 DELETE FROM conversation_memory
-                WHERE chat_id = ?
+                WHERE chat_id = %s
                   AND id NOT IN (
                     SELECT id FROM conversation_memory
-                    WHERE chat_id = ?
+                    WHERE chat_id = %s
                     ORDER BY id DESC
-                    LIMIT ?
+                    LIMIT %s
                   )
                 """,
                 (str(chat_id), str(chat_id), self.max_messages),
             )
+            conn.commit()
 
     def get(self, chat_id, limit: Optional[int] = None) -> List[Dict[str, str]]:
         if chat_id is None:
             return []
         limit = max(1, min(int(limit or self.max_messages), self.max_messages))
-        with self._lock, self._connect() as conn:
+        with self._lock, db_lock:
             rows = conn.execute(
                 """
                 SELECT role, content
                 FROM conversation_memory
-                WHERE chat_id = ?
+                WHERE chat_id = %s
                 ORDER BY id DESC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (str(chat_id), limit),
             ).fetchall()
@@ -95,18 +86,16 @@ class PersistentConversationMemory:
     def clear(self, chat_id):
         if chat_id is None:
             return
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                "DELETE FROM conversation_memory WHERE chat_id = ?",
-                (str(chat_id),),
-            )
+        with self._lock, db_lock:
+            conn.execute("DELETE FROM conversation_memory WHERE chat_id = %s", (str(chat_id),))
+            conn.commit()
 
     def count(self, chat_id) -> int:
         if chat_id is None:
             return 0
-        with self._lock, self._connect() as conn:
+        with self._lock, db_lock:
             row = conn.execute(
-                "SELECT COUNT(*) FROM conversation_memory WHERE chat_id = ?",
+                "SELECT COUNT(*) FROM conversation_memory WHERE chat_id = %s",
                 (str(chat_id),),
             ).fetchone()
         return int(row[0] or 0)
