@@ -18,6 +18,7 @@ from mood_state import decay as decay_mood
 import random
 import logging
 import time
+import threading
 
 from runtime import bot, WAKE_RE, BOT_ID, ai_executor
 from config import STORY_AUTOTELL_CHANCE, BAD_WORDS
