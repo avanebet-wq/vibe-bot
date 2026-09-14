@@ -257,7 +257,7 @@ def _try_use(message, kind):
 
             cur = conn.execute(
                 "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at,source_message_id) "
-                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id, kind) DO NOTHING RETURNING id",
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING id",
                 (str(chat_id), str(user_id), username, display_name, kind, now, getattr(message, "message_id", None)),
             )
             if cur.fetchone() is None:
@@ -330,7 +330,7 @@ def cmd_drink(message):
                 cur = conn.execute(
                     "INSERT INTO drink_game_events "
                     "(chat_id,user_id,username,display_name,revo_name,fruit_emoji,multiplier,volume_liters,created_at,source_message_id) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id) DO NOTHING RETURNING id",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING id",
                     (str(chat_id), str(user_id), username, display_name, revo_name, fruit_emoji,
                      float(multiplier), float(volume_liters), now, getattr(message, "message_id", None)),
                 )
