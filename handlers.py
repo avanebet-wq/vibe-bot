@@ -231,6 +231,7 @@ _SINGLE_COMMANDS = {
     "выпить": lambda m, a: cmd_drink(m),
     "профиль": lambda m, a: cmd_profile(m),
     "стата": lambda m, a: cmd_minigame_stats(m, a),
+    "топ": lambda m, a: cmd_minigame_stats(m, a),
 }
 
 
