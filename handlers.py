@@ -87,7 +87,7 @@ def _ai_worker():
 for _ in range(3):
     threading.Thread(target=_ai_worker, daemon=True, name="liza-ai-queue").start()
 
-def _enqueue_ai_reply(message, *args, reply_mode="reply", processing_notice=True, **kwargs):
+def _enqueue_ai_reply(message, *args, reply_mode="reply", processing_notice=False, **kwargs):
     chat_id = getattr(getattr(message, "chat", None), "id", None)
     with _AI_STATE_LOCK:
         active = _AI_ACTIVE_BY_CHAT.get(chat_id, 0)

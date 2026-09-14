@@ -76,7 +76,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                 break
     if not _key_list:
         logging.error("[ai] GROQ_API_KEY is not configured")
-        return "Сервис ИИ временно недоступен. Попробуй обратиться чуть позже."
+        return "⚠️ Не удалось получить ответ от ИИ. Попробуй ещё раз через несколько секунд."
     if not _circuit_allows():
         logging.warning("[ai] circuit breaker open")
         return None
@@ -116,11 +116,12 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
     user_content=str(user_text or "").strip()[:2200]
     messages.append({"role":"user","content":user_content})
 
-    # First try the requested reasoning mode. If the model returns an empty or
-    # malformed answer, retry with progressively simpler settings. This avoids
-    # exposing artificial fallback phrases to the user.
-    reasoning_modes=("high","medium","low")
-    total_attempts=min(4, max(3, len(_key_list)))
+    # GPT-OSS spends completion tokens on reasoning. Starting at high effort
+    # with a small max_completion_tokens budget can exhaust the budget before
+    # any visible answer is produced, which looks like an "empty response".
+    # Chat replies prioritize latency: low effort first, then one medium retry.
+    reasoning_modes=("low","medium")
+    total_attempts=2
     last_error=None
     for attempt in range(total_attempts):
         key=_current_key()
@@ -130,7 +131,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
         payload={
             "model":AI_MODEL,
             "messages":messages,
-            "max_completion_tokens":max(80,min(int(max_tokens),1200)),
+            "max_completion_tokens":max(384,min(int(max_tokens),768)),
             "temperature":0.68,
             "reasoning_effort":mode,
             "include_reasoning":False
@@ -140,7 +141,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                 "https://api.groq.com/openai/v1/chat/completions",
                 json=payload,
                 headers={"Authorization":f"Bearer {key}"},
-                timeout=(5,30)
+                timeout=(4,12)
             )
             if resp.status_code==200:
                 data=resp.json()
@@ -186,36 +187,8 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
             logging.exception("[ai] unexpected error: %s",exc)
             time.sleep(0.25)
 
-    # A final, independent request is preferable to returning a canned phrase.
-    # It uses the same model but asks explicitly for a direct answer with no
-    # reasoning output. This branch is reached only after the normal retries.
-    key=_current_key()
-    if key:
-        final_messages=[
-            {"role":"system","content":sys_prompt+"\nОтветь пользователю напрямую. Не объясняй внутренние рассуждения. Не отказывайся отвечать и не проси повторить уже понятный вопрос."},
-            {"role":"user","content":user_content}
-        ]
-        try:
-            resp=_http_session().post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                json={"model":AI_MODEL,"messages":final_messages,"max_completion_tokens":max(100,min(int(max_tokens),1200)),"temperature":0.72,"reasoning_effort":"low","include_reasoning":False},
-                headers={"Authorization":f"Bearer {key}"},
-                timeout=(5,30)
-            )
-            if resp.status_code==200:
-                content=((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content")
-                cleaned=clean_response(content)
-                if cleaned:
-                    _circuit_success()
-                    if chat_id is not None:
-                        try:
-                            mem=persistent_conversation_memory
-                            mem.add(chat_id,"user",user_text); mem.add(chat_id,"assistant",cleaned)
-                        except Exception: pass
-                    return cleaned
-        except Exception as exc:
-            logging.error("[ai] final retry failed: %s",exc)
-
+    # Do not issue a third full request here: after two bounded attempts, a
+    # third call only makes the bot feel stuck and can occupy the AI worker.
     logging.error("[ai] no answer after all retries: %s",last_error)
-    return "Сервис ИИ временно недоступен. Попробуй обратиться чуть позже."
+    return "⚠️ Не удалось получить ответ от ИИ. Попробуй ещё раз через несколько секунд."
 

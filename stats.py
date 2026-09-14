@@ -5,7 +5,9 @@ import time
 import logging
 from datetime import datetime, timedelta
 
+import logging
 import matplotlib
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
