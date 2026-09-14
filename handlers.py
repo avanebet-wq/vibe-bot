@@ -55,16 +55,48 @@ def _ai_job_finished(chat_id):
         else:
             _AI_ACTIVE_BY_CHAT[chat_id] = current - 1
 
+def _typing_loop(chat_id, stop_event):
+    """Keep Telegram's `typing…` indicator visible while AI is working.
+
+    Telegram keeps chat actions only for a few seconds, so refresh the action
+    periodically until the AI request finishes. Failures are intentionally
+    ignored: the answer itself must not be affected by the indicator.
+    """
+    if chat_id is None:
+        return
+    while not stop_event.is_set():
+        try:
+            bot.send_chat_action(chat_id, "typing")
+        except Exception:
+            pass
+        stop_event.wait(4.0)
+
+
 def _ai_worker():
     while True:
         job = _AI_QUEUE.get()
         message = None
         chat_id = None
+        typing_stop = None
+        typing_thread = None
         try:
             if job is None:
                 return
             message, args, kwargs, reply_mode = job
             chat_id = getattr(getattr(message, "chat", None), "id", None)
+
+            # Show `typing…` immediately and refresh it while Qwen is thinking
+            # or generating the response. This works independently of the AI
+            # provider and does not add artificial delay to the request.
+            typing_stop = threading.Event()
+            typing_thread = threading.Thread(
+                target=_typing_loop,
+                args=(chat_id, typing_stop),
+                daemon=True,
+                name="liza-typing",
+            )
+            typing_thread.start()
+
             reply = ask_liza(*args, **kwargs)
             reply = _apply_polite_filter(chat_id, reply) if reply is not None else reply
             if reply_mode == "send":
@@ -81,6 +113,8 @@ def _ai_worker():
                 except Exception:
                     pass
         finally:
+            if typing_stop is not None:
+                typing_stop.set()
             _ai_job_finished(chat_id)
             _AI_QUEUE.task_done()
 

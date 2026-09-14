@@ -114,7 +114,7 @@ def _post_huggingface(messages, max_tokens, enable_thinking=True):
     payload = {
         "model": AI_MODEL,
         "messages": messages,
-        "max_tokens": max(1024, min(int(max_tokens), 2048)),
+        "max_tokens": max(512, min(int(max_tokens), 2048)),
         "temperature": 1.0 if enable_thinking else 0.7,
         "top_p": 0.95 if enable_thinking else 0.80,
         "presence_penalty": 0.0 if enable_thinking else 1.5,
@@ -128,7 +128,7 @@ def _post_huggingface(messages, max_tokens, enable_thinking=True):
             f"{HF_BASE_URL.rstrip('/')}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {HF_TOKEN}"},
-            timeout=(5, 45),
+            timeout=(5, 30 if not enable_thinking else 45),
         )
     except requests.RequestException as exc:
         return None, str(exc)
@@ -196,6 +196,33 @@ def _post_groq(messages, max_tokens):
     return None, "Groq returned no answer"
 
 
+def _choose_reasoning_effort(user_text, group_context=None):
+    """Choose Qwen thinking level from the request complexity."""
+    text = str(user_text or "").strip()
+    low = text.lower()
+    complex_markers = (
+        "почему", "объясни", "объяснить", "как сделать", "как настроить",
+        "сравни", "сравнение", "план", "придумай", "проанализируй",
+        "разбери", "посчитай", "рассчитай", "код", "python", "sql",
+        "ошибка", "почему не", "помоги", "совет", "что лучше", "разница",
+        "подробно", "докажи", "спланируй", "инструкция", "проблема",
+    )
+    if len(text) >= 500 or len(text.split()) >= 80:
+        return "medium"
+    if any(marker in low for marker in complex_markers):
+        return "medium"
+    if group_context and len(str(group_context)) >= 4500:
+        return "medium"
+    return "low"
+
+
+def _reasoning_budget(effort, max_tokens):
+    requested = max(1, int(max_tokens))
+    if effort == "low":
+        return max(512, min(requested, 768))
+    return max(1024, min(requested, 2048))
+
+
 def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None, group_context=None, personality=None):
     if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}", 8, 20):
         deadline = time.monotonic() + 1.5
@@ -258,15 +285,19 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
 
     messages.append({"role": "user", "content": str(user_text or "").strip()[:2200]})
 
-    # HF/Qwen is primary. First let Qwen think; if the provider spends the
-    # budget on reasoning and returns no visible answer, retry once in direct
-    # answer mode. This keeps reasoning private and guarantees a usable reply.
+    # Qwen is primary. Simple chat uses low reasoning for speed; complex
+    # requests use medium reasoning. If a provider returns no visible answer,
+    # retry once at the lighter level. Private reasoning is never sent to chat.
+    effort = _choose_reasoning_effort(user_text, group_context)
     last_error = None
-    for attempt in range(2):
+    attempts = (effort, "low") if effort == "medium" else ("low",)
+    for attempt_effort in attempts:
+        enable_thinking = attempt_effort in ("low", "medium")
+        budget = _reasoning_budget(attempt_effort, max_tokens)
         content, error = _post_huggingface(
             messages,
-            max(max_tokens, 1024),
-            enable_thinking=(attempt == 0),
+            budget,
+            enable_thinking=enable_thinking,
         )
         if content:
             _circuit_success()
@@ -280,7 +311,7 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
             return content
         last_error = error
         _circuit_failure()
-        logging.warning("[ai] HF attempt %s/2 failed: %s", attempt + 1, error)
+        logging.warning("[ai] HF %s attempt failed: %s", attempt_effort, error)
         time.sleep(0.25)
 
     # Keep the old Groq path as a safety net if the old Railway secrets are still
