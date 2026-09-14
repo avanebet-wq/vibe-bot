@@ -447,11 +447,15 @@ def _rows(chat_id, kind, days=None):
 
 
 def _person_label(username, display_name, user_id):
-    if username:
-        return "@" + username.lstrip("@")
-    if display_name:
-        return display_name
-    return f"ID {user_id}"
+    # В рейтинге показываем только имя и делаем его кликабельным на профиль Telegram.
+    # Исторические записи могут хранить "Имя Фамилия", поэтому берём только имя.
+    name = (display_name or "").strip()
+    if name:
+        name = name.split(None, 1)[0]
+    else:
+        name = "Пользователь"
+    name = html.escape(name)
+    return f'<a href="tg://user?id={user_id}">{name}</a>'
 
 
 def _table(title, rows, emoji):
@@ -460,9 +464,7 @@ def _table(title, rows, emoji):
         lines.append("— пока нет данных")
         return lines
     for idx, (uid, username, display_name, total, _last) in enumerate(rows[:10], 1):
-        label = html.escape(_person_label(username, display_name, uid))
-        if len(label) > 22:
-            label = label[:19] + "..."
+        label = _person_label(username, display_name, uid)
         lines.append(f"{idx}. <b>{label}</b> — {int(total)}")
     if len(rows) > 10:
         lines.append(f"… ещё {len(rows) - 10} игроков")
@@ -491,9 +493,7 @@ def _overall_table(rows):
         lines.append("— пока нет данных")
         return lines
     for idx, (uid, username, display_name, total, _last) in enumerate(rows[:10], 1):
-        label = html.escape(_person_label(username, display_name, uid))
-        if len(label) > 22:
-            label = label[:19] + "..."
+        label = _person_label(username, display_name, uid)
         lines.append(f"{idx}. <b>{label}</b> — {int(total)} игр")
     if len(rows) > 10:
         lines.append(f"… ещё {len(rows) - 10} игроков")
@@ -531,9 +531,7 @@ def _drink_table(title, rows):
         lines.append("— пока нет данных")
         return lines
     for idx, (uid, username, display_name, total, liters, _last) in enumerate(rows[:10], 1):
-        label = html.escape(_person_label(username, display_name, uid))
-        if len(label) > 22:
-            label = label[:19] + "..."
+        label = _person_label(username, display_name, uid)
         lines.append(f"{idx}. <b>{label}</b> — {float(liters or 0):.1f} л")
     if len(rows) > 10:
         lines.append(f"… ещё {len(rows) - 10} игроков")
