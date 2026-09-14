@@ -105,35 +105,56 @@ def _message_content(data):
     return clean_response(content)
 
 
-def _post_huggingface(messages, max_tokens):
+def _post_huggingface(messages, max_tokens, enable_thinking=True):
     if not HF_TOKEN:
         return None, "HF_TOKEN is not configured"
+
+    # Qwen3.8 can spend the whole output budget on hidden reasoning.
+    # Give it enough room to think, while keeping the visible answer short.
     payload = {
         "model": AI_MODEL,
         "messages": messages,
-        "max_tokens": max(384, min(int(max_tokens), 768)),
-        "temperature": 0.68,
+        "max_tokens": max(1024, min(int(max_tokens), 2048)),
+        "temperature": 1.0 if enable_thinking else 0.7,
+        "top_p": 0.95 if enable_thinking else 0.80,
+        "presence_penalty": 0.0 if enable_thinking else 1.5,
+        "reasoning_effort": "medium" if enable_thinking else "low",
+        "extra_body": {
+            "chat_template_kwargs": {
+                "enable_thinking": bool(enable_thinking),
+                "preserve_thinking": True,
+            }
+        },
     }
     try:
         resp = _http_session().post(
             f"{HF_BASE_URL.rstrip('/')}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {HF_TOKEN}"},
-            timeout=(5, 30),
+            timeout=(5, 45),
         )
     except requests.RequestException as exc:
         return None, str(exc)
 
     if resp.status_code == 200:
         try:
-            content = _message_content(resp.json())
+            data = resp.json()
+            content = _message_content(data)
         except Exception as exc:
             return None, f"invalid HF JSON: {exc}"
-        return content, None if content else "empty HF response"
+        if content:
+            return content, None
+
+        # Do not expose Qwen's private reasoning to Telegram.
+        # Log a compact diagnostic so provider/schema problems are visible.
+        choices = data.get("choices") or []
+        msg = choices[0].get("message") if choices else {}
+        if isinstance(msg, dict) and (msg.get("reasoning_content") or msg.get("reasoning")):
+            return None, "HF returned reasoning without final answer"
+        return None, "empty HF response"
 
     body = resp.text[:500]
     return None, f"HF HTTP {resp.status_code}: {body}"
-
 
 def _post_groq(messages, max_tokens):
     if not _key_list:
@@ -240,12 +261,16 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
 
     messages.append({"role": "user", "content": str(user_text or "").strip()[:2200]})
 
-    # HF/Qwen is primary. The second pass is intentionally identical: provider
-    # routing can fail transiently, while changing the prompt on retry often
-    # makes answers less consistent.
+    # HF/Qwen is primary. First let Qwen think; if the provider spends the
+    # budget on reasoning and returns no visible answer, retry once in direct
+    # answer mode. This keeps reasoning private and guarantees a usable reply.
     last_error = None
     for attempt in range(2):
-        content, error = _post_huggingface(messages, max_tokens)
+        content, error = _post_huggingface(
+            messages,
+            max(max_tokens, 1024),
+            enable_thinking=(attempt == 0),
+        )
         if content:
             _circuit_success()
             if chat_id is not None:
