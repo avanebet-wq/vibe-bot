@@ -426,6 +426,19 @@ def text_handler(message):
         text = message.text or ""
         is_group = message.chat.type in ("group", "supergroup")
 
+        # IMPORTANT: Telegram typing must start before ANY database/context work.
+        # The previous implementation started it only inside _enqueue_ai_reply,
+        # but this handler performs captcha/silence/settings/profile/memory/context
+        # work before reaching the enqueue call. Those synchronous operations could
+        # create the visible 2-3s gap even though the AI itself was already async.
+        # Detect a direct "Лиза ..." message immediately and fire the action now.
+        early_wake = WAKE_RE.match(text)
+        if early_wake:
+            try:
+                bot.send_chat_action(cid, "typing")
+            except Exception:
+                pass
+
         # Во время активной записи Лиза молчит в обычном разговоре, но
         # прямые команды работают без приставки «Лиза», а обращение «Лиза ...»
         # по-прежнему отправляется в обычный AI-диалог.
