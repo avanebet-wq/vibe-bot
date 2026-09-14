@@ -304,7 +304,7 @@ def _dispatch(message, cmd_text):
     key = first.lower()
     if key in _SINGLE_COMMANDS:
         try:
-            if key in {"пыхнуть", "заварить", "выпить", "стата"} and not _game_enabled(message):
+            if key in {"пыхнуть", "заварить", "выпить", "стата", "топ"} and not _game_enabled(message):
                 bot.reply_to(message, "🎮 Мини-игры сейчас отключены администратором.")
                 return True
             record_command(message.chat.id, key)

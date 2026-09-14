@@ -417,7 +417,7 @@ def _period_days(args):
 
 def _period_label(args):
     raw = (args or "").strip().lower()
-    if raw == "вся":
+    if not raw or raw == "вся":
         return "за всё время"
     days = _period_days(args)
     if days is None:
@@ -435,8 +435,8 @@ def _rows(chat_id, kind, days=None):
         try:
             return conn.execute(
                 f"""SELECT user_id,
-                       COALESCE(NULLIF(username,''), ''),
-                       COALESCE(NULLIF(display_name,''), ''),
+                       COALESCE(MAX(NULLIF(username,'')), ''),
+                       COALESCE(MAX(NULLIF(display_name,'')), ''),
                        COUNT(*) AS total,
                        MAX(created_at) AS last_at
                 FROM minigame_events {where}
@@ -462,14 +462,46 @@ def _table(title, rows, emoji):
     if not rows:
         lines.append("— пока нет данных")
         return lines
-    lines.append("<pre>№  Пользователь                 Кол-во</pre>")
-    for idx, (uid, username, display_name, total, _last) in enumerate(rows[:50], 1):
+    for idx, (uid, username, display_name, total, _last) in enumerate(rows[:10], 1):
         label = html.escape(_person_label(username, display_name, uid))
-        if len(label) > 25:
-            label = label[:22] + "..."
-        lines.append(f"<code>{idx:>2}. {label:<25} {int(total):>6}</code>")
-    if len(rows) > 50:
-        lines.append(f"… и ещё {len(rows) - 50} пользователей")
+        if len(label) > 22:
+            label = label[:19] + "..."
+        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
+        lines.append(f"{medal} <b>{label}</b> — {int(total)}")
+    if len(rows) > 10:
+        lines.append(f"… ещё {len(rows) - 10} игроков")
+    return lines
+
+
+def _overall_rows(smoke, coffee, drink):
+    totals = {}
+    for rows in (smoke, coffee, drink):
+        for row in rows:
+            uid, username, display_name, total = row[0], row[1], row[2], int(row[3] or 0)
+            item = totals.setdefault(uid, {"username": username or "", "display_name": display_name or "", "total": 0})
+            if username:
+                item["username"] = username
+            if display_name:
+                item["display_name"] = display_name
+            item["total"] += total
+    result = [(uid, x["username"], x["display_name"], x["total"], 0) for uid, x in totals.items()]
+    result.sort(key=lambda x: (-x[3], x[0]))
+    return result
+
+
+def _overall_table(rows):
+    lines = ["🏆 <b>Общий рейтинг</b>"]
+    if not rows:
+        lines.append("— пока нет данных")
+        return lines
+    for idx, (uid, username, display_name, total, _last) in enumerate(rows[:10], 1):
+        label = html.escape(_person_label(username, display_name, uid))
+        if len(label) > 22:
+            label = label[:19] + "..."
+        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
+        lines.append(f"{medal} <b>{label}</b> — {int(total)} игр")
+    if len(rows) > 10:
+        lines.append(f"… ещё {len(rows) - 10} игроков")
     return lines
 
 
@@ -483,8 +515,8 @@ def _drink_rows(chat_id, days=None):
         try:
             return conn.execute(
                 f"""SELECT user_id,
-                       COALESCE(NULLIF(username,''), ''),
-                       COALESCE(NULLIF(display_name,''), ''),
+                       COALESCE(MAX(NULLIF(username,'')), ''),
+                       COALESCE(MAX(NULLIF(display_name,'')), ''),
                        COUNT(*) AS total,
                        ROUND(SUM(volume_liters)::numeric, 1) AS liters,
                        MAX(created_at) AS last_at
@@ -503,37 +535,41 @@ def _drink_table(title, rows):
     if not rows:
         lines.append("— пока нет данных")
         return lines
-    lines.append("<pre>№  Пользователь                 Игры   Литры</pre>")
-    for idx, (uid, username, display_name, total, liters, _last) in enumerate(rows[:50], 1):
+    for idx, (uid, username, display_name, total, liters, _last) in enumerate(rows[:10], 1):
         label = html.escape(_person_label(username, display_name, uid))
-        if len(label) > 25:
-            label = label[:22] + "..."
-        lines.append(f"<code>{idx:>2}. {label:<25} {int(total):>4}   {float(liters or 0):>5.1f}</code>")
-    if len(rows) > 50:
-        lines.append(f"… и ещё {len(rows) - 50} пользователей")
+        if len(label) > 22:
+            label = label[:19] + "..."
+        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
+        lines.append(f"{medal} <b>{label}</b> — {int(total)} игр · {float(liters or 0):.1f} л")
+    if len(rows) > 10:
+        lines.append(f"… ещё {len(rows) - 10} игроков")
     return lines
+
 
 def cmd_stats(message, args=""):
     try:
         label = _period_label(args)
         if label is None:
-            bot.reply_to(message, "⚠️ Формат: <code>стата 7</code>, <code>стата 3 дня</code> или <code>стата вся</code>", parse_mode="HTML")
+            bot.reply_to(message, "⚠️ Формат: <code>топ</code> или <code>топ N</code> (например, <code>топ 7</code>)", parse_mode="HTML")
             return
         days = _period_days(args)
         smoke = _rows(message.chat.id, "smoke", days)
         coffee = _rows(message.chat.id, "coffee", days)
         drink = _drink_rows(message.chat.id, days)
-        lines = [f"📊 <b>Стата мини-игр — {label}</b>", ""]
-        lines.extend(_table("Сигареты", smoke, "🚬"))
+        overall = _overall_rows(smoke, coffee, drink)
+        lines = [f"🏆 <b>ТОП ИГРОКОВ</b>", f"📅 {label}", ""]
+        lines.extend(_overall_table(overall))
         lines.append("")
-        lines.extend(_table("Кофе", coffee, "☕"))
+        lines.extend(_table("Пыхнуть", smoke, "🚬"))
+        lines.append("")
+        lines.extend(_table("Заварить", coffee, "☕"))
         lines.append("")
         lines.extend(_drink_table("Выпить", drink))
         text = "\n".join(lines)
         if len(text) <= 4000:
             bot.reply_to(message, text, parse_mode="HTML")
         else:
-            # Telegram ограничивает текст сообщения; таблицы режем безопасно.
             bot.reply_to(message, text[:4000], parse_mode="HTML")
     except Exception:
         LOG.exception("minigame stats failed")
+        bot.reply_to(message, "⚠️ Не удалось показать топ. Попробуй ещё раз через пару секунд.")
