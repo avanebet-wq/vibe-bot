@@ -224,13 +224,6 @@ def _reasoning_budget(effort, max_tokens):
 
 
 def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None, group_context=None, personality=None):
-    if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}", 8, 20):
-        deadline = time.monotonic() + 1.5
-        while time.monotonic() < deadline:
-            time.sleep(0.2)
-            if allow(f"ai:{chat_id}:{user_id or 0}", 8, 20):
-                break
-
     if not _circuit_allows():
         logging.warning("[ai] circuit breaker open")
         return None
@@ -312,7 +305,6 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
         last_error = error
         _circuit_failure()
         logging.warning("[ai] HF %s attempt failed: %s", attempt_effort, error)
-        time.sleep(0.25)
 
     # Keep the old Groq path as a safety net if the old Railway secrets are still
     # configured. This prevents a temporary HF/provider outage from breaking AI.
