@@ -395,14 +395,18 @@ _SYS_CONTENT_MAP = {
 
 
 def enforce_silence(message):
-    """True, если сообщение удалено режимом «Полная тишина»."""
+    """True, если сообщение удалено режимом «Полная тишина».
+
+    ВАЖНО: здесь больше НЕ проверяем права автора.
+    Проверка администратора должна происходить только в самих
+    административных командах/действиях. Поэтому при включённой
+    «Полной тишине» обычные сообщения удаляются у всех, включая админов,
+    а административные команды продолжают работать через свои guard-проверки.
+    """
     gid = message.chat.id
     if message.chat.type not in ("group", "supergroup"):
         return False
     if not store.get_deletion(gid).get("silence", False):
-        return False
-    uid = message.from_user.id if message.from_user else None
-    if uid and is_chat_admin(gid, uid):
         return False
     try:
         bot.delete_message(gid, message.message_id)
