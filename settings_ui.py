@@ -28,14 +28,30 @@ def _kb(rows):
 
 def root_text(chat_title):
     return (
-        "⚙️ <b>НАСТРОЙКИ ЛИЗЫ</b>\n"
+        "⚙️ <b>НАСТРОЙКИ</b>\n"
         f"Группа: «{chat_title}»\n\n"
-        "Здесь можно управлять ответами, активностью, памятью, модерацией и автоматическими функциями.\n\n"
-        "👇 Выберите раздел:"
+        "Выберите, какие настройки открыть:"
     )
 
 
 def root_kb(gid):
+    return _kb([
+        [_btn("👅 Настройки Лизы", "settings_liza", gid)],
+        [_btn("⚙️ Настройки чата", "settings_chat", gid)],
+        [_btn("✅ Закрыть", "close", gid)],
+    ])
+
+
+def liza_settings_text(chat_title):
+    return (
+        "👅 <b>НАСТРОЙКИ ЛИЗЫ</b>\n"
+        f"Группа: «{chat_title}»\n\n"
+        "Здесь находятся все текущие настройки поведения и возможностей Лизы.\n\n"
+        "👇 Выберите раздел:"
+    )
+
+
+def liza_settings_kb(gid):
     return _kb([
         [_btn("👅 Ответы и активность", "liza", gid)],
         [_btn("🧠 Память", "mem", gid), _btn("🎭 Характер", "pers", gid)],
@@ -44,7 +60,25 @@ def root_kb(gid):
         [_btn("⚙️ Функции чата", "chat", gid)],
         [_btn("📊 Статус Лизы", "status", gid)],
         [_btn("🔄 Сброс настроек", "reset", gid)],
-        [_btn("✅ Закрыть", "close", gid)],
+        [_btn("⬅️ Выбор настроек", "back", gid, "root")],
+    ])
+
+
+def chat_settings_text(chat_title):
+    return (
+        "⚙️ <b>НАСТРОЙКИ ЧАТА</b>\n"
+        f"Группа: «{chat_title}»\n\n"
+        "Здесь находятся автоматические функции самого чата.\n\n"
+        "👇 Выберите раздел:"
+    )
+
+
+def chat_settings_kb(gid):
+    return _kb([
+        [_btn("🕑 Повторяющиеся сообщения", "pst", gid)],
+        [_btn("🧠 Капча", "cap", gid)],
+        [_btn("🗑️ Удаление сообщений", "del", gid)],
+        [_btn("⬅️ Выбор настроек", "back", gid, "root")],
     ])
 
 

@@ -70,6 +70,10 @@ def _chat_title(gid):
 def _render(target, gid, pid=None):
     if target == "root":
         return ui.root_text(_chat_title(gid)), ui.root_kb(gid)
+    if target == "settings_liza":
+        return ui.liza_settings_text(_chat_title(gid)), ui.liza_settings_kb(gid)
+    if target == "settings_chat":
+        return ui.chat_settings_text(_chat_title(gid)), ui.chat_settings_kb(gid)
     if target == "liza":
         return ui.liza_text(gid), ui.liza_kb(gid)
     if target == "chance":
@@ -260,8 +264,12 @@ def open_settings_in_dm(user_id, gid):
 
 
 def cmd_settings_command(message):
-    """«настройки» — в группе открывает настройки этого чата,
-    а в личке показывает список чатов, где Лиза есть и пользователь админ."""
+    """«настройки» открывает выбор типа настроек.
+
+    В группе меню уходит администратору в личные сообщения. Если Лиза ещё
+    не может написать пользователю в личку, в группе показывается кнопка
+    для открытия чата с ботом через deep-link.
+    """
     if message.chat.type == "private":
         if send_dm_start_group_picker(message.chat.id, message.from_user.id):
             return
@@ -271,12 +279,29 @@ def cmd_settings_command(message):
         )
 
     gid = message.chat.id
-    if not _authorized(gid, message.from_user.id):
+    uid = message.from_user.id
+    if not _authorized(gid, uid):
         return bot.reply_to(message, "⛔ Эта команда только для админов чата.")
-    kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton("⚙️ Настройки чата", callback_data=f"cf|askwhere|{gid}"))
-    msg = bot.reply_to(message, "⚙️ Открыть настройки этого чата?", reply_markup=kb)
-    track_message(gid, msg.message_id)
+
+    store.set_active_group(uid, gid)
+    text, kb = _render("root", gid)
+    try:
+        msg = bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+        track_message(msg.chat.id, msg.message_id)
+        bot.reply_to(message, "⚙️ Отправила выбор настроек вам в личные сообщения.")
+    except Exception:
+        # Бот не может начать диалог первым: даём администратору deep-link.
+        fallback = types.InlineKeyboardMarkup()
+        fallback.row(types.InlineKeyboardButton(
+            "⚙️ Открыть настройки в ЛС",
+            url=f"https://t.me/{BOT_USERNAME}?start=cfg-{gid}"
+        ))
+        msg = bot.reply_to(
+            message,
+            "📩 Сначала откройте мои личные сообщения, затем нажмите кнопку ниже — настройки откроются там.",
+            reply_markup=fallback,
+        )
+        track_message(gid, msg.message_id)
 
 
 # =============================================================================
@@ -395,18 +420,14 @@ _SYS_CONTENT_MAP = {
 
 
 def enforce_silence(message):
-    """True, если сообщение удалено режимом «Полная тишина».
-
-    ВАЖНО: здесь больше НЕ проверяем права автора.
-    Проверка администратора должна происходить только в самих
-    административных командах/действиях. Поэтому при включённой
-    «Полной тишине» обычные сообщения удаляются у всех, включая админов,
-    а административные команды продолжают работать через свои guard-проверки.
-    """
+    """True, если сообщение удалено режимом «Полная тишина»."""
     gid = message.chat.id
     if message.chat.type not in ("group", "supergroup"):
         return False
     if not store.get_deletion(gid).get("silence", False):
+        return False
+    uid = message.from_user.id if message.from_user else None
+    if uid and is_chat_admin(gid, uid):
         return False
     try:
         bot.delete_message(gid, message.message_id)
@@ -1072,6 +1093,14 @@ def _dispatch_callback(call):
                 )
 
         return bot.answer_callback_query(call.id)
+
+    if action == "settings_liza":
+        bot.answer_callback_query(call.id)
+        return _show(chat_id, message_id, "settings_liza", gid)
+
+    if action == "settings_chat":
+        bot.answer_callback_query(call.id)
+        return _show(chat_id, message_id, "settings_chat", gid)
 
     if action == "liza":
         bot.answer_callback_query(call.id); return _show(chat_id, message_id, "liza", gid)
