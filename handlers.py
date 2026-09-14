@@ -484,20 +484,25 @@ def text_handler(message):
                 return
             if enforce_silence(message):
                 return
-            track_message(cid, message.message_id, getattr(message.chat, "title", None))
 
         if contest_settings_pending(message):
             return
         if try_handle_pending_input(message):
             return
 
-        # Все команды работают напрямую, без обязательной приставки «Лиза».
-        # В группах обычный текст по-прежнему не считается командой и дальше
-        # обрабатывается как обычный разговор/AI по старым правилам.
-        touch_user(message)
+        # КРИТИЧЕСКИЙ FAST PATH ДЛЯ КОМАНД.
+        # Не делаем до команды track_message/touch_user/память/статистику
+        # сообщения. Эти операции пишут в PostgreSQL и могли задерживать даже
+        # простое меню на несколько секунд. Сам обработчик команды уже решает,
+        # что ему действительно нужно прочитать из БД.
         direct_command_text = text.strip()
         if _dispatch(message, direct_command_text):
             return
+
+        # Обычный текст идёт по полному pipeline.
+        touch_user(message)
+        if is_group:
+            track_message(cid, message.message_id, getattr(message.chat, "title", None))
 
         if message.from_user:
             remember_user(message.from_user)
