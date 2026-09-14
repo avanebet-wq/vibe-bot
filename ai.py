@@ -118,13 +118,10 @@ def _post_huggingface(messages, max_tokens, enable_thinking=True):
         "temperature": 1.0 if enable_thinking else 0.7,
         "top_p": 0.95 if enable_thinking else 0.80,
         "presence_penalty": 0.0 if enable_thinking else 1.5,
+        # Hugging Face Inference Providers accepts Qwen3.8 reasoning control
+        # as a top-level OpenAI-compatible field. OVHcloud rejects nested
+        # extra_body/chat_template_kwargs with HTTP 400.
         "reasoning_effort": "medium" if enable_thinking else "low",
-        "extra_body": {
-            "chat_template_kwargs": {
-                "enable_thinking": bool(enable_thinking),
-                "preserve_thinking": True,
-            }
-        },
     }
     try:
         resp = _http_session().post(
