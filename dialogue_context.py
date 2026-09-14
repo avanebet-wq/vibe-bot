@@ -11,6 +11,7 @@ _LOCK = Lock()
 _CONTEXT = defaultdict(lambda: deque(maxlen=_MAX))
 _MAX_CHATS = 5000
 _LAST_USED = {}
+_TTL=3600.0
 
 def record(chat_id, user_name: str, text: str, message_id=None,
            reply_to_user: Optional[str] = None, reply_to_message_id=None):
@@ -23,10 +24,15 @@ def record(chat_id, user_name: str, text: str, message_id=None,
         "reply_to_user": (reply_to_user or "")[:80],
         "reply_to_message_id": reply_to_message_id,
     }
+    now = time.time()
     with _LOCK:
+        cutoff = now - _TTL
+        for stale, ts in list(_LAST_USED.items()):
+            if ts < cutoff:
+                _LAST_USED.pop(stale, None); _CONTEXT.pop(stale, None)
         key = str(chat_id)
         _CONTEXT[key].append(item)
-        _LAST_USED[key] = time.time()
+        _LAST_USED[key] = now
         if len(_LAST_USED) > _MAX_CHATS:
             oldest = min(_LAST_USED, key=_LAST_USED.get)
             _LAST_USED.pop(oldest, None); _CONTEXT.pop(oldest, None)

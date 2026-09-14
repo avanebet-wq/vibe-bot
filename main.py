@@ -27,5 +27,12 @@ if __name__ == "__main__":
             mark_ok()
         except KeyboardInterrupt: break
         except Exception as e:
-            mark_error(e); logging.error("Сбой связи: %s",e,exc_info=True); time.sleep(5)
+            mark_error(e)
+            code = getattr(e, "error_code", None)
+            if code == 409:
+                logging.error("Telegram 409 Conflict: another long-poll/webhook consumer is using this bot token")
+                time.sleep(2)
+            else:
+                logging.error("Сбой связи: %s", e, exc_info=True)
+                time.sleep(5)
     stop()

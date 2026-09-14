@@ -4,7 +4,8 @@ import os
 from zoneinfo import ZoneInfo
 
 TOKEN = os.environ.get("BOT_TOKEN")
-GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_KEYS = [x.strip() for x in [os.environ.get("GROQ_API_KEY", ""), os.environ.get("GROQ_API_KEY_2", ""), os.environ.get("GROQ_API_KEY_3", "")] if x.strip()]
+GROQ_KEY = ",".join(GROQ_KEYS)
 LOG_CHAT_ID = os.environ.get("LOG_CHAT_ID")
 TZ = ZoneInfo("Europe/Kyiv")
 

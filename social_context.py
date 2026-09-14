@@ -6,6 +6,8 @@ from collections import defaultdict, deque, Counter
 from database import db_get, db_set, db_update_json
 _LOCK=threading.RLock()
 _STATE=defaultdict(lambda:{"edges":Counter(),"recent":deque(maxlen=60)})
+_LAST_USED={}
+_STATE_TTL=3600.0
 
 def _persist(chat_id):
     with _LOCK:
@@ -23,10 +25,18 @@ def _load(chat_id):
             try: a,b=edge.split(":",1); _STATE[key]["edges"][(a,b)]=int(n)
             except ValueError: pass
 
-def observe(chat_id,user_id,reply_to_user_id=None):
-    key=str(chat_id); _load(key)
+def _cleanup(now=None):
+    now=time.time() if now is None else now
+    cutoff=now-_STATE_TTL
     with _LOCK:
-        s=_STATE[key]; s["recent"].append((str(user_id),time.time()))
+        for key,ts in list(_LAST_USED.items()):
+            if ts < cutoff:
+                _LAST_USED.pop(key,None); _STATE.pop(key,None)
+
+def observe(chat_id,user_id,reply_to_user_id=None):
+    now=time.time(); key=str(chat_id); _cleanup(now); _load(key)
+    with _LOCK:
+        s=_STATE[key]; s["recent"].append((str(user_id),now)); _LAST_USED[key]=now
         should_persist=False
         if reply_to_user_id and str(reply_to_user_id)!=str(user_id):
             s["edges"][(str(user_id),str(reply_to_user_id))]+=1
@@ -34,7 +44,7 @@ def observe(chat_id,user_id,reply_to_user_id=None):
     if should_persist: _persist(key)
 
 def summary(chat_id,user_id=None):
-    _load(chat_id)
+    _cleanup(); _load(chat_id)
     with _LOCK:
         s=_STATE[str(chat_id)]
         recent_count=len({u for u,_ in s["recent"]})

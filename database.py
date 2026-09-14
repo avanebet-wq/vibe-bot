@@ -94,14 +94,17 @@ class _PGConnection:
         try:
             self.raw.commit()
             return
-        except (psycopg2.OperationalError, psycopg2.InterfaceError):
-            # COMMIT outcome is ambiguous after a transport failure. Do not
-            # reconnect-and-commit again; recover the connection and surface
-            # the error to the caller so it can decide what is safe to retry.
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+            # SQLSTATE 08007 means the transaction resolution is unknown.
+            # In that state PostgreSQL does not give the client a safe way to
+            # infer whether COMMIT reached the server. Never auto-retry a
+            # mutating transaction: that could duplicate events or XP.
+            pgcode = getattr(exc, "pgcode", None)
+            LOG.error("PostgreSQL COMMIT outcome is ambiguous (SQLSTATE=%s)", pgcode)
             try:
                 self._reconnect()
             except Exception:
-                pass
+                LOG.exception("PostgreSQL reconnect after ambiguous COMMIT failed")
             raise
 
 
@@ -268,6 +271,10 @@ def _migrate_sqlite_file(path: str, label: str) -> tuple[int, bool]:
 
 with db_lock:
     conn.execute("CREATE TABLE IF NOT EXISTS store (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS miniapp_replay (replay_key TEXT PRIMARY KEY, seen_at DOUBLE PRECISION NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_miniapp_replay_seen_at ON miniapp_replay(seen_at)")
     conn.commit()
 
 # Migrate old data if it exists on a Railway volume. A marker prevents doing
@@ -369,6 +376,31 @@ def db_update_json(key, mutator, default=None):
             LOG.error("DB Atomic JSON Update Error [%s]: %s", key, exc, exc_info=True)
             raise
 
+
+
+def db_claim_replay(replay_key, seen_at, ttl_seconds):
+    """Atomically claim a Mini App replay key across all bot instances.
+
+    Returns True when the key was not seen within the TTL, False for a replay.
+    The operation is idempotent and uses a primary-key conflict instead of
+    retrying an ambiguous write.
+    """
+    key = str(replay_key)[:256]
+    now = float(seen_at)
+    cutoff = now - float(ttl_seconds)
+    with db_lock:
+        try:
+            conn.execute("DELETE FROM miniapp_replay WHERE seen_at < %s", (cutoff,))
+            cur = conn.execute(
+                "INSERT INTO miniapp_replay(replay_key,seen_at) VALUES(%s,%s) ON CONFLICT(replay_key) DO NOTHING RETURNING replay_key",
+                (key, now),
+            )
+            claimed = cur.fetchone() is not None
+            conn.commit()
+            return claimed
+        except Exception:
+            conn.rollback()
+            raise
 
 def db_invalidate(key=None):
     with db_lock:

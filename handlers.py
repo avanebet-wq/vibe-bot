@@ -20,7 +20,7 @@ import logging
 import time
 import threading
 
-from runtime import bot, WAKE_RE, BOT_ID, ai_executor
+from runtime import bot, WAKE_RE, BOT_ID
 from config import STORY_AUTOTELL_CHANCE, BAD_WORDS
 from utils import get_setting, set_setting, remember_user
 from mood import (
@@ -40,53 +40,81 @@ from help import cmd_help
 from ai import ask_liza
 from queue import Queue, Full
 
-_AI_QUEUE = Queue(maxsize=32)
+_AI_QUEUE = Queue(maxsize=24)
+_AI_ACTIVE_BY_CHAT = {}
+_AI_STATE_LOCK = threading.RLock()
+_AI_MAX_PER_CHAT = 2
+
+def _ai_job_finished(chat_id):
+    if chat_id is None:
+        return
+    with _AI_STATE_LOCK:
+        current = _AI_ACTIVE_BY_CHAT.get(chat_id, 0)
+        if current <= 1:
+            _AI_ACTIVE_BY_CHAT.pop(chat_id, None)
+        else:
+            _AI_ACTIVE_BY_CHAT[chat_id] = current - 1
 
 def _ai_worker():
     while True:
         job = _AI_QUEUE.get()
-        if job is None:
-            _AI_QUEUE.task_done()
-            return
+        message = None
+        chat_id = None
         try:
+            if job is None:
+                return
             message, args, kwargs, reply_mode = job
-            target_duration = 2.0 + min(2.0, len(str(args[0] if args else kwargs.get("user_text", "") or "")) / 300.0)
-            future = ai_executor.submit(ask_liza, *args, **kwargs)
-            started = time.monotonic()
-            while not future.done():
-                try: bot.send_chat_action(message.chat.id, "typing")
-                except Exception: pass
-                time.sleep(1.0)
-            reply = future.result()
-            elapsed = time.monotonic() - started
-            while elapsed < target_duration:
-                try: bot.send_chat_action(message.chat.id, "typing")
-                except Exception: pass
-                time.sleep(min(1.0, target_duration - elapsed))
-                elapsed = time.monotonic() - started
-            reply = _apply_polite_filter(message.chat.id, reply) if reply is not None else reply
-            if reply_mode == "send": _safe_send(message.chat.id, reply)
-            else: _safe_reply(message, reply)
-            record_liza_response(message.chat.id, getattr(message.from_user, "id", None))
+            chat_id = getattr(getattr(message, "chat", None), "id", None)
+            reply = ask_liza(*args, **kwargs)
+            reply = _apply_polite_filter(chat_id, reply) if reply is not None else reply
+            if reply_mode == "send":
+                sent = _safe_send(chat_id, reply)
+            else:
+                sent = _safe_reply(message, reply)
+            if sent:
+                record_liza_response(chat_id, getattr(message.from_user, "id", None))
         except Exception:
             logging.exception("[ai-worker] failed")
-            try:
-                _safe_reply(message, "⚠️ Не удалось получить ответ. Повторю запрос при следующем обращении.")
-            except Exception:
-                pass
+            if message is not None:
+                try:
+                    _safe_reply(message, "⚠️ Не удалось получить ответ. Попробуй ещё раз через несколько секунд.")
+                except Exception:
+                    pass
         finally:
+            _ai_job_finished(chat_id)
             _AI_QUEUE.task_done()
 
 for _ in range(3):
     threading.Thread(target=_ai_worker, daemon=True, name="liza-ai-queue").start()
 
-def _enqueue_ai_reply(message, *args, reply_mode="reply", **kwargs):
-    try:
-        _AI_QUEUE.put_nowait((message, args, kwargs, reply_mode))
-        return True
-    except Full:
-        logging.warning("[ai] queue full for chat %s", getattr(message.chat, "id", None))
-        return False
+def _enqueue_ai_reply(message, *args, reply_mode="reply", processing_notice=True, **kwargs):
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    with _AI_STATE_LOCK:
+        active = _AI_ACTIVE_BY_CHAT.get(chat_id, 0)
+        if active >= _AI_MAX_PER_CHAT:
+            if processing_notice:
+                try:
+                    _safe_reply(message, "⏳ У меня уже есть запросы в обработке. Подожди пару секунд.")
+                except Exception:
+                    pass
+            return False
+        try:
+            _AI_QUEUE.put_nowait((message, args, kwargs, reply_mode))
+        except Full:
+            if processing_notice:
+                try:
+                    _safe_reply(message, "⏳ Сейчас слишком много запросов. Повтори чуть позже.")
+                except Exception:
+                    pass
+            logging.warning("[ai] queue full for chat %s", chat_id)
+            return False
+        _AI_ACTIVE_BY_CHAT[chat_id] = active + 1
+    if processing_notice:
+        try:
+            _safe_reply(message, "⏳ Обрабатываю…")
+        except Exception:
+            logging.exception("[ai] failed to send processing notice")
+    return True
 
 from settings import (
     try_handle_pending_input, enforce_silence, enforce_captcha,
@@ -273,9 +301,12 @@ def _safe_reply(message, text):
 
 
 def _safe_send(chat_id, text):
-    if not text or not text.strip():
-        return
-    bot.send_message(chat_id, text)
+    if text is None:
+        return None
+    text = str(text).strip()
+    if not text:
+        return None
+    return bot.send_message(chat_id, text)
 
 
 
@@ -489,7 +520,7 @@ def text_handler(message):
         chance = get_chatter_chance(cid)
         if random.random() < chance:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), reply_mode="send")
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), reply_mode="send", processing_notice=False)
 
     except Exception as e:
         logging.error(f"[text_handler] {e}", exc_info=True)

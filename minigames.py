@@ -59,12 +59,18 @@ def ensure_schema():
                     username TEXT,
                     display_name TEXT,
                     kind TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    source_message_id BIGINT
                 )"""
             )
+            conn.execute("ALTER TABLE minigame_events ADD COLUMN IF NOT EXISTS source_message_id BIGINT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_kind_time "
                 "ON minigame_events(chat_id, kind, created_at)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_minigame_source_message "
+                "ON minigame_events(chat_id, source_message_id, kind) WHERE source_message_id IS NOT NULL"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_minigame_events_chat_user_kind_time "
@@ -81,12 +87,18 @@ def ensure_schema():
                     fruit_emoji TEXT NOT NULL,
                     multiplier REAL NOT NULL,
                     volume_liters REAL NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    source_message_id BIGINT
                 )"""
             )
+            conn.execute("ALTER TABLE drink_game_events ADD COLUMN IF NOT EXISTS source_message_id BIGINT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_user_time "
                 "ON drink_game_events(chat_id, user_id, created_at)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_drink_source_message "
+                "ON drink_game_events(chat_id, source_message_id) WHERE source_message_id IS NOT NULL"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_drink_game_chat_time "
@@ -162,9 +174,9 @@ def _record(chat_id, user_id, username, display_name, kind, now):
     with db_lock:
         try:
             conn.execute(
-                "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at) "
-                "VALUES(?,?,?,?,?,?)",
-                (str(chat_id), str(user_id), username, display_name, kind, now),
+                "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at,source_message_id) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id, kind) DO NOTHING",
+                (str(chat_id), str(user_id), username, display_name, kind, now, getattr(message, "message_id", None)),
             )
             conn.commit()
         except Exception:
@@ -243,11 +255,16 @@ def _try_use(message, kind):
                 if remaining > 0:
                     return remaining, None, None, None
 
-            conn.execute(
-                "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at) "
-                "VALUES(?,?,?,?,?,?)",
-                (str(chat_id), str(user_id), username, display_name, kind, now),
+            cur = conn.execute(
+                "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at,source_message_id) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id, kind) DO NOTHING RETURNING id",
+                (str(chat_id), str(user_id), username, display_name, kind, now, getattr(message, "message_id", None)),
             )
+            if cur.fetchone() is None:
+                # Telegram redelivery of the same update: the first transaction
+                # already recorded it, so do not award XP a second time.
+                conn.rollback()
+                return COOLDOWN, None, None, None
             total = int(conn.execute(
                 "SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?",
                 (str(chat_id), str(user_id), kind),
@@ -310,17 +327,21 @@ def cmd_drink(message):
                         return
 
                 revo_name, fruit_emoji, multiplier, volume_liters = _random_drink_result()
-                conn.execute(
+                cur = conn.execute(
                     "INSERT INTO drink_game_events "
-                    "(chat_id,user_id,username,display_name,revo_name,fruit_emoji,multiplier,volume_liters,created_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    "(chat_id,user_id,username,display_name,revo_name,fruit_emoji,multiplier,volume_liters,created_at,source_message_id) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id) DO NOTHING RETURNING id",
                     (str(chat_id), str(user_id), username, display_name, revo_name, fruit_emoji,
-                     float(multiplier), float(volume_liters), now),
+                     float(multiplier), float(volume_liters), now, getattr(message, "message_id", None)),
                 )
+                if cur.fetchone() is None:
+                    conn.rollback()
+                    bot.reply_to(message, "🕐 Этот запрос уже был обработан.")
+                    return
                 conn.execute(
-                    "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at) "
-                    "VALUES(?,?,?,?,?,?)",
-                    (str(chat_id), str(user_id), username, display_name, "drink", now),
+                    "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at,source_message_id) "
+                    "VALUES(?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id, kind) DO NOTHING",
+                    (str(chat_id), str(user_id), username, display_name, "drink", now, getattr(message, "message_id", None)),
                 )
                 total = int(conn.execute(
                     "SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?",

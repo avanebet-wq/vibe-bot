@@ -7,6 +7,7 @@ from chat_personality import get as get_chat_personality
 from security import allow
 from utils import get_setting
 import logging, threading, requests, time
+from requests.adapters import HTTPAdapter
 from config import GROQ_KEY, AI_MODEL, SYS_PROMPT_NORMAL, SYS_PROMPT_ANGRY
 
 _key_list=[k.strip() for k in GROQ_KEY.split(",") if k.strip()]
@@ -17,6 +18,17 @@ _circuit_failures=0
 _circuit_until=0.0
 _CIRCUIT_THRESHOLD=5
 _CIRCUIT_COOLDOWN=30.0
+_HTTP_LOCAL=threading.local()
+
+def _http_session():
+    session = getattr(_HTTP_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=2, pool_maxsize=2, max_retries=0)
+        session.mount("https://", adapter)
+        session.headers.update({"Content-Type": "application/json", "User-Agent": "Liza-Telegram-Bot/1.0"})
+        _HTTP_LOCAL.session = session
+    return session
 try:
     from conversation_memory import conversation_memory as persistent_conversation_memory
 except Exception: persistent_conversation_memory=None
@@ -55,11 +67,13 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
     # Do not show rate-limit or transport fallbacks to the user. The AI layer
     # keeps retrying until it gets an actual answer (or an available key).
     if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}",8,20):
-        # Do not fail the conversation just because several requests arrived
-        # quickly. Wait briefly for the local window to open.
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not allow(f"ai:{chat_id}:{user_id or 0}",8,20):
-            time.sleep(0.25)
+        # Never tie up a worker for the whole local rate-limit window. One
+        # bounded wait is enough; the queue itself is the main backpressure.
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            if allow(f"ai:{chat_id}:{user_id or 0}",8,20):
+                break
     if not _key_list:
         logging.error("[ai] GROQ_API_KEY is not configured")
         return "Сервис ИИ временно недоступен. Попробуй обратиться чуть позже."
@@ -122,11 +136,11 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
             "include_reasoning":False
         }
         try:
-            resp=requests.post(
+            resp=_http_session().post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 json=payload,
-                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"Liza-Telegram-Bot/1.0"},
-                timeout=30
+                headers={"Authorization":f"Bearer {key}"},
+                timeout=(5,30)
             )
             if resp.status_code==200:
                 data=resp.json()
@@ -145,11 +159,16 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                 last_error="empty AI response"
                 _circuit_failure()
                 logging.warning("[ai] empty response, retrying (attempt %s/%s, reasoning=%s)",attempt+1,total_attempts,mode)
-            elif resp.status_code in (401,402,429):
+            elif resp.status_code in (401,402,429,498):
                 last_error=f"HTTP {resp.status_code}"
                 _circuit_failure()
                 _switch_key()
-                time.sleep(0.25)
+                retry_after = resp.headers.get("retry-after") if resp.status_code == 429 else None
+                try:
+                    delay = min(2.0, max(0.1, float(retry_after))) if retry_after is not None else 0.25
+                except (TypeError, ValueError):
+                    delay = 0.25
+                time.sleep(delay)
             else:
                 last_error=f"HTTP {resp.status_code}"
                 _circuit_failure()
@@ -177,11 +196,11 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
             {"role":"user","content":user_content}
         ]
         try:
-            resp=requests.post(
+            resp=_http_session().post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 json={"model":AI_MODEL,"messages":final_messages,"max_completion_tokens":max(100,min(int(max_tokens),1200)),"temperature":0.72,"reasoning_effort":"low","include_reasoning":False},
-                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"Liza-Telegram-Bot/1.0"},
-                timeout=30
+                headers={"Authorization":f"Bearer {key}"},
+                timeout=(5,30)
             )
             if resp.status_code==200:
                 content=((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content")

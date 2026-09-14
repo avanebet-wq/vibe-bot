@@ -6,6 +6,7 @@ Python standard library and the already-created runtime.bot instance.
 """
 import hashlib
 from security import allow
+from database import db_claim_replay
 from reliability import health
 import hmac
 import json
@@ -28,9 +29,6 @@ BASE_DIR = Path(__file__).resolve().parent
 INDEX_PATH = BASE_DIR / "miniapp_index.html"
 MAX_INIT_DATA_AGE = 300
 _REPLAY_TTL = MAX_INIT_DATA_AGE
-_replay_lock = threading.RLock()
-_replay_seen = {}
-_REPLAY_MAX = 10000
 MAX_BODY = 256 * 1024
 ALLOWED_TYPES = {
     "url", "popup", "alert", "share", "copy", "rules",
@@ -70,17 +68,8 @@ def validate_init_data(init_data: str) -> dict:
         raise ValueError("invalid initData hash")
 
     replay_key = pairs.get("query_id") or hashlib.sha256(init_data.encode("utf-8")).hexdigest()
-    with _replay_lock:
-        now = time.time()
-        expired = [k for k, ts in _replay_seen.items() if now - ts > _REPLAY_TTL]
-        for k in expired:
-            _replay_seen.pop(k, None)
-        if replay_key in _replay_seen:
-            raise ValueError("initData replay detected")
-        if len(_replay_seen) >= _REPLAY_MAX:
-            oldest = min(_replay_seen, key=_replay_seen.get)
-            _replay_seen.pop(oldest, None)
-        _replay_seen[replay_key] = now
+    if not db_claim_replay(replay_key, time.time(), _REPLAY_TTL):
+        raise ValueError("initData replay detected")
 
     user_raw = pairs.get("user")
     if not user_raw:
@@ -116,9 +105,9 @@ def _normalize_url(value: str) -> str:
     elif value.startswith("@"):
         value = "https://t.me/" + value[1:]
     parsed = urlparse(value)
-    if parsed.scheme.lower() not in {"http", "https", "tg"}:
-        raise ValueError("URL must use http://, https:// or tg://")
-    if parsed.scheme.lower() != "tg" and not parsed.netloc:
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("URL must use http:// or https://")
+    if not parsed.netloc:
         raise ValueError("URL host is required")
     return value[:2048]
 

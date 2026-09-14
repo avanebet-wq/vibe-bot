@@ -9,6 +9,8 @@ _HISTORY = defaultdict(lambda: deque(maxlen=18))
 _LAST_LIZA = {}
 _COOLDOWN = {}
 _MAX_CHATS = 5000
+_STATE_TTL = 3600.0
+_LAST_CLEAN = 0.0
 
 QUESTION_RE = re.compile(r"[?？]|^(как|что|кто|где|когда|зачем|почему|можно|а ты|ты)\b", re.I)
 DIRECT_RE = re.compile(r"\bлиза\b", re.I)
@@ -17,23 +19,37 @@ ACTIVE_RE = re.compile(
     r"смотри|слушай|короче|вообще|реально)\b", re.I
 )
 
+def _cleanup(now=None):
+    global _LAST_CLEAN
+    now = time.time() if now is None else now
+    if now - _LAST_CLEAN < 300 and len(_HISTORY) <= _MAX_CHATS:
+        return
+    cutoff = now - _STATE_TTL
+    for key, ts in list(_LAST_LIZA.items()):
+        if ts < cutoff:
+            _LAST_LIZA.pop(key, None); _HISTORY.pop(key, None); _COOLDOWN.pop(key, None)
+    _LAST_CLEAN = now
+
 def remember_message(chat_id, text, is_liza=False):
+    global _LAST_CLEAN
     if not text:
         return
+    now=time.time()
+    _cleanup(now)
     _HISTORY[chat_id].append({
         "text": str(text)[:1000],
         "is_liza": bool(is_liza),
         "ts": time.time(),
     })
     if is_liza:
-        _LAST_LIZA[chat_id] = time.time()
+        _LAST_LIZA[chat_id] = now
     if len(_HISTORY) > _MAX_CHATS:
-        keys = list(_HISTORY.keys())[_MAX_CHATS:]
-        for key in keys:
+        oldest = sorted(_HISTORY.keys(), key=lambda k: _LAST_LIZA.get(k, 0))[:max(1, len(_HISTORY)-_MAX_CHATS)]
+        for key in oldest:
             _HISTORY.pop(key, None); _LAST_LIZA.pop(key, None); _COOLDOWN.pop(key, None)
 
 def mark_liza_response(chat_id):
-    _LAST_LIZA[chat_id] = time.time()
+    now=time.time(); _cleanup(now); _LAST_LIZA[chat_id] = now
 
 def should_auto_reply(chat_id, text, base_chance=0.05):
     """Return whether Liza should join an unsolicited group message."""
@@ -45,8 +61,8 @@ def should_auto_reply(chat_id, text, base_chance=0.05):
     if DIRECT_RE.search(text):
         return False
 
+    now = time.time(); _cleanup(now)
     history = list(_HISTORY.get(chat_id, ()))
-    now = time.time()
 
     # Recent Liza answer means a short cooldown to avoid spamming.
     last_liza = _LAST_LIZA.get(chat_id, 0)

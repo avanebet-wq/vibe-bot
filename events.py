@@ -12,17 +12,23 @@ _MAX_EVENTS = 30
 _EVENTS = defaultdict(lambda: deque(maxlen=_MAX_EVENTS))
 _MAX_CHATS = 5000
 _LAST_USED = {}
+_TTL=3600.0
 
 def emit(chat_id, event_type: str, **data):
     if chat_id is None:
         return
+    now = time.time()
+    cutoff = now - _TTL
+    for stale, ts in list(_LAST_USED.items()):
+        if ts < cutoff:
+            _LAST_USED.pop(stale, None); _EVENTS.pop(stale, None)
     key = str(chat_id)
     _EVENTS[key].append({
         "type": str(event_type),
-        "time": time.time(),
+        "time": now,
         "data": data,
     })
-    _LAST_USED[key] = time.time()
+    _LAST_USED[key] = now
     if len(_LAST_USED) > _MAX_CHATS:
         oldest = min(_LAST_USED, key=_LAST_USED.get)
         _LAST_USED.pop(oldest, None); _EVENTS.pop(oldest, None)
