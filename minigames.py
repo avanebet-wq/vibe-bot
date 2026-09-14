@@ -463,8 +463,7 @@ def _table(title, rows, emoji):
         label = html.escape(_person_label(username, display_name, uid))
         if len(label) > 22:
             label = label[:19] + "..."
-        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
-        lines.append(f"{medal} <b>{label}</b> — {int(total)}")
+        lines.append(f"{idx}. <b>{label}</b> — {int(total)}")
     if len(rows) > 10:
         lines.append(f"… ещё {len(rows) - 10} игроков")
     return lines
@@ -495,8 +494,7 @@ def _overall_table(rows):
         label = html.escape(_person_label(username, display_name, uid))
         if len(label) > 22:
             label = label[:19] + "..."
-        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
-        lines.append(f"{medal} <b>{label}</b> — {int(total)} игр")
+        lines.append(f"{idx}. <b>{label}</b> — {int(total)} игр")
     if len(rows) > 10:
         lines.append(f"… ещё {len(rows) - 10} игроков")
     return lines
@@ -536,8 +534,7 @@ def _drink_table(title, rows):
         label = html.escape(_person_label(username, display_name, uid))
         if len(label) > 22:
             label = label[:19] + "..."
-        medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
-        lines.append(f"{medal} <b>{label}</b> — {int(total)} игр · {float(liters or 0):.1f} л")
+        lines.append(f"{idx}. <b>{label}</b> — {float(liters or 0):.1f} л")
     if len(rows) > 10:
         lines.append(f"… ещё {len(rows) - 10} игроков")
     return lines
