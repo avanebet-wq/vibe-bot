@@ -3,6 +3,7 @@ import html, time, threading
 from database import conn, db_lock
 from runtime import bot
 from minigames import get_xp
+from karma import get_karma
 
 _PRESENCE_LOCK = threading.RLock()
 _LAST_PRESENCE_WRITE = {}
@@ -115,5 +116,5 @@ def cmd_profile(message):
            f'🏆 Ранг: <b>{html.escape(rank[1])}</b>',f'⭐ Опыт: <b>{xp} XP</b>']
     if remaining is None: lines.append('👑 Максимальный ранг достигнут')
     else: lines.append(f'📈 До следующего ранга: <b>{remaining} XP</b>')
-    lines += ['', '🎮 <b>Статистика мини-игр</b>', f'🚬 Сиг скурено: <b>{cigs}</b>', f'☕ Чашек выпито: <b>{cups}</b>', f'🥤 Revo выпито: <b>{drinks}</b>', f'💧 Литров Revo: <b>{liters:.1f} л</b>', '', f'⏱ В чате: <b>{html.escape(fmt_duration(time.time()-since))}</b>']
+    lines += ['', '🎮 <b>Статистика мини-игр</b>', f'🚬 Сиг скурено: <b>{cigs}</b>', f'☕ Чашек выпито: <b>{cups}</b>', f'🥤 Revo выпито: <b>{drinks}</b>', f'💧 Литров Revo: <b>{liters:.1f} л</b>', '', f'⏱ В чате: <b>{html.escape(fmt_duration(time.time()-since))}</b>', f'⚖️ Карма: <b>{get_karma(cid, uid):+d}</b>']
     bot.reply_to(message,'\n'.join(lines),parse_mode='HTML')

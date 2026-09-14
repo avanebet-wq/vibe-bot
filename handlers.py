@@ -8,6 +8,7 @@ from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
 from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
 from profile import cmd_profile, touch_user
+from karma import observe_message, get_user_context, change_karma, auto_delta
 from contest_settings import open_settings as contest_settings_open, handle_pending as contest_settings_pending
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
@@ -113,6 +114,10 @@ def _ai_worker():
                 sent = _safe_reply(message, reply)
             if sent:
                 record_liza_response(chat_id, getattr(message.from_user, "id", None))
+                try:
+                    _record_liza_sent(message, sent)
+                except Exception:
+                    pass
         except Exception:
             logging.exception("[ai-worker] failed")
             if message is not None:
@@ -243,6 +248,77 @@ _SINGLE_COMMANDS = {
     "калл": lambda m, a: _cmd_call(m, a),
 }
 
+
+
+def _ai_user_context(message):
+    try:
+        u = getattr(message, "from_user", None)
+        if not u:
+            return None
+        return get_user_context(message.chat.id, u.id)
+    except Exception:
+        return None
+
+
+def _handle_manual_karma(message):
+    """Handle + / - replies as explicit karma votes for the replied user."""
+    if getattr(message.chat, "type", "") not in ("group", "supergroup"):
+        return False
+    text = (message.text or "").strip()
+    if text not in ("+", "-"):
+        return False
+    reply = getattr(message, "reply_to_message", None)
+    target = getattr(reply, "from_user", None)
+    actor = getattr(message, "from_user", None)
+    if not target or getattr(target, "is_bot", False) or not actor:
+        bot.reply_to(message, "⚠️ Поставить карму можно ответом + или - на сообщение участника.")
+        return True
+    if target.id == actor.id:
+        bot.reply_to(message, "😏 Сам себе карму накручивать не дам.")
+        return True
+    delta = 1 if text == "+" else -1
+    old, new = change_karma(
+        message.chat.id,
+        target.id,
+        delta,
+        "плюс от участника" if delta > 0 else "минус от участника",
+        actor.id,
+    )
+    if new == old:
+        return True
+    name = html.escape((target.first_name or "Пользователь").split(None, 1)[0])
+    sign = "+1" if delta > 0 else "-1"
+    emoji = "📈" if delta > 0 else "📉"
+    verb = "повысила" if delta > 0 else "понизила"
+    bot.send_message(
+        message.chat.id,
+        f'{emoji} <a href="tg://user?id={target.id}">{name}</a>: Лиза {verb} карму на {sign}. Карма: <b>{new:+d}</b>',
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    return True
+
+
+def _apply_auto_karma(message):
+    """Conservatively adjust karma from clearly positive/negative behavior."""
+    u = getattr(message, "from_user", None)
+    if not u or getattr(u, "is_bot", False):
+        return
+    delta, reason = auto_delta(message.text or "")
+    if not delta:
+        return
+    old, new = change_karma(message.chat.id, u.id, delta, reason, u.id)
+    if old == new:
+        return
+    name = html.escape((u.first_name or "Пользователь").split(None, 1)[0])
+    emoji = "📈" if delta > 0 else "📉"
+    verb = "повысила" if delta > 0 else "понизила"
+    bot.send_message(
+        message.chat.id,
+        f'{emoji} <a href="tg://user?id={u.id}">{name}</a>: Лиза {verb} тебе карму {delta:+d} — {html.escape(reason)}. Карма: <b>{new:+d}</b>',
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 def _cmd_memory(message):
@@ -514,7 +590,7 @@ def _safe_reply(message, text):
     text = str(text).strip()
     if not text:
         return bot.reply_to(message, "⏳ Не удалось получить ответ от сервиса. Повтори через несколько секунд.")
-    bot.reply_to(message, text)
+    return bot.reply_to(message, text)
 
 
 def _safe_send(chat_id, text):
@@ -618,6 +694,10 @@ def text_handler(message):
         if is_group and enforce_captcha(message):
             return
 
+        # Явная оценка кармы: ответ + / - на сообщение участника.
+        if _handle_manual_karma(message):
+            return
+
         # УЛЬТРА-FAST PATH: известную команду маршрутизируем сразу.
         # Она не должна ждать проверки конкурса, полной тишины, ожидания
         # настроек, учёта сообщения, памяти и прочей аналитики.
@@ -638,7 +718,7 @@ def text_handler(message):
                 _enqueue_ai_reply(
                     message, active_text, angry=is_angry(cid), chat_id=cid,
                     user_id=getattr(message.from_user, "id", None),
-                    group_context=_liza_ai_context(message)
+                    group_context=_liza_ai_context(message), user_context=_ai_user_context(message)
                 )
             return
 
@@ -657,8 +737,17 @@ def text_handler(message):
         touch_user(message)
         if is_group:
             track_message(cid, message.message_id, getattr(message.chat, "title", None))
+            try:
+                display_name = getattr(message.from_user, "first_name", None) or getattr(message.from_user, "username", None) or "Пользователь"
+                record_group_message(cid, display_name, text)
+            except Exception:
+                pass
 
         if message.from_user:
+            try:
+                observe_message(cid, message.from_user.id, text, getattr(message.from_user, "first_name", None))
+            except Exception:
+                pass
             remember_user(message.from_user)
             fact = infer_safe_fact(text) if get_setting(cid, "memory_enabled", True) else None
             if fact and is_group:
@@ -671,6 +760,7 @@ def text_handler(message):
                 reply_user = getattr(getattr(message, "reply_to_message", None), "from_user", None)
                 observe_social(cid, message.from_user.id if message.from_user else 0, getattr(reply_user, "id", None))
                 update_mood(cid, text, is_direct=False, is_question=("?" in text or "？" in text))
+                _apply_auto_karma(message)
                 mark_ok()
             except Exception: pass
 
@@ -706,7 +796,7 @@ def text_handler(message):
                 return
             # Обратились по имени, но это не команда — считаем, что это вопрос к AI.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
+            _enqueue_ai_reply(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message))
             return
 
         if is_group and reply_mode == "mention" and not addressed:
@@ -715,13 +805,13 @@ def text_handler(message):
         if not is_group:
             # Личка — общаемся без обращения по имени.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message))
             return
 
         # Групповой чат, сообщение не адресовано напрямую.
         if addressed:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message))
             return
 
         # Если включена автоактивность — не встреваем во время бурного обсуждения.

@@ -223,7 +223,7 @@ def _reasoning_budget(effort, max_tokens):
     return max(1024, min(requested, 2048))
 
 
-def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None, group_context=None, personality=None):
+def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None, group_context=None, personality=None, user_context=None):
     if not _circuit_allows():
         logging.warning("[ai] circuit breaker open")
         return None
@@ -262,6 +262,11 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
             logging.exception("[ai] failed to build structured dialogue context")
     if group_context:
         extra.append("Контекст последних сообщений группы:\n" + str(group_context)[:6500])
+    if user_context:
+        extra.append(
+            "ПЕРСОНАЛЬНЫЙ КОНТЕКСТ СОБЕСЕДНИКА:\n" + str(user_context)[:5000] +
+            "\nОбращайся к текущему человеку как к отдельному собеседнику. Подстраивай длину, сленг, эмодзи, пунктуацию и степень неформальности под его манеру, но не копируй его фразы дословно."
+        )
     if extra:
         sys_prompt += "\n\n" + "\n".join(extra)
 
