@@ -19,6 +19,7 @@ import random
 import logging
 import time
 import threading
+import html
 from concurrent.futures import ThreadPoolExecutor
 
 from runtime import bot, WAKE_RE, BOT_ID
@@ -46,6 +47,11 @@ _AI_ACTIVE_BY_CHAT = {}
 _AI_STATE_LOCK = threading.RLock()
 _AI_MAX_PER_CHAT = 2
 _COMMAND_ANALYTICS_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="liza-cmd-analytics")
+_CALL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="liza-call")
+_CALL_LOCK = threading.RLock()
+_CALL_LAST_AT = {}
+_CALL_COOLDOWN = 60.0
+_CALL_EMOJIS = ("📣", "🔥", "🚀", "⚡", "🎯", "🗣️", "💥", "🔔", "👀", "🏃")
 
 def _ai_job_finished(chat_id):
     if chat_id is None:
@@ -234,6 +240,7 @@ _SINGLE_COMMANDS = {
     "профиль": lambda m, a: cmd_profile(m),
     "стата": lambda m, a: cmd_minigame_stats(m, a),
     "топ": lambda m, a: cmd_minigame_stats(m, a),
+    "калл": lambda m, a: _cmd_call(m, a),
 }
 
 
@@ -280,6 +287,145 @@ def _cmd_personality(message,args):
     except Exception: return bot.reply_to(message,"⚠️ Формат: <code>характер юмор 80</code>")
     if set_chat_personality(cid,key,value): bot.reply_to(message,f"✅ {key}: {max(0,min(100,value))}/100")
     else: bot.reply_to(message,"⚠️ Неизвестный параметр характера.")
+
+
+def _cmd_call(message, args):
+    """Созыв участников чата: имя-ссылка + разные эмодзи, затем финал."""
+    if getattr(message.chat, "type", "") not in ("group", "supergroup"):
+        bot.reply_to(message, "📣 Команда «калл» работает только в группе.")
+        return
+
+    cid = str(message.chat.id)
+    now = time.time()
+    with _CALL_LOCK:
+        last = _CALL_LAST_AT.get(cid, 0.0)
+        if now - last < _CALL_COOLDOWN:
+            left = max(1, int(_CALL_COOLDOWN - (now - last)))
+            bot.reply_to(message, f"⏳ Призыв уже был недавно. Подожди ещё {left} сек.")
+            return
+        _CALL_LAST_AT[cid] = now
+
+    reason = (args or "").strip()
+    _CALL_EXECUTOR.submit(_run_call, message, reason)
+
+
+def _run_call(message, reason):
+    cid = message.chat.id
+    try:
+        # Telegram Bot API не даёт ботам общего getChatMembers, поэтому берём
+        # всех участников, которых Лиза уже видела в переписке за период
+        # хранения статистики. Их ID сохраняются вместе с именами.
+        from database import db_get, conn, db_lock
+
+        store = db_get("stats", {}) or {}
+        chat = store.get(str(cid), {}) or {}
+        names = dict(chat.get("names", {}) or {})
+        user_ids = set(str(uid) for uid in names.keys() if str(uid).lstrip("-").isdigit())
+
+        # Дополняем список игроками мини-игр, которых могло не быть в
+        # недавней статистике сообщений. Их имя уже хранится в событиях.
+        try:
+            with db_lock:
+                rows = conn.execute(
+                    "SELECT DISTINCT user_id, display_name FROM minigame_events WHERE chat_id=?",
+                    (cid,),
+                ).fetchall()
+            for uid, display_name in rows:
+                uid = str(uid)
+                if uid.lstrip("-").isdigit():
+                    user_ids.add(uid)
+                    if display_name:
+                        names[uid] = str(display_name)
+        except Exception:
+            logging.exception("[call] failed to read minigame users")
+
+        # Берём также ранее замеченных участников. Для них имя при необходимости
+        # подтянем через get_chat_member ниже.
+        try:
+            with db_lock:
+                rows = conn.execute(
+                    "SELECT user_id FROM chat_user_presence WHERE chat_id=?",
+                    (cid,),
+                ).fetchall()
+            for (uid,) in rows:
+                uid = str(uid)
+                if uid.lstrip("-").isdigit():
+                    user_ids.add(uid)
+        except Exception:
+            logging.exception("[call] failed to read chat presence")
+
+        # Автор команды обязательно участвует, даже если сообщение ещё не
+        # успело попасть в статистику.
+        author = getattr(message, "from_user", None)
+        if author and getattr(author, "id", None) is not None:
+            user_ids.add(str(author.id))
+            names.setdefault(str(author.id), getattr(author, "first_name", None) or "Пользователь")
+
+        # Если статистика пуста, попробуем хотя бы администраторов.
+        if not user_ids:
+            try:
+                for member in bot.get_chat_administrators(cid) or []:
+                    u = getattr(member, "user", None)
+                    if u and not getattr(u, "is_bot", False):
+                        user_ids.add(str(u.id))
+                        names[str(u.id)] = getattr(u, "first_name", None) or "Пользователь"
+            except Exception:
+                logging.exception("[call] failed to get administrators")
+
+        # Для участников, у которых в статистике нет имени, пытаемся один раз
+        # получить актуальное имя из Telegram. Это не перебирает всех участников
+        # чата — Bot API такого метода не предоставляет — а только уже известных
+        # Лизе пользователей.
+        for uid in list(user_ids):
+            if names.get(uid):
+                continue
+            try:
+                member = bot.get_chat_member(cid, int(uid))
+                u = getattr(member, "user", None)
+                if not u or getattr(u, "is_bot", False):
+                    user_ids.discard(uid)
+                    continue
+                names[uid] = getattr(u, "first_name", None) or "Пользователь"
+            except Exception:
+                # Если Telegram не дал карточку пользователя, лучше пропустить
+                # его, чем отправлять бессмысленный тег без имени.
+                user_ids.discard(uid)
+
+        # Ботов не зовём; имя берём только как имя, без фамилии.
+        ordered = sorted(user_ids, key=lambda uid: (str(names.get(uid, "")).lower(), uid))
+        if not ordered:
+            bot.send_message(cid, "📣 Никого не нашла для призыва.")
+            return
+
+        header = "📣 <b>СОЗЫВ!</b>"
+        if reason:
+            header += f"\n💬 {html.escape(reason)}"
+        bot.send_message(cid, header, parse_mode="HTML")
+
+        for idx, uid in enumerate(ordered):
+            name = str(names.get(uid) or "Пользователь").strip()
+            name = name.split(None, 1)[0] or "Пользователь"
+            name = html.escape(name)
+            emoji = _CALL_EMOJIS[idx % len(_CALL_EMOJIS)]
+            try:
+                bot.send_message(
+                    cid,
+                    f'{emoji} <a href="tg://user?id={uid}">{name}</a>',
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                logging.exception("[call] failed to mention user %s", uid)
+            # Не долбим Telegram запросами слишком быстро.
+            time.sleep(0.18)
+
+        bot.send_message(cid, "📣 <b>Призыв окончен!</b> Все, кого Лиза знает в этом чате, позваны 💨", parse_mode="HTML")
+    except Exception:
+        logging.exception("[call] failed")
+        try:
+            bot.send_message(cid, "⚠️ Не смогла завершить призыв. Попробуй ещё раз.")
+        except Exception:
+            pass
 
 
 def _game_enabled(message):
