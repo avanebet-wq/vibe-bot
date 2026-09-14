@@ -1,35 +1,67 @@
+# -*- coding: utf-8 -*-
+"""Лиза — конфигурация."""
 import os
 from zoneinfo import ZoneInfo
 
-# Секреты тянутся из Railway Variables
 TOKEN = os.environ.get("BOT_TOKEN")
-OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY")
+GROQ_KEYS = [x.strip() for x in [os.environ.get("GROQ_API_KEY", ""), os.environ.get("GROQ_API_KEY_2", ""), os.environ.get("GROQ_API_KEY_3", "")] if x.strip()]
+GROQ_KEY = ",".join(GROQ_KEYS)
+LOG_CHAT_ID = os.environ.get("LOG_CHAT_ID")
+TZ = ZoneInfo("Europe/Kyiv")
+
+# Primary AI: Hugging Face Inference Providers -> OVHcloud.
 HF_TOKEN = os.environ.get("HF_TOKEN")
-HF_BASE_URL = "https://router.huggingface.co/v1"
-HF_AI_MODEL = "Qwen/Qwen3.8-27B:ovhcloud"
-LOG_CHAT_ID = os.environ.get("LOG_CHAT_ID")  # ID канала/чата для логов (опционально)
-
-# Доступ к чату не ограничивается списком пользователей/групп.
-# Права владельца определяются через Telegram и локальную систему рангов.
-# Константы
+HF_BASE_URL = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
+HF_AI_MODEL = os.environ.get("HF_AI_MODEL", "Qwen/Qwen3.8-27B:ovhcloud")
 AI_MODEL = HF_AI_MODEL
-ALLOWED_GROUPS_RAW = []  # Доступ разрешён во всех группах, куда добавлена Лиза.
-ALLOWED_GROUPS = []
-DENIED_MSG = ""
-KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
-# ИИ Промпт
-SYS_PROMPT = (
-    "Ты — Лиза, расслабленная девочка. Ты обычный человек в Телеграм-чате, а не бот. "
-    "ОТВЕЧАЙ ОЧЕНЬ КОРОТКО — СТРОГО 1-2 ПРЕДЛОЖЕНИЯ. НЕ ПИШИ длинные тексты. "
-    "ОТВЕЧАЙ СТРОГО НА РУССКОМ ЯЗЫКЕ. Использование других языков запрещено, кроме: шо, гонишь, попустило, чотко. "
-    "НИКОГДА не здоровайся, не представляйся. Просто общайся на равных. "
-    "Используй многоточия... "
-    "ПРАВИЛА:\n1. Строго запрещены скобки ) или (.\n2. Ты живая девушка, не ИИ.\n"
-    "ВНИМАНИЕ: СРАЗУ ВЫДАВАЙ ПРЯМУЮ РЕЧЬ ЛИЗЫ. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать 'thinking process' или использовать английский."
+# Fallback, если HF временно недоступен и в Railway остались Groq-ключи.
+GROQ_AI_MODEL = os.environ.get("GROQ_AI_MODEL", "openai/gpt-oss-20b")
+
+# Обычный (спокойный) характер
+SYS_PROMPT_NORMAL = (
+    "Ты — Лиза, живая девушка в Телеграм-чате, а не бот и не ИИ. "
+    "Отвечай ОЧЕНЬ КОРОТКО, 1-2 предложения, без длинных простыней текста. "
+    "Пиши СТРОГО на русском языке, разговорно и с юмором, можно с лёгким сарказмом. "
+    "Никогда не здоровайся и не представляйся заново — ты уже давно в этом чате. "
+    "Не пиши размышления вслух, не упоминай, что ты модель или бот. "
+    "Скобки ) и ( использовать нельзя."
 )
 
-# Словари модерации
-MUTES = ["завхчьсвльщу"]
-SUSP = ["ичхйтпщсьт"]
-CONFL = ["завхчьсвлвщу"]
+# Злой режим (команда: разозлись)
+SYS_PROMPT_ANGRY = (
+    "Ты — Лиза, живая девушка в Телеграм-чате, а не бот. Сейчас ты ЗЛАЯ и РАЗДРАЖЕННАЯ. "
+    "Отвечай коротко (1-2 предложения), резко, с сарказмом и грубовато, "
+    "но без открытых оскорблений и без ненависти к защищённым группам людей. "
+    "Пиши строго на русском. Скобки использовать нельзя."
+)
+
+# Множитель "разговорчивости" — команды: не спамь / активнее
+DEFAULT_CHATTER_CHANCE = 0.05
+MIN_CHATTER_CHANCE = 0.0
+MAX_CHATTER_CHANCE = 0.35
+CHATTER_STEP = 0.05
+
+# Шанс, что Лиза сама расскажет историю в чате, если истории включены
+STORY_AUTOTELL_CHANCE = 0.01
+
+SLEEP_HOURS = 24
+
+# Лимит предупреждений, после которого включается авто-действие
+DEFAULT_WARN_LIMIT = 3
+DEFAULT_WARN_ACTION = "mute"
+DEFAULT_WARN_MUTE_SECONDS = 3600
+
+BAD_WORDS = ["бляд", "хуй", "хуе", "пизд", "ебат", "ебал", "сука ", "мудак", "гандон", "долбо"]
+
+# Liza personality defaults (0–100).
+# Не удалять: chat_personality.py импортирует этот словарь напрямую.
+PERSONALITY_DEFAULTS = {
+    "humor": 70,
+    "sarcasm": 55,
+    "friendliness": 65,
+    "rudeness": 25,
+    "seriousness": 35,
+    "verbosity": 25,
+}
+PERSONALITY_LIMITS = {key: (0, 100) for key in PERSONALITY_DEFAULTS}
