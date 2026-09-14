@@ -10,15 +10,22 @@ from collections import defaultdict, deque
 
 _MAX_EVENTS = 30
 _EVENTS = defaultdict(lambda: deque(maxlen=_MAX_EVENTS))
+_MAX_CHATS = 5000
+_LAST_USED = {}
 
 def emit(chat_id, event_type: str, **data):
     if chat_id is None:
         return
-    _EVENTS[str(chat_id)].append({
+    key = str(chat_id)
+    _EVENTS[key].append({
         "type": str(event_type),
         "time": time.time(),
         "data": data,
     })
+    _LAST_USED[key] = time.time()
+    if len(_LAST_USED) > _MAX_CHATS:
+        oldest = min(_LAST_USED, key=_LAST_USED.get)
+        _LAST_USED.pop(oldest, None); _EVENTS.pop(oldest, None)
 
 def recent(chat_id, limit=10):
     rows = list(_EVENTS.get(str(chat_id), ()))

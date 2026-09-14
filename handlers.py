@@ -37,6 +37,56 @@ from stats import cmd_stats, record_message, record_command, record_liza_request
 from stories import cmd_tell_story, cmd_stories_on, cmd_stories_off, maybe_autotell
 from help import cmd_help
 from ai import ask_liza
+from queue import Queue, Full
+
+_AI_QUEUE = Queue(maxsize=32)
+
+def _ai_worker():
+    while True:
+        job = _AI_QUEUE.get()
+        if job is None:
+            _AI_QUEUE.task_done()
+            return
+        try:
+            message, args, kwargs, reply_mode = job
+            target_duration = 2.0 + min(2.0, len(str(args[0] if args else kwargs.get("user_text", "") or "")) / 300.0)
+            future = ai_executor.submit(ask_liza, *args, **kwargs)
+            started = time.monotonic()
+            while not future.done():
+                try: bot.send_chat_action(message.chat.id, "typing")
+                except Exception: pass
+                time.sleep(1.0)
+            reply = future.result()
+            elapsed = time.monotonic() - started
+            while elapsed < target_duration:
+                try: bot.send_chat_action(message.chat.id, "typing")
+                except Exception: pass
+                time.sleep(min(1.0, target_duration - elapsed))
+                elapsed = time.monotonic() - started
+            reply = _apply_polite_filter(message.chat.id, reply) if reply is not None else reply
+            if reply_mode == "send": _safe_send(message.chat.id, reply)
+            else: _safe_reply(message, reply)
+            record_liza_response(message.chat.id, getattr(message.from_user, "id", None))
+        except Exception:
+            logging.exception("[ai-worker] failed")
+            try:
+                _safe_reply(message, "⚠️ Не удалось получить ответ. Повторю запрос при следующем обращении.")
+            except Exception:
+                pass
+        finally:
+            _AI_QUEUE.task_done()
+
+for _ in range(3):
+    threading.Thread(target=_ai_worker, daemon=True, name="liza-ai-queue").start()
+
+def _enqueue_ai_reply(message, *args, reply_mode="reply", **kwargs):
+    try:
+        _AI_QUEUE.put_nowait((message, args, kwargs, reply_mode))
+        return True
+    except Full:
+        logging.warning("[ai] queue full for chat %s", getattr(message.chat, "id", None))
+        return False
+
 from settings import (
     try_handle_pending_input, enforce_silence, enforce_captcha,
     track_message, cmd_settings_command, open_settings_in_dm,
@@ -68,6 +118,8 @@ _COMPOUND_COMMANDS = [
     ("добавить", lambda m, a: contest_add_participant(m, a)),
     ("записать", lambda m, a: contest_add_participant(m, a)),
     ("очистить память", lambda m, a: _cmd_clear_memory(m)),
+    ("закрыть цель", lambda m, a: _cmd_goal_done(m, a)),
+    ("удалить цель", lambda m, a: _cmd_goal_delete(m, a)),
     ("удаляй нарушения", lambda m, a: cmd_set_auto_delete(m, True)),
     ("не удаляй нарушения", lambda m, a: cmd_set_auto_delete(m, False)),
     ("защищай админов", lambda m, a: cmd_set_protect_admins(m, True)),
@@ -100,8 +152,6 @@ _SINGLE_COMMANDS = {
     "модлог": lambda m, a: cmd_modlog(m),
     "цель": lambda m, a: _cmd_goal(m, a),
     "цели": lambda m, a: _cmd_goals(m),
-    "закрыть цель": lambda m, a: _cmd_goal_done(m, a),
-    "удалить цель": lambda m, a: _cmd_goal_delete(m, a),
     "характер": lambda m, a: _cmd_personality(m, a),
     "запись": lambda m, a: contest_start(m, a),
     "пыхнуть": lambda m, a: cmd_smoke(m),
@@ -207,40 +257,17 @@ def _apply_polite_filter(cid, text):
 
 
 def _ask_liza_with_typing(message, *args, **kwargs):
-    """Ask the AI in the background while showing Telegram's typing indicator.
-
-    The indicator stays visible for roughly 2–4 seconds depending on the
-    message length, and is refreshed every few seconds because Telegram
-    expires chat actions automatically.
-    """
-    text_for_delay = str(args[0] if args else kwargs.get("user_text", "") or "")
-    target_duration = 2.0 + min(2.0, len(text_for_delay) / 300.0)
-    started = time.monotonic()
-    future = ai_executor.submit(ask_liza, *args, **kwargs)
-    try:
-        while not future.done():
-            try:
-                bot.send_chat_action(message.chat.id, "typing")
-            except Exception:
-                pass
-            time.sleep(1.0)
-        elapsed = time.monotonic() - started
-        while elapsed < target_duration:
-            try:
-                bot.send_chat_action(message.chat.id, "typing")
-            except Exception:
-                pass
-            time.sleep(min(1.0, target_duration - elapsed))
-            elapsed = time.monotonic() - started
-        return future.result()
-    finally:
-        pass
+    """Compatibility wrapper: enqueue AI work so Telegram handlers never wait."""
+    return _enqueue_ai_reply(message, *args, **kwargs)
 
 
 def _safe_reply(message, text):
-    """reply_to, но никогда не отправляет пустое сообщение (Telegram это запрещает)."""
-    if not text or not text.strip():
-        text = "Не получилось сформировать ответ. Попробуй ещё раз через мгновение."
+    """Безопасный ответ: не отправляет пустой Telegram message."""
+    if text is None:
+        return bot.reply_to(message, "⏳ Слишком много обращений подряд. Повтори через несколько секунд.")
+    text = str(text).strip()
+    if not text:
+        return bot.reply_to(message, "⏳ Не удалось получить ответ от сервиса. Повтори через несколько секунд.")
     bot.reply_to(message, text)
 
 
@@ -359,16 +386,7 @@ def text_handler(message):
                     cid, getattr(message.from_user, "id", None), active_text
                 )
                 record_liza_request(cid, getattr(message.from_user, "id", None))
-                reply = _ask_liza_with_typing(message,
-                    active_text,
-                    angry=is_angry(cid),
-                    chat_id=cid,
-                    user_id=getattr(message.from_user, "id", None),
-                    group_context=_liza_ai_context(message),
-                )
-                record_liza_response(cid, getattr(message.from_user, "id", None))
-                reply = _apply_polite_filter(cid, reply)
-                _safe_reply(message, reply)
+                _enqueue_ai_reply(message, active_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
                 return
 
             return
@@ -378,7 +396,7 @@ def text_handler(message):
                 return
             if enforce_silence(message):
                 return
-            track_message(cid, message.message_id)
+            track_message(cid, message.message_id, getattr(message.chat, "title", None))
 
         if contest_settings_pending(message):
             return
@@ -441,10 +459,7 @@ def text_handler(message):
                 return
             # Обратились по имени, но это не команда — считаем, что это вопрос к AI.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = _ask_liza_with_typing(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
-            record_liza_response(cid, getattr(message.from_user, "id", None))
-            reply = _apply_polite_filter(cid, reply)
-            _safe_reply(message, reply)
+            _enqueue_ai_reply(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
             return
 
         if is_group and reply_mode == "mention" and not addressed:
@@ -453,19 +468,13 @@ def text_handler(message):
         if not is_group:
             # Личка — общаемся без обращения по имени.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = _ask_liza_with_typing(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
-            record_liza_response(cid, getattr(message.from_user, "id", None))
-            reply = _apply_polite_filter(cid, reply)
-            _safe_reply(message, reply)
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
             return
 
         # Групповой чат, сообщение не адресовано напрямую.
         if addressed:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = _ask_liza_with_typing(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
-            record_liza_response(cid, getattr(message.from_user, "id", None))
-            reply = _apply_polite_filter(cid, reply)
-            _safe_reply(message, reply)
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
             return
 
         # Если включена автоактивность — не встреваем во время бурного обсуждения.
@@ -479,10 +488,7 @@ def text_handler(message):
         chance = get_chatter_chance(cid)
         if random.random() < chance:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            reply = _ask_liza_with_typing(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
-            record_liza_response(cid, getattr(message.from_user, "id", None))
-            reply = _apply_polite_filter(cid, reply)
-            _safe_send(cid, reply)
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), reply_mode="send")
 
     except Exception as e:
         logging.error(f"[text_handler] {e}", exc_info=True)

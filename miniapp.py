@@ -30,6 +30,7 @@ MAX_INIT_DATA_AGE = 300
 _REPLAY_TTL = MAX_INIT_DATA_AGE
 _replay_lock = threading.RLock()
 _replay_seen = {}
+_REPLAY_MAX = 10000
 MAX_BODY = 256 * 1024
 ALLOWED_TYPES = {
     "url", "popup", "alert", "share", "copy", "rules",
@@ -68,16 +69,18 @@ def validate_init_data(init_data: str) -> dict:
     if not hmac.compare_digest(calculated, received_hash):
         raise ValueError("invalid initData hash")
 
-    query_id = pairs.get("query_id")
-    if query_id:
+    replay_key = pairs.get("query_id") or hashlib.sha256(init_data.encode("utf-8")).hexdigest()
+    with _replay_lock:
         now = time.time()
-        with _replay_lock:
-            expired = [k for k, ts in _replay_seen.items() if now - ts > _REPLAY_TTL]
-            for k in expired:
-                _replay_seen.pop(k, None)
-            if query_id in _replay_seen:
-                raise ValueError("initData replay detected")
-            _replay_seen[query_id] = now
+        expired = [k for k, ts in _replay_seen.items() if now - ts > _REPLAY_TTL]
+        for k in expired:
+            _replay_seen.pop(k, None)
+        if replay_key in _replay_seen:
+            raise ValueError("initData replay detected")
+        if len(_replay_seen) >= _REPLAY_MAX:
+            oldest = min(_replay_seen, key=_replay_seen.get)
+            _replay_seen.pop(oldest, None)
+        _replay_seen[replay_key] = now
 
     user_raw = pairs.get("user")
     if not user_raw:
@@ -107,14 +110,17 @@ def _require_admin(user_id: int, chat_id: int):
 
 
 def _normalize_url(value: str) -> str:
-    value = value.strip()
-    if value.startswith(("http://", "https://", "tg://")):
-        return value
-    if value.startswith("t.me/"):
-        return "https://" + value
-    if value.startswith("@"):
-        return "https://t.me/" + value[1:]
-    return value
+    value = str(value or "").strip()
+    if value.startswith(("t.me/", "www.t.me/")):
+        value = "https://" + value
+    elif value.startswith("@"):
+        value = "https://t.me/" + value[1:]
+    parsed = urlparse(value)
+    if parsed.scheme.lower() not in {"http", "https", "tg"}:
+        raise ValueError("URL must use http://, https:// or tg://")
+    if parsed.scheme.lower() != "tg" and not parsed.netloc:
+        raise ValueError("URL host is required")
+    return value[:2048]
 
 
 def _to_public_rows(rows):
@@ -230,8 +236,35 @@ def _post_from_request(user_id, chat_id, post_id):
     return post
 
 
+class _BoundedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 64
+
+    def __init__(self, server_address, RequestHandlerClass, max_workers=16):
+        super().__init__(server_address, RequestHandlerClass)
+        self._slots = threading.BoundedSemaphore(max_workers)
+
+    def process_request_thread(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.close()
+            except Exception:
+                pass
+            return
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 class MiniAppHandler(BaseHTTPRequestHandler):
     server_version = "LizaMiniApp/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(15)
 
     def _send(self, status, body, content_type="application/json; charset=utf-8"):
         if isinstance(body, str):
@@ -268,6 +301,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
         try:
             if not allow("miniapp:" + self.client_address[0], limit=60, window=60):
                 return self._error(429, "rate limit")
+            if len(self.path) > 8192:
+                return self._error(414, "request URI too long")
             parsed = urlparse(self.path)
 
             if parsed.path == "/":
@@ -369,7 +404,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
 def start_server():
     port = int(os.environ.get("PORT", "8080"))
     try:
-        server = ThreadingHTTPServer(("0.0.0.0", port), MiniAppHandler)
+        server = _BoundedHTTPServer(("0.0.0.0", port), MiniAppHandler, max_workers=16)
         log.info("Mini App server started on 0.0.0.0:%s", port)
         server.serve_forever()
     except Exception:

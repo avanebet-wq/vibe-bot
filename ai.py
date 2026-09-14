@@ -12,6 +12,11 @@ from config import GROQ_KEY, AI_MODEL, SYS_PROMPT_NORMAL, SYS_PROMPT_ANGRY
 _key_list=[k.strip() for k in GROQ_KEY.split(",") if k.strip()]
 _key_idx=0
 _key_lock=threading.Lock()
+_circuit_lock=threading.Lock()
+_circuit_failures=0
+_circuit_until=0.0
+_CIRCUIT_THRESHOLD=5
+_CIRCUIT_COOLDOWN=30.0
 try:
     from conversation_memory import conversation_memory as persistent_conversation_memory
 except Exception: persistent_conversation_memory=None
@@ -24,6 +29,23 @@ def _switch_key():
     global _key_idx
     with _key_lock:
         _key_idx += 1
+def _circuit_allows():
+    with _circuit_lock:
+        return time.monotonic() >= _circuit_until
+
+def _circuit_success():
+    global _circuit_failures, _circuit_until
+    with _circuit_lock:
+        _circuit_failures = 0
+        _circuit_until = 0.0
+
+def _circuit_failure():
+    global _circuit_failures, _circuit_until
+    with _circuit_lock:
+        _circuit_failures += 1
+        if _circuit_failures >= _CIRCUIT_THRESHOLD:
+            _circuit_until = time.monotonic() + _CIRCUIT_COOLDOWN
+
 def clean_response(text):
     text=str(text or "").strip().replace("<think>","").replace("</think>","").replace("```","")
     text=text.replace("(","").replace(")","")
@@ -33,11 +55,17 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
     # Do not show rate-limit or transport fallbacks to the user. The AI layer
     # keeps retrying until it gets an actual answer (or an available key).
     if chat_id is not None and not allow(f"ai:{chat_id}:{user_id or 0}",8,20):
-        logging.warning("[ai] rate limit reached for %s", chat_id)
-        return "Слишком много запросов подряд. Подожди немного и повтори обращение."
+        # Do not fail the conversation just because several requests arrived
+        # quickly. Wait briefly for the local window to open.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not allow(f"ai:{chat_id}:{user_id or 0}",8,20):
+            time.sleep(0.25)
     if not _key_list:
         logging.error("[ai] GROQ_API_KEY is not configured")
         return "Сервис ИИ временно недоступен. Попробуй обратиться чуть позже."
+    if not _circuit_allows():
+        logging.warning("[ai] circuit breaker open")
+        return None
     sys_prompt=SYS_PROMPT_ANGRY if angry else SYS_PROMPT_NORMAL; extra=[]
     try: extra.append(build_personality_prompt(personality or (get_chat_personality(chat_id) if chat_id is not None else None)))
     except Exception: pass
@@ -106,6 +134,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                 content=message_data.get("content")
                 cleaned=clean_response(content)
                 if cleaned:
+                    _circuit_success()
                     if chat_id is not None:
                         try:
                             mem=persistent_conversation_memory
@@ -114,22 +143,27 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                         except Exception: pass
                     return cleaned
                 last_error="empty AI response"
+                _circuit_failure()
                 logging.warning("[ai] empty response, retrying (attempt %s/%s, reasoning=%s)",attempt+1,total_attempts,mode)
             elif resp.status_code in (401,402,429):
                 last_error=f"HTTP {resp.status_code}"
+                _circuit_failure()
                 _switch_key()
                 time.sleep(0.25)
             else:
                 last_error=f"HTTP {resp.status_code}"
+                _circuit_failure()
                 logging.error("[ai] status=%s body=%s",resp.status_code,resp.text[:300])
                 time.sleep(0.35)
         except requests.RequestException as exc:
             last_error=str(exc)
+            _circuit_failure()
             logging.error("[ai] request error: %s",exc)
             if len(_key_list)>1: _switch_key()
             time.sleep(0.25)
         except Exception as exc:
             last_error=str(exc)
+            _circuit_failure()
             logging.exception("[ai] unexpected error: %s",exc)
             time.sleep(0.25)
 
@@ -153,6 +187,7 @@ def ask_liza(user_text,angry=False,max_tokens=200,chat_id=None,user_id=None,grou
                 content=((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content")
                 cleaned=clean_response(content)
                 if cleaned:
+                    _circuit_success()
                     if chat_id is not None:
                         try:
                             mem=persistent_conversation_memory

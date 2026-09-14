@@ -19,6 +19,7 @@ import re
 import sqlite3
 import threading
 import time
+import copy
 from pathlib import Path
 
 try:
@@ -65,42 +66,49 @@ class _PGConnection:
         except Exception:
             pass
         _require_pg()
-        new_raw = psycopg2.connect(DATABASE_URL, connect_timeout=10, application_name="liza")
-        new_raw.autocommit = False
+        new_raw = _connect_pg()
         self.raw = new_raw
         _raw_conn = new_raw
 
     def execute(self, sql, params=None):
         text = _translate_sql(sql)
-        for attempt in range(2):
-            try:
-                cur = self.raw.cursor()
-                cur.execute(text, params)
-                return cur
-            except psycopg2.OperationalError:
-                if attempt == 0:
-                    LOG.warning("PostgreSQL connection lost; reconnecting")
-                    self._reconnect()
-                    continue
+        readonly = str(text).lstrip().upper().startswith(("SELECT", "SHOW", "WITH", "EXPLAIN"))
+        try:
+            cur = self.raw.cursor()
+            cur.execute(text, params)
+            return cur
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            # A write can have an ambiguous outcome: PostgreSQL may have
+            # accepted it before the socket failed. Never transparently retry
+            # mutating statements, otherwise a transient disconnect can
+            # duplicate XP/events/stats. Read-only queries may safely retry.
+            self._reconnect()
+            if not readonly:
                 raise
+            cur = self.raw.cursor()
+            cur.execute(text, params)
+            return cur
 
 
     def commit(self):
-        for attempt in range(2):
+        try:
+            self.raw.commit()
+            return
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            # COMMIT outcome is ambiguous after a transport failure. Do not
+            # reconnect-and-commit again; recover the connection and surface
+            # the error to the caller so it can decide what is safe to retry.
             try:
-                self.raw.commit()
-                return
-            except psycopg2.OperationalError:
-                if attempt == 0:
-                    LOG.warning("PostgreSQL commit failed; reconnecting")
-                    self._reconnect()
-                    continue
-                raise
+                self._reconnect()
+            except Exception:
+                pass
+            raise
+
 
     def rollback(self):
         try:
             self.raw.rollback()
-        except psycopg2.OperationalError:
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
             try:
                 self._reconnect()
             except Exception:
@@ -110,14 +118,35 @@ class _PGConnection:
         self.raw.close()
 
 
+def _connect_pg():
+    _require_pg()
+    delay=1.0
+    last=None
+    for attempt in range(6):
+        try:
+            raw=psycopg2.connect(DATABASE_URL, connect_timeout=10, application_name="liza")
+            raw.autocommit=False
+            return raw
+        except Exception as exc:
+            last=exc
+            LOG.error("PostgreSQL unavailable at startup (attempt %s/6): %s", attempt+1, exc)
+            if attempt<5:
+                time.sleep(delay)
+                delay=min(delay*2.0,15.0)
+    raise RuntimeError(f"PostgreSQL unavailable: {last}")
+
 _require_pg()
-_raw_conn = psycopg2.connect(DATABASE_URL, connect_timeout=10, application_name="liza")
-_raw_conn.autocommit = False
+_raw_conn = _connect_pg()
 conn = _PGConnection(_raw_conn)
 
 db_lock = threading.RLock()
 _cache = {}
-_CACHE_TTL = 8.0
+_CACHE_TTL = 2.0
+_NO_CACHE_KEYS = {
+    "stats", "moderation", "contest_sessions", "contest_configs",
+    "contest_settings_pending", "group_settings", "known_groups",
+    "user_memory", "mood_state", "social_context", "goals",
+}
 
 
 def _pg_identifier(name: str) -> str:
@@ -271,19 +300,21 @@ if not legacy_done:
 def db_get(key, default=None):
     now = time.monotonic()
     with db_lock:
-        cached = _cache.get(key)
+        use_cache = key not in _NO_CACHE_KEYS
+        cached = _cache.get(key) if use_cache else None
         if cached and now - cached[0] < _CACHE_TTL:
-            return cached[1]
+            return copy.deepcopy(cached[1])
         try:
             cur = conn.execute("SELECT value FROM store WHERE key=%s", (key,))
             row = cur.fetchone()
-            value = json.loads(row[0]) if row else default
-            _cache[key] = (now, value)
-            return value
+            value = json.loads(row[0]) if row else copy.deepcopy(default)
+            if use_cache:
+                _cache[key] = (now, copy.deepcopy(value))
+            return copy.deepcopy(value)
         except Exception as e:
             conn.rollback()
             logging.error(f"DB Read Error [{key}]: {e}")
-            return default
+            return copy.deepcopy(default)
 
 
 def db_set(key, value):
@@ -296,7 +327,10 @@ def db_set(key, value):
                 (key, encoded),
             )
             conn.commit()
-            _cache[key] = (time.monotonic(), value)
+            if key in _NO_CACHE_KEYS:
+                _cache.pop(key, None)
+            else:
+                _cache[key] = (time.monotonic(), copy.deepcopy(value))
             return True
         except Exception as e:
             conn.rollback()
@@ -328,8 +362,8 @@ def db_update_json(key, mutator, default=None):
                 (key, encoded),
             )
             conn.commit()
-            _cache[key] = (time.monotonic(), result)
-            return result
+            _cache.pop(key, None)
+            return copy.deepcopy(result)
         except Exception as exc:
             conn.rollback()
             LOG.error("DB Atomic JSON Update Error [%s]: %s", key, exc, exc_info=True)

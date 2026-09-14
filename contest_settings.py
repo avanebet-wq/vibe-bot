@@ -4,7 +4,7 @@ import html
 import time
 from telebot import types
 from runtime import bot
-from database import db_get, db_set
+from database import db_get, db_set, db_update_json
 from utils import is_chat_admin
 
 KEY = "contest_configs"
@@ -38,8 +38,12 @@ def get_config(gid):
 
 
 def save_config(gid, **changes):
-    data = _store(); cfg = get_config(gid); cfg.update(changes)
-    data[str(gid)] = cfg; _save(data); return cfg
+    result={"cfg":None}
+    def mutate(data):
+        cfg=_default(); cfg.update(data.get(str(gid), {}) or {}); cfg.update(changes)
+        data[str(gid)]=cfg; result["cfg"]=dict(cfg); return data
+    db_update_json(KEY, mutate, {})
+    return result["cfg"]
 
 
 def _pending_store():
@@ -47,7 +51,8 @@ def _pending_store():
 
 
 def _set_pending(chat_id, user_id, kind):
-    data = _pending_store(); data[f"{chat_id}:{user_id}"] = kind; db_set(PENDING_KEY, data)
+    def mutate(data): data[f"{chat_id}:{user_id}"]=kind; return data
+    db_update_json(PENDING_KEY, mutate, {})
 
 
 def _get_pending(chat_id, user_id):
@@ -55,7 +60,8 @@ def _get_pending(chat_id, user_id):
 
 
 def _clear_pending(chat_id, user_id):
-    data = _pending_store(); data.pop(f"{chat_id}:{user_id}", None); db_set(PENDING_KEY, data)
+    def mutate(data): data.pop(f"{chat_id}:{user_id}", None); return data
+    db_update_json(PENDING_KEY, mutate, {})
 
 
 def _esc(v):

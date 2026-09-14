@@ -58,7 +58,7 @@ class PersistentConversationMemory:
                 )
                 key = str(chat_id)
                 self._cleanup_counter[key] = self._cleanup_counter.get(key, 0) + 1
-                if self._cleanup_counter[key] >= 5:
+                if self._cleanup_counter[key] >= 20:
                     conn.execute(
                         """
                         DELETE FROM conversation_memory

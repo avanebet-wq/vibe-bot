@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
-import html, time
+import html, time, threading
 from database import conn, db_lock
 from runtime import bot
 from minigames import get_xp
+
+_PRESENCE_LOCK = threading.RLock()
+_LAST_PRESENCE_WRITE = {}
+_PRESENCE_INTERVAL = 60.0
+_PRESENCE_CACHE_TTL = 86400.0
+_LAST_PRESENCE_CLEAN = 0.0
 
 RANKS = [
     (0, "🌱 Росток"), (100, "🍃 Листик"), (250, "🌿 Кустик"),
@@ -26,16 +32,34 @@ def ensure_profile_schema():
             raise
 
 def touch_user(message):
+    global _LAST_PRESENCE_CLEAN
     if not getattr(message, 'from_user', None):
         return
-    ensure_profile_schema(); now=time.time()
+    now=time.time()
+    key=(str(message.chat.id), str(message.from_user.id))
+    if now - _LAST_PRESENCE_CLEAN > 3600:
+        with _PRESENCE_LOCK:
+            cutoff = now - _PRESENCE_CACHE_TTL
+            for k, ts in list(_LAST_PRESENCE_WRITE.items()):
+                if ts < cutoff:
+                    _LAST_PRESENCE_WRITE.pop(k, None)
+            _LAST_PRESENCE_CLEAN = now
+    with _PRESENCE_LOCK:
+        last=_LAST_PRESENCE_WRITE.get(key, 0.0)
+        if last and now-last < _PRESENCE_INTERVAL:
+            return
+        _LAST_PRESENCE_WRITE[key]=now
     with db_lock:
         try:
-            conn.execute('''INSERT INTO chat_user_presence(chat_id,user_id,first_seen,last_seen) VALUES(?,?,?,?)
-            ON CONFLICT(chat_id,user_id) DO UPDATE SET last_seen=excluded.last_seen''',
-            (str(message.chat.id), str(message.from_user.id), now, now))
+            conn.execute(
+                """INSERT INTO chat_user_presence(chat_id,user_id,first_seen,last_seen) VALUES(?,?,?,?)
+                ON CONFLICT(chat_id,user_id) DO UPDATE SET last_seen=excluded.last_seen""",
+                (key[0], key[1], now, now),
+            )
             conn.commit()
         except Exception:
+            with _PRESENCE_LOCK:
+                _LAST_PRESENCE_WRITE.pop(key, None)
             conn.rollback()
             raise
 
@@ -74,7 +98,7 @@ def _drink_stats(chat_id,user_id):
     return int(row[0]),float(row[1] or 0)
 
 def cmd_profile(message):
-    ensure_profile_schema(); touch_user(message)
+    touch_user(message)
     u=message.from_user; cid=str(message.chat.id); uid=str(u.id)
     first=(u.first_name or '').strip(); last=(u.last_name or '').strip(); nick=' '.join(x for x in (first,last) if x) or '—'
     tag='@'+u.username if u.username else '—'

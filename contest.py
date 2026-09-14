@@ -76,20 +76,55 @@ def _render(cid, session):
 
 
 def _send(cid, session):
+    """Публикует новую версию сначала, затем аккуратно заменяет старую.
+
+    Внешний Telegram API не вызывается под _LOCK. Состояние сохраняется
+    атомарно и объединяется с актуальной сессией из PostgreSQL, поэтому
+    параллельная регистрация участника не затирается публикацией.
+    """
     previous_message_id = session.get("last_message_id")
-    if previous_message_id:
-        try: bot.delete_message(cid, previous_message_id)
-        except Exception as exc: LOG.warning("Не удалось удалить предыдущее сообщение конкурса %s/%s: %s", cid, previous_message_id, exc)
     cfg = _config_from_session(session)
     markup = _button_markup(cid, session)
-    photo = cfg.get("photo")
-    if photo and photo.get("file_id"):
-        msg = bot.send_photo(cid, photo["file_id"], caption=_render(cid, session), reply_markup=markup, parse_mode="HTML")
+    if cfg.get("photo") and cfg.get("photo", {}).get("file_id"):
+        msg = bot.send_photo(
+            cid, cfg["photo"]["file_id"], caption=_render(cid, session),
+            reply_markup=markup, parse_mode="HTML",
+        )
     else:
-        msg = bot.send_message(cid, _render(cid, session), reply_markup=markup, parse_mode="HTML")
-    session["last_message_id"] = getattr(msg, "message_id", None)
-    session["last_sent_at"] = time.time()
-    data = _store(); data[str(cid)] = session; _save(data)
+        msg = bot.send_message(
+            cid, _render(cid, session), reply_markup=markup, parse_mode="HTML"
+        )
+
+    new_message_id = getattr(msg, "message_id", None)
+    sent_at = time.time()
+    session_id = session.get("started_at")
+
+    def mutate(data):
+        current = data.get(str(cid))
+        if not current:
+            return data
+        # Contest was restarted/stopped while Telegram was processing the send.
+        if session_id is not None and current.get("started_at") != session_id:
+            return data
+        current["last_message_id"] = new_message_id
+        current["last_sent_at"] = sent_at
+        current["send_in_progress"] = False
+        return data
+
+    data = db_update_json(KEY, mutate, {})
+    current = data.get(str(cid), session)
+    if current.get("started_at") != session_id and new_message_id:
+        try:
+            bot.delete_message(cid, new_message_id)
+        except Exception:
+            LOG.warning("Contest publication became stale: %s/%s", cid, new_message_id)
+        return None
+
+    if previous_message_id and previous_message_id != new_message_id:
+        try:
+            bot.delete_message(cid, previous_message_id)
+        except Exception as exc:
+            LOG.warning("Не удалось удалить предыдущее сообщение конкурса %s/%s: %s", cid, previous_message_id, exc)
     return msg
 
 
@@ -126,25 +161,29 @@ def start_from_config(message, cfg):
         return bot.reply_to(message, "⛔ Только администратор может запустить розыгрыш.")
     if not (cfg.get("text") or cfg.get("photo")):
         return bot.reply_to(message, "⚠️ Сначала настройте текст или фото розыгрыша.")
-    with _LOCK:
-        data = _store()
-        old = data.get(str(cid))
+    session = {
+        "active": True, "config": dict(cfg), "owner_id": message.from_user.id,
+        "started_at": time.time(), "last_sent_at": 0, "last_message_id": None,
+        "participants": {}, "invites": {}, "invited_users": {}, "send_in_progress": False,
+        "next_run": _next_run_from_config(cfg),
+    }
+    def start_mutate(data):
+        old=data.get(str(cid))
         if old and old.get("active"):
-            old["active"] = False
-            old["stopped_at"] = time.time()
-        session = {
-            "active": True, "config": dict(cfg), "owner_id": message.from_user.id,
-            "started_at": time.time(), "last_sent_at": 0, "last_message_id": None,
-            "participants": {}, "invites": {}, "invited_users": {},
-            "next_run": _next_run_from_config(cfg),
-        }
-        data[str(cid)] = session; _save(data)
+            old["active"]=False; old["stopped_at"]=time.time()
+        data[str(cid)]=session; return data
+    db_update_json(KEY, start_mutate, {})
     if session["next_run"] <= time.time():
         _send(cid, session)
         interval = cfg.get("interval_seconds")
         if interval:
-            session["next_run"] = time.time() + int(interval)
-            data = _store(); data[str(cid)] = session; _save(data)
+            next_run=time.time()+int(interval)
+            def set_next(data):
+                current=data.get(str(cid))
+                if current and current.get("started_at")==session.get("started_at"):
+                    current["next_run"]=next_run; current["send_in_progress"]=False
+                return data
+            db_update_json(KEY, set_next, {})
     else:
         bot.reply_to(message, f"⏰ Розыгрыш запланирован на {cfg.get('start_time')}.")
     return session
@@ -174,14 +213,16 @@ def cmd_stop(message):
     if not is_chat_admin(cid, message.from_user.id):
         bot.reply_to(message, "⛔ Только администратор может остановить запись.")
         return
-    with _LOCK:
-        data = _store(); session = data.get(str(cid))
-        if not session or not session.get("active"):
-            bot.reply_to(message, "ℹ️ Активной записи нет.")
-            return
-        session["active"] = False
-        session["stopped_at"] = time.time()
-        data[str(cid)] = session; _save(data)
+    changed={"ok":False}
+    def stop_mutate(data):
+        session=data.get(str(cid))
+        if session and session.get("active"):
+            session["active"]=False; session["stopped_at"]=time.time(); session["send_in_progress"]=False; changed["ok"]=True
+        return data
+    db_update_json(KEY, stop_mutate, {})
+    if not changed["ok"]:
+        bot.reply_to(message, "ℹ️ Активной записи нет.")
+        return
     bot.reply_to(message, "🛑 Запись остановлена.")
 
 
@@ -200,96 +241,129 @@ def _refresh_message(cid, session):
     except Exception:
         LOG.exception("failed to refresh contest message %s/%s", cid, mid)
 
-def _register(call, cid, session):
+def _register(call, cid, session=None):
     user = call.from_user
     uid = user.id
     username = _username(user)
     if not username:
         return bot.answer_callback_query(call.id, "Сначала создай username в Telegram. После этого сможешь записаться.", show_alert=True)
-    participants = session.setdefault("participants", {})
-    if str(uid) in participants:
-        return bot.answer_callback_query(call.id, "Ты уже записан(а).", show_alert=True)
-    cfg = _config_from_session(session)
-    if cfg.get("requirement", "invite") == "invite":
-        invited = session.setdefault("invited_users", {}).get(str(uid), [])
-        invited_count = len(invited)
-        required = int(cfg.get("required", 1) or 1)
-        if invited_count < required:
-            return bot.answer_callback_query(call.id, f"Нужно пригласить ещё {required - invited_count} чел.", show_alert=True)
-    participants[str(uid)] = {"id": uid, "username": username, "name": user.first_name or username, "registered_at": time.time()}
-    data = _store(); data[str(cid)] = session; _save(data)
+
+    outcome = {"ok": False, "reason": "not_active", "session": None}
+
+    def mutate(data):
+        current = data.get(str(cid))
+        if not current or not current.get("active"):
+            outcome["reason"] = "not_active"
+            return data
+        outcome["session"] = current
+        participants = current.setdefault("participants", {})
+        if str(uid) in participants:
+            outcome["reason"] = "already"
+            return data
+        cfg = _config_from_session(current)
+        if cfg.get("requirement", "invite") == "invite":
+            invited = current.setdefault("invited_users", {}).get(str(uid), [])
+            required = int(cfg.get("required", 1) or 1)
+            if len(invited) < required:
+                outcome["reason"] = "requirements"
+                outcome["remaining"] = required - len(invited)
+                return data
+        participants[str(uid)] = {
+            "id": uid, "username": username,
+            "name": user.first_name or username,
+            "registered_at": time.time(),
+        }
+        outcome["ok"] = True
+        outcome["reason"] = "ok"
+        return data
+
+    data = db_update_json(KEY, mutate, {})
+    if not outcome["ok"]:
+        reason = outcome["reason"]
+        if reason == "already":
+            return bot.answer_callback_query(call.id, "Ты уже записан(а).", show_alert=True)
+        if reason == "requirements":
+            return bot.answer_callback_query(call.id, f"Нужно пригласить ещё {outcome['remaining']} чел.", show_alert=True)
+        return bot.answer_callback_query(call.id, "Эта запись уже остановлена.", show_alert=True)
+    current = data.get(str(cid))
     bot.answer_callback_query(call.id, "✅ Ты записан(а) в конкурс!")
-    _refresh_message(cid, session)
+    _refresh_message(cid, current)
 
 
 def add_participant_by_username(cid, username):
-    """Добавляет username в активный конкурс. Возвращает (ok, message)."""
+    """Добавляет username в активный конкурс атомарно."""
     username = str(username or "").strip().lstrip("@").lower()
     if not username:
         return False, "⚠️ Укажи username после @."
-    with _LOCK:
-        data = _store()
+    outcome = {"ok": False, "session": None}
+    participant_key = f"username:{username}"
+    def mutate(data):
         session = data.get(str(cid))
         if not session or not session.get("active"):
-            return False, "ℹ️ Активной записи нет."
+            return data
         participants = session.setdefault("participants", {})
-        participant_key = f"username:{username}"
         if participant_key in participants:
-            return False, f"ℹ️ @{_escape(username)} уже записан(а)."
-        participants[participant_key] = {
-            "username": username,
-            "name": username,
-            "registered_at": time.time(),
-            "manual": True,
-        }
-        data[str(cid)] = session
-        _save(data)
+            outcome["reason"] = "exists"
+            outcome["session"] = session
+            return data
+        participants[participant_key] = {"username": username, "name": username, "registered_at": time.time(), "manual": True}
+        outcome["ok"] = True; outcome["session"] = session
+        return data
+    data=db_update_json(KEY, mutate, {})
+    session=data.get(str(cid))
+    if not session or not session.get("active"):
+        return False, "ℹ️ Активной записи нет."
+    if not outcome["ok"]:
+        return False, f"ℹ️ @{_escape(username)} уже записан(а)."
     if session.get("last_message_id"):
-        try:
-            _refresh_message(cid, session)
-        except Exception:
-            LOG.exception("failed to update contest participant list")
+        _refresh_message(cid, session)
     return True, f"✅ @{_escape(username)} добавлен(а) в список участников."
 
 
 def remove_participant(cid, participant_key):
-    """Удаляет только участие в текущем конкурсе; историю приглашений не меняет."""
-    with _LOCK:
-        data = _store()
-        session = data.get(str(cid))
+    """Удаляет только участие в текущем конкурсе; приглашения не меняет."""
+    outcome={"removed":None, "count":0}
+    def mutate(data):
+        session=data.get(str(cid))
         if not session or not session.get("active"):
-            return False, "ℹ️ Активной записи нет."
-        participants = session.setdefault("participants", {})
-        participant = participants.pop(str(participant_key), None)
-        if participant is None:
-            return False, "ℹ️ Участник уже удалён или не найден."
-        data[str(cid)] = session
-        _save(data)
-    try:
+            return data
+        participants=session.setdefault("participants", {})
+        participant=participants.pop(str(participant_key), None)
+        if participant is not None:
+            outcome["removed"]=participant
+        return data
+    data=db_update_json(KEY, mutate, {})
+    session=data.get(str(cid))
+    if not session or not session.get("active"):
+        return False, "ℹ️ Активной записи нет."
+    participant=outcome["removed"]
+    if participant is None:
+        return False, "ℹ️ Участник уже удалён или не найден."
+    if session.get("last_message_id"):
         _refresh_message(cid, session)
-    except Exception:
-        LOG.exception("failed to update contest after participant removal")
-    username = participant.get("username")
-    label = f"@{_escape(username)}" if username else _escape(participant.get("name") or participant.get("id") or "участник")
+    username=participant.get("username")
+    label=f"@{_escape(username)}" if username else _escape(participant.get("name") or participant.get("id") or "участник")
     return True, f"🗑 {label} удалён(а) из списка участников."
 
 
 def clear_participants(cid):
-    """Очищает только текущий список участников, не трогая приглашения."""
-    with _LOCK:
-        data = _store()
-        session = data.get(str(cid))
+    """Очищает текущий список участников, не трогая историю приглашений."""
+    outcome={"count":0}
+    def mutate(data):
+        session=data.get(str(cid))
         if not session or not session.get("active"):
-            return False, "ℹ️ Активной записи нет."
-        count = len(session.get("participants", {}) or {})
-        session["participants"] = {}
-        data[str(cid)] = session
-        _save(data)
-    try:
+            return data
+        participants=session.setdefault("participants", {})
+        outcome["count"]=len(participants)
+        session["participants"]={}
+        return data
+    data=db_update_json(KEY, mutate, {})
+    session=data.get(str(cid))
+    if not session or not session.get("active"):
+        return False, "ℹ️ Активной записи нет."
+    if session.get("last_message_id"):
         _refresh_message(cid, session)
-    except Exception:
-        LOG.exception("failed to update contest after clearing participants")
-    return True, f"🗑 Список участников очищен. Удалено: {count}."
+    return True, f"🗑 Список участников очищен. Удалено: {outcome['count']}."
 
 
 def cmd_add_participant(message, args):
@@ -323,38 +397,24 @@ def handle_callback(call):
 
 
 def _count_direct_add(cid, inviter_id, user_ids):
-    """Засчитывает реальных добавленных в группу пользователей по service-log.
-
-    Важно: Telegram сообщает sender (message.from_user) для сервисного
-    сообщения new_chat_members. Это позволяет считать именно прямые добавления,
-    без создания персональных invite-ссылок.
-    """
-    if not inviter_id or not user_ids:
+    if not inviter_id or not user_ids or inviter_id == BOT_ID:
         return False
-    with _LOCK:
-        data = _store()
-        session = data.get(str(cid))
+    changed={"value":False}
+    def mutate(data):
+        session=data.get(str(cid))
         if not session or not session.get("active"):
-            return False
-        if inviter_id == BOT_ID:
-            return False
-        invited_map = session.setdefault("invited_users", {})
-        invited = invited_map.setdefault(str(inviter_id), [])
-        changed = False
-        for uid in user_ids:
-            try:
-                uid = int(uid)
-            except (TypeError, ValueError):
-                continue
-            if uid == inviter_id or uid == BOT_ID:
-                continue
-            if uid not in invited:
-                invited.append(uid)
-                changed = True
-        if changed:
-            data[str(cid)] = session
-            _save(data)
-        return changed
+            return data
+        invited_map=session.setdefault("invited_users", {})
+        invited=invited_map.setdefault(str(inviter_id), [])
+        existing=set(invited)
+        for raw_uid in user_ids:
+            try: uid=int(raw_uid)
+            except (TypeError,ValueError): continue
+            if uid in (inviter_id,BOT_ID) or uid in existing: continue
+            invited.append(uid); existing.add(uid); changed["value"]=True
+        return data
+    db_update_json(KEY, mutate, {})
+    return changed["value"]
 
 
 def handle_new_members(message):
@@ -398,27 +458,44 @@ def handle_chat_member(update):
 
 def tick(bot_instance=None):
     now = time.time()
-    with _LOCK:
-        data = _store()
-        dirty = False
+    due=[]
+    def collect(data):
         for cid_text, session in list(data.items()):
             if not session.get("active"): continue
-            next_run = float(session.get("next_run") or 0)
-            if next_run > now: continue
-            try:
-                cid = int(cid_text)
-                _send(cid, session)
-                interval = _config_from_session(session).get("interval_seconds")
+            if session.get("send_in_progress"): continue
+            next_run=float(session.get("next_run") or 0)
+            if next_run>now: continue
+            session["send_in_progress"]=True
+            due.append((int(cid_text), dict(session)))
+        return data
+    db_update_json(KEY, collect, {})
+
+    for cid, snapshot in due:
+        try:
+            _send(cid, snapshot)
+            interval=_config_from_session(snapshot).get("interval_seconds")
+            def finish(data):
+                current=data.get(str(cid))
+                if not current or current.get("started_at")!=snapshot.get("started_at"):
+                    return data
+                current["send_in_progress"]=False
                 if interval:
-                    nr = next_run
-                    while nr <= now: nr += int(interval)
-                    session["next_run"] = nr
+                    nr=max(float(current.get("next_run") or 0), now)
+                    while nr<=now: nr+=int(interval)
+                    current["next_run"]=nr
                 else:
-                    session["active"] = False
-                data[str(cid)] = session; dirty = True
-            except Exception:
-                LOG.exception("contest periodic send failed for %s", cid_text)
-        if dirty: _save(data)
+                    current["active"]=False
+                return data
+            db_update_json(KEY, finish, {})
+        except Exception:
+            LOG.exception("contest periodic send failed for %s", cid)
+            def failed(data):
+                current=data.get(str(cid))
+                if current and current.get("started_at")==snapshot.get("started_at"):
+                    current["send_in_progress"]=False
+                    current["next_run"]=time.time()+max(10, min(int(_config_from_session(current).get("interval_seconds") or INTERVAL), 300))
+                return data
+            db_update_json(KEY, failed, {})
 
 
 @bot.message_handler(content_types=["new_chat_members"])

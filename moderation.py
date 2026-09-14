@@ -16,6 +16,8 @@ from utils import (
 
 _LOG_LIMIT = 200
 _HISTORY_LIMIT = 200
+_LOCK = threading.RLock()
+
 _DEFAULTS = {
     "warn_limit": DEFAULT_WARN_LIMIT,
     "warn_action": DEFAULT_WARN_ACTION,
@@ -46,6 +48,25 @@ def _chat_bucket(cid):
         cfg.setdefault(key, value)
     return bucket
 
+
+
+
+def update_chat_config(cid, **fields):
+    """Атомарно меняет конфигурацию модерации одного чата."""
+    def mutate(store):
+        bucket = store.setdefault(str(cid), {})
+        bucket.setdefault("bans", {})
+        bucket.setdefault("mutes", {})
+        bucket.setdefault("warns", {})
+        bucket.setdefault("history", [])
+        bucket.setdefault("action_log", [])
+        cfg = bucket.setdefault("config", {})
+        for key, value in _DEFAULTS.items():
+            cfg.setdefault(key, value)
+        cfg.update(fields)
+        return store
+    result = db_update_json("moderation", mutate, {})
+    return result.get(str(cid), {})
 
 def _cfg(bucket, key):
     return bucket.get("config", {}).get(key, _DEFAULTS[key])
@@ -246,7 +267,11 @@ def cmd_unmute(message, args_text):
     except Exception as e:
         logging.error(f"[unmute] {e}")
         return bot.reply_to(message, "⚠️ Не получилось снять мут.")
-    store = _store(); bucket = _chat_bucket(cid); bucket["mutes"].pop(str(target_id), None); _save(store)
+    def mutate(store):
+        bucket=store.setdefault(str(cid), {})
+        bucket.setdefault("mutes", {}).pop(str(target_id), None)
+        return store
+    db_update_json("moderation", mutate, {})
     _log_action(cid, "unmute", target_id, target_name, message.from_user.id, "снятие мута")
     bot.reply_to(message, f"🔊 {get_mention(target_id, target_name)} снова может писать.")
 
@@ -363,7 +388,7 @@ def cmd_set_warn_limit(message, args_text):
     try: value = int(args_text.strip())
     except Exception: return bot.reply_to(message, "⚠️ Укажи число от 1 до 20.")
     if not 1 <= value <= 20: return bot.reply_to(message, "⚠️ Лимит должен быть от 1 до 20.")
-    store = _store(); bucket = _chat_bucket(message.chat.id); bucket["config"]["warn_limit"] = value; _save(store)
+    update_chat_config(message.chat.id, warn_limit=value)
     _log_action(message.chat.id, "settings", actor_id=message.from_user.id, reason=f"лимит варнов: {value}")
     bot.reply_to(message, f"✅ Лимит варнов: {value}.")
 
@@ -374,7 +399,7 @@ def cmd_set_warn_action(message, args_text):
     aliases = {"мут":"mute", "бан":"ban", "кик":"kick", "mute":"mute", "ban":"ban", "kick":"kick"}
     action = aliases.get(action)
     if action not in ("mute", "ban", "kick"): return bot.reply_to(message, "⚠️ Варианты: <code>мут</code>, <code>бан</code>, <code>кик</code>.")
-    store = _store(); bucket = _chat_bucket(message.chat.id); bucket["config"]["warn_action"] = action; _save(store)
+    update_chat_config(message.chat.id, warn_action=action)
     _log_action(message.chat.id, "settings", actor_id=message.from_user.id, reason=f"автодействие варнов: {action}")
     bot.reply_to(message, f"✅ Автодействие за лимит варнов: {action}.")
 
@@ -383,21 +408,21 @@ def cmd_set_warn_mute_duration(message, args_text):
     if not _admin_guard(message): return
     seconds, ok = parse_duration(args_text.strip())
     if not ok or seconds <= 0: return bot.reply_to(message, "⚠️ Пример: <code>2ч</code> или <code>30м</code>.")
-    store = _store(); bucket = _chat_bucket(message.chat.id); bucket["config"]["warn_mute_seconds"] = seconds; _save(store)
+    update_chat_config(message.chat.id, warn_mute_seconds=seconds)
     _log_action(message.chat.id, "settings", actor_id=message.from_user.id, reason=f"мут за варны: {seconds}с")
     bot.reply_to(message, f"✅ Мут за лимит варнов: {format_seconds(seconds)}.")
 
 
 def cmd_set_auto_delete(message, enabled):
     if not _admin_guard(message): return
-    store = _store(); bucket = _chat_bucket(message.chat.id); bucket["config"]["auto_delete"] = bool(enabled); _save(store)
+    update_chat_config(message.chat.id, auto_delete=bool(enabled))
     _log_action(message.chat.id, "settings", actor_id=message.from_user.id, reason=f"удаление нарушений: {'вкл' if enabled else 'выкл'}")
     bot.reply_to(message, f"✅ Автоудаление нарушений: {'включено' if enabled else 'выключено'}.")
 
 
 def cmd_set_protect_admins(message, enabled):
     if not _admin_guard(message): return
-    store = _store(); bucket = _chat_bucket(message.chat.id); bucket["config"]["protect_admins"] = bool(enabled); _save(store)
+    update_chat_config(message.chat.id, protect_admins=bool(enabled))
     _log_action(message.chat.id, "settings", actor_id=message.from_user.id, reason=f"защита админов: {'вкл' if enabled else 'выкл'}")
     bot.reply_to(message, f"✅ Защита администраторов: {'включена' if enabled else 'выключена'}.")
 
@@ -419,27 +444,50 @@ def cmd_modlog(message, args_text=""):
 # --------------------------------------------------------- АВТОСБРОС ----
 
 def process_expired_moderation():
-    """Снимает временные баны и чистит локальный список истёкших мутов."""
-    store = _store(); changed = False; now = time.time()
-    for cid_str, bucket in list(store.items()):
-        try: cid = int(cid_str)
-        except Exception: continue
-        bans = bucket.get("bans", {})
-        for uid, info in list(bans.items()):
-            until = info.get("until", 0)
-            if until and until <= now:
-                try:
-                    bot.unban_chat_member(cid, int(uid), only_if_banned=True)
-                    _append_limited(bucket.setdefault("history", []), {"action":"ban_expired", "target_id":int(uid), "target_name":info.get("name"), "at":now, "reason":"срок истёк"}, _HISTORY_LIMIT)
-                except Exception as e:
-                    logging.debug(f"[ban expiry {cid}/{uid}] {e}")
-                bans.pop(uid, None); changed = True
-        mutes = bucket.get("mutes", {})
-        for uid, info in list(mutes.items()):
-            until = info.get("until", 0)
-            if until and until <= now:
-                mutes.pop(uid, None); changed = True
-    if changed: db_set("moderation", store)
+    """Снимает истёкшие санкции без удержания общего lock во время Telegram API."""
+    now=time.time(); expired=[]
+    def collect(store):
+        for cid_str,bucket in list(store.items()):
+            try: cid=int(cid_str)
+            except Exception: continue
+            for uid,info in list((bucket.get("bans") or {}).items()):
+                until=info.get("until",0)
+                if until and until<=now: expired.append(("ban",cid,uid,info))
+            for uid,info in list((bucket.get("mutes") or {}).items()):
+                until=info.get("until",0)
+                if until and until<=now: expired.append(("mute",cid,uid,info))
+        return store
+    db_update_json("moderation", collect, {})
+    for kind,cid,uid,info in expired:
+        success=True
+        if kind=="ban":
+            try: bot.unban_chat_member(cid,int(uid),only_if_banned=True)
+            except Exception as exc:
+                success=False; logging.debug("[ban expiry %s/%s] %s",cid,uid,exc)
+        elif kind=="mute":
+            try:
+                bot.restrict_chat_member(
+                    cid, int(uid),
+                    permissions=ChatPermissions(
+                        can_send_messages=True,
+                        can_send_media_messages=True,
+                        can_send_other_messages=True,
+                        can_add_web_page_previews=True,
+                    ),
+                )
+            except Exception as exc:
+                success=False; logging.debug("[mute expiry %s/%s] %s",cid,uid,exc)
+        def finalize(store):
+            bucket=store.get(str(cid))
+            if not bucket: return store
+            section=bucket.get("bans" if kind=="ban" else "mutes", {})
+            current=section.get(str(uid))
+            if current and current.get("until",0) and current.get("until",0)<=now and success:
+                section.pop(str(uid),None)
+                if kind=="ban":
+                    _append_limited(bucket.setdefault("history",[]), {"action":"ban_expired","target_id":int(uid),"target_name":info.get("name"),"at":now,"reason":"срок истёк"}, _HISTORY_LIMIT)
+            return store
+        db_update_json("moderation", finalize, {})
 
 
 def start_moderation_scheduler():
@@ -449,5 +497,27 @@ def start_moderation_scheduler():
             except Exception as e: logging.error(f"[moderation scheduler] {e}", exc_info=True)
             if stopped():
                 break
-            time.sleep(30)
+            from reliability import _STOP
+            _STOP.wait(30)
     threading.Thread(target=loop, daemon=True, name="liza-moderation-scheduler").start()
+
+def _with_moderation_lock(fn):
+    def wrapped(*args, **kwargs):
+        with _LOCK:
+            return fn(*args, **kwargs)
+    wrapped.__name__ = getattr(fn, "__name__", "moderation_handler")
+    wrapped.__doc__ = fn.__doc__
+    return wrapped
+
+for _name in (
+    "cmd_ban", "cmd_unban", "cmd_mute", "cmd_unmute",
+    "cmd_warn", "cmd_unwarn", "cmd_set_warn_limit",
+    "cmd_set_warn_action", "cmd_set_warn_mute_duration",
+    "cmd_set_auto_delete", "cmd_set_protect_admins",
+):
+    _fn = globals().get(_name)
+    if _fn is not None and not getattr(_fn, "_liza_locked", False):
+        _wrapped = _with_moderation_lock(_fn)
+        _wrapped._liza_locked = True
+        globals()[_name] = _wrapped
+

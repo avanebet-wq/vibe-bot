@@ -223,7 +223,6 @@ def _award_xp_in_transaction(chat_id, user_id, kind):
 
 
 def _try_use(message, kind):
-    ensure_schema()
     chat_id = message.chat.id
     user_id, username, display_name = _user_info(message)
     if user_id == "None":
@@ -290,7 +289,6 @@ def _record_drink(chat_id, user_id, username, display_name, revo_name, fruit_emo
 def cmd_drink(message):
     """Игра «Выпить»: КД 1 час, случайный Revo, множитель и XP."""
     try:
-        ensure_schema()
         chat_id = message.chat.id
         user_id, username, display_name = _user_info(message)
         if user_id == "None":

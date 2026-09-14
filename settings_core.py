@@ -30,15 +30,15 @@ _recent_messages = {}
 _recent_lock = threading.RLock()
 
 
-def track_message(chat_id, message_id):
-    # Любое сообщение из группы подтверждает, что бот находится в этом чате.
-    # Это поддерживает постоянный реестр для команды «настройки» в личке.
-    try:
-        chat = bot.get_chat(chat_id)
-        if getattr(chat, "type", "") in ("group", "supergroup"):
-            store.register_known_group(chat_id, getattr(chat, "title", None) or str(chat_id))
-    except Exception as e:
-        log.debug("[known_groups] не удалось обновить чат %s: %s", chat_id, e)
+def track_message(chat_id, message_id, chat_title=None):
+    # Не вызываем get_chat() на каждое сообщение: title/type уже приходят
+    # в Telegram update для входящего сообщения. Для внутренних исходящих
+    # сообщений registry обновляется только при явном переданном названии.
+    if chat_title:
+        try:
+            store.register_known_group(chat_id, chat_title)
+        except Exception as e:
+            log.debug("[known_groups] не удалось обновить чат %s: %s", chat_id, e)
     with _recent_lock:
         dq = _recent_messages.setdefault(chat_id, deque(maxlen=_MAX_TRACKED))
         dq.append(message_id)
@@ -703,7 +703,9 @@ def _scheduler_loop():
             log.error(f"[scheduler] {e}", exc_info=True)
         if stopped():
             break
-        time.sleep(20)
+        # Ждём через общий stop-event, чтобы shutdown не задерживался на 20 с.
+        from reliability import _STOP
+        _STOP.wait(20)
 
 
 def start_scheduler():
@@ -1139,11 +1141,13 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id); return _show(chat_id, message_id, "mem_clear_confirm", gid)
 
     if action == "mem_clear":
-        from database import db_get, db_set
-        data = db_get("user_memory", {})
+        from database import db_update_json
         prefix = str(gid) + ":"
-        data = {k:v for k,v in data.items() if not k.startswith(prefix)}
-        db_set("user_memory", data)
+        def mutate(data):
+            for key in list(data):
+                if str(key).startswith(prefix): data.pop(key, None)
+            return data
+        db_update_json("user_memory", mutate, {})
         bot.answer_callback_query(call.id, "🧹 Память этого чата очищена.")
         return _show(chat_id, message_id, "mem", gid)
 
@@ -1158,25 +1162,26 @@ def _dispatch_callback(call):
 
     if action == "modtoggle":
         key = rest[0] if rest else ""
-        if key == "auto_delete":
-            from moderation import _chat_bucket, _store, _save
-            st=_store(); bucket=_chat_bucket(gid); bucket["config"][key]=not bool(bucket["config"].get(key)); _save(st)
-        elif key == "protect_admins":
-            from moderation import _chat_bucket, _store, _save
-            st=_store(); bucket=_chat_bucket(gid); bucket["config"][key]=not bool(bucket["config"].get(key)); _save(st)
+        if key in {"auto_delete", "protect_admins"}:
+            from moderation import _store
+            bucket = _store().get(str(gid), {})
+            current = bool(bucket.get("config", {}).get(key, False))
+            from moderation import update_chat_config
+            update_chat_config(gid, **{key: not current})
         else:
             return bot.answer_callback_query(call.id, "⚠️ Неизвестная настройка.", show_alert=True)
         bot.answer_callback_query(call.id, "✅ Модерация обновлена.")
         return _show(chat_id, message_id, "mod", gid)
 
     if action == "warnlimit":
-        from moderation import _chat_bucket, _store, _save
-        st=_store(); bucket=_chat_bucket(gid); current=int(bucket["config"].get("warn_limit",3))
+        from moderation import _store, update_chat_config
+        bucket = _store().get(str(gid), {})
+        current=int(bucket.get("config", {}).get("warn_limit",3))
         values=[1,2,3,5,10,20]
         try: idx=values.index(current)
         except ValueError: idx=2
         new=values[(idx+1)%len(values)]
-        bucket["config"]["warn_limit"]=new; _save(st)
+        update_chat_config(gid, warn_limit=new)
         bot.answer_callback_query(call.id, f"✅ Лимит варнов: {new}")
         return _show(chat_id, message_id, "mod", gid)
 
@@ -1184,8 +1189,8 @@ def _dispatch_callback(call):
         action_name = rest[0] if rest else "mute"
         if action_name not in {"mute","ban","kick"}:
             return bot.answer_callback_query(call.id, "⚠️ Некорректное действие.", show_alert=True)
-        from moderation import _chat_bucket, _store, _save
-        st=_store(); bucket=_chat_bucket(gid); bucket["config"]["warn_action"]=action_name; _save(st)
+        from moderation import update_chat_config
+        update_chat_config(gid, warn_action=action_name)
         bot.answer_callback_query(call.id, "✅ Автодействие изменено.")
         return _show(chat_id, message_id, "mod", gid)
 

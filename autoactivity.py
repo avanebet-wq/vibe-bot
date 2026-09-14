@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 _HISTORY = defaultdict(lambda: deque(maxlen=18))
 _LAST_LIZA = {}
 _COOLDOWN = {}
+_MAX_CHATS = 5000
 
 QUESTION_RE = re.compile(r"[?？]|^(как|что|кто|где|когда|зачем|почему|можно|а ты|ты)\b", re.I)
 DIRECT_RE = re.compile(r"\bлиза\b", re.I)
@@ -26,6 +27,10 @@ def remember_message(chat_id, text, is_liza=False):
     })
     if is_liza:
         _LAST_LIZA[chat_id] = time.time()
+    if len(_HISTORY) > _MAX_CHATS:
+        keys = list(_HISTORY.keys())[_MAX_CHATS:]
+        for key in keys:
+            _HISTORY.pop(key, None); _LAST_LIZA.pop(key, None); _COOLDOWN.pop(key, None)
 
 def mark_liza_response(chat_id):
     _LAST_LIZA[chat_id] = time.time()

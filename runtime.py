@@ -24,7 +24,23 @@ if not TOKEN:
 
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-ME = bot.get_me()
+
+def _load_bot_identity():
+    delay = 1.0
+    last_error = None
+    for attempt in range(6):
+        try:
+            me = bot.get_me()
+            return me
+        except Exception as exc:
+            last_error = exc
+            logging.error("Не удалось получить данные бота при старте (попытка %s/6): %s", attempt + 1, exc)
+            if attempt < 5:
+                time.sleep(delay)
+                delay = min(delay * 2.0, 15.0)
+    raise RuntimeError(f"Telegram API недоступен при старте: {last_error}")
+
+ME = _load_bot_identity()
 BOT_ID = ME.id
 BOT_USERNAME = (ME.username or "").lower()
 
