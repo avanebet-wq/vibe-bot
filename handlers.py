@@ -132,6 +132,15 @@ def _enqueue_ai_reply(message, *args, reply_mode="reply", processing_notice=Fals
                 except Exception:
                     pass
             return False
+        # Start Telegram's typing indicator immediately, before the job enters
+        # the AI queue. This removes the visible 2-3s gap caused by waiting for
+        # an AI worker to pick up the request. The worker continues refreshing
+        # the indicator while Qwen is thinking/generating.
+        try:
+            if chat_id is not None:
+                bot.send_chat_action(chat_id, "typing")
+        except Exception:
+            pass
         try:
             _AI_QUEUE.put_nowait((message, args, kwargs, reply_mode))
         except Full:
