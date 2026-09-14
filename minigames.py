@@ -222,10 +222,9 @@ def _xp_roll(kind):
 
 def _award_xp_in_transaction(chat_id, user_id, kind):
     xp, multiplier = _xp_roll(kind)
-    conn.execute("""CREATE TABLE IF NOT EXISTS profile_xp (
-        chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY(chat_id,user_id)
-    )""")
+    # profile_xp создаётся один раз на старте через db_schema/profile.ensure_schema.
+    # DDL в горячем пути убран: лишний round-trip PostgreSQL здесь особенно
+    # заметен при команде, которая и так работает внутри общей транзакции.
     conn.execute(
         "INSERT INTO profile_xp(chat_id,user_id,xp) VALUES(?,?,?) "
         "ON CONFLICT(chat_id,user_id) DO UPDATE SET xp=profile_xp.xp+excluded.xp",
@@ -343,10 +342,8 @@ def cmd_drink(message):
                     "VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                     (str(chat_id), str(user_id), username, display_name, "drink", now, getattr(message, "message_id", None)),
                 )
-                total = int(conn.execute(
-                    "SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?",
-                    (str(chat_id), str(user_id), "drink"),
-                ).fetchone()[0])
+                # Для «Выпить» total в ответе не используется, поэтому
+                # не делаем лишний SELECT COUNT(*) на каждый запуск.
                 xp, xp_mult = _award_xp_in_transaction(chat_id, user_id, "drink")
                 conn.commit()
             except Exception:

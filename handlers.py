@@ -19,6 +19,7 @@ import random
 import logging
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from runtime import bot, WAKE_RE, BOT_ID
 from config import STORY_AUTOTELL_CHANCE, BAD_WORDS
@@ -44,6 +45,7 @@ _AI_QUEUE = Queue(maxsize=24)
 _AI_ACTIVE_BY_CHAT = {}
 _AI_STATE_LOCK = threading.RLock()
 _AI_MAX_PER_CHAT = 2
+_COMMAND_ANALYTICS_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="liza-cmd-analytics")
 
 def _ai_job_finished(chat_id):
     if chat_id is None:
@@ -281,10 +283,27 @@ def _cmd_personality(message,args):
 
 
 def _game_enabled(message):
-    return bool(get_setting(message.chat.id, "minigames_enabled", True)) and bool(__import__('settings_store').get_liza(message.chat.id).get("minigames", True))
+    # Единственный источник истины для переключателя мини-игр.
+    # Старый chat_settings.minigames_enabled нигде больше не используется
+    # и заставлял каждый запуск игры делать лишний запрос PostgreSQL.
+    try:
+        from settings_store import get_liza
+        return bool(get_liza(message.chat.id).get("minigames", True))
+    except Exception:
+        return True
+
+
+def _record_command_async(chat_id, command):
+    """Записывает служебную статистику команды вне критического пути ответа."""
+    try:
+        _COMMAND_ANALYTICS_EXECUTOR.submit(record_command, chat_id, command)
+    except Exception:
+        logging.exception("[command-analytics] submit failed")
 
 
 def _dispatch(message, cmd_text):
+    """Максимально короткий путь для команд: обработчик -> ответ, аналитика после."""
+    started = time.perf_counter()
     text = cmd_text.strip().rstrip("?!. ")
     low = text.lower()
     if not low:
@@ -294,10 +313,14 @@ def _dispatch(message, cmd_text):
         if low == phrase or low.startswith(phrase + " "):
             rest = text[len(phrase):].strip()
             try:
-                record_command(message.chat.id, phrase)
                 handler(message, rest)
             except Exception as e:
                 logging.error(f"[dispatch:{phrase}] {e}", exc_info=True)
+            finally:
+                _record_command_async(message.chat.id, phrase)
+                elapsed = time.perf_counter() - started
+                if elapsed >= 0.5:
+                    logging.info("[command-latency] %s %.3fs", phrase, elapsed)
             return True
 
     first, _, rest = text.partition(" ")
@@ -307,10 +330,14 @@ def _dispatch(message, cmd_text):
             if key in {"пыхнуть", "заварить", "выпить", "стата", "топ"} and not _game_enabled(message):
                 bot.reply_to(message, "🎮 Мини-игры сейчас отключены администратором.")
                 return True
-            record_command(message.chat.id, key)
             _SINGLE_COMMANDS[key](message, rest.strip())
         except Exception as e:
             logging.error(f"[dispatch:{key}] {e}", exc_info=True)
+        finally:
+            _record_command_async(message.chat.id, key)
+            elapsed = time.perf_counter() - started
+            if elapsed >= 0.5:
+                logging.info("[command-latency] %s %.3fs", key, elapsed)
         return True
 
     return False
@@ -440,64 +467,44 @@ def text_handler(message):
             except Exception:
                 pass
 
-        # Во время активной записи Лиза молчит в обычном разговоре, но
-        # прямые команды работают без приставки «Лиза», а обращение «Лиза ...»
-        # по-прежнему отправляется в обычный AI-диалог.
-        # Команды управления записью остаются отдельными исключениями.
-        if is_group and contest_is_active(cid):
-            # Во время конкурса сначала безусловно проверяем управляющие
-            # команды. Это важно: они не должны попадать в AI даже если
-            # пользователь написал их без обращения «Лиза».
-            active_wake = WAKE_RE.match(text)
-            active_text = active_wake.group(1).strip().rstrip("?!. ") if active_wake else text.strip().rstrip("?!. ")
-            active_low = active_text.lower()
-            is_contest_command = (
-                active_low.startswith("стоп запись")
-                or active_low.startswith("добавить @")
-                or active_low.startswith("записать @")
-                or active_low == "пыхнуть"
-                or active_low.startswith("заварить")
-                or active_low.startswith("стата")
-            )
-            if is_contest_command:
-                logging.info(
-                    "contest command received: chat=%s user=%s command=%r wake=%s",
-                    cid, getattr(message.from_user, "id", None), active_text, bool(active_wake)
-                )
-                _dispatch(message, active_text)
-                return
-
-            if active_wake:
-                # Любое другое обращение «Лиза ...» во время записи
-                # отправляем в обычный AI-диалог.
-                logging.info(
-                    "contest addressed dialogue: chat=%s user=%s text=%r",
-                    cid, getattr(message.from_user, "id", None), active_text
-                )
-                record_liza_request(cid, getattr(message.from_user, "id", None))
-                _enqueue_ai_reply(message, active_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message))
-                return
-
+        # CAPTCHA должна оставаться самым ранним guard:
+        # пользователь без проверки не может запускать команды.
+        if is_group and enforce_captcha(message):
             return
 
-        if is_group:
-            if enforce_captcha(message):
-                return
-            if enforce_silence(message):
-                return
+        # УЛЬТРА-FAST PATH: известную команду маршрутизируем сразу.
+        # Она не должна ждать проверки конкурса, полной тишины, ожидания
+        # настроек, учёта сообщения, памяти и прочей аналитики.
+        # Каждая административная команда сама проверяет права там, где это нужно.
+        direct_command_text = text.strip()
+        if _dispatch(message, direct_command_text):
+            return
 
+        # Во время активной записи обычный разговор блокируется, но
+        # прямое обращение «Лиза ...» остаётся рабочим AI-диалогом.
+        # Важно: проверка конкурса теперь выполняется ТОЛЬКО для текста,
+        # который не оказался известной командой.
+        if is_group and contest_is_active(cid):
+            active_wake = WAKE_RE.match(text)
+            if active_wake:
+                active_text = active_wake.group(1).strip().rstrip("?!. ")
+                record_liza_request(cid, getattr(message.from_user, "id", None))
+                _enqueue_ai_reply(
+                    message, active_text, angry=is_angry(cid), chat_id=cid,
+                    user_id=getattr(message.from_user, "id", None),
+                    group_context=_liza_ai_context(message)
+                )
+            return
+
+        # Обычные сообщения могут быть удалены «Полной тишиной».
+        # Команды уже вышли выше и потому не задерживаются этим guard.
+        if is_group and enforce_silence(message):
+            return
+
+        # Ожидаемый ввод настроек обрабатываем только если это НЕ команда.
         if contest_settings_pending(message):
             return
         if try_handle_pending_input(message):
-            return
-
-        # КРИТИЧЕСКИЙ FAST PATH ДЛЯ КОМАНД.
-        # Не делаем до команды track_message/touch_user/память/статистику
-        # сообщения. Эти операции пишут в PostgreSQL и могли задерживать даже
-        # простое меню на несколько секунд. Сам обработчик команды уже решает,
-        # что ему действительно нужно прочитать из БД.
-        direct_command_text = text.strip()
-        if _dispatch(message, direct_command_text):
             return
 
         # Обычный текст идёт по полному pipeline.
