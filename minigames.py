@@ -175,7 +175,7 @@ def _record(chat_id, user_id, username, display_name, kind, now):
         try:
             conn.execute(
                 "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at,source_message_id) "
-                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id, kind) DO NOTHING",
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 (str(chat_id), str(user_id), username, display_name, kind, now, getattr(message, "message_id", None)),
             )
             conn.commit()
@@ -340,7 +340,7 @@ def cmd_drink(message):
                     return
                 conn.execute(
                     "INSERT INTO minigame_events(chat_id,user_id,username,display_name,kind,created_at,source_message_id) "
-                    "VALUES(?,?,?,?,?,?,?) ON CONFLICT(chat_id, source_message_id, kind) DO NOTHING",
+                    "VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                     (str(chat_id), str(user_id), username, display_name, "drink", now, getattr(message, "message_id", None)),
                 )
                 total = int(conn.execute(
