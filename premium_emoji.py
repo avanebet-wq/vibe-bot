@@ -41,10 +41,23 @@ def save_emoji(emoji_id: str, name: str, preview_url: str | None, group_id: str 
         conn.commit()
 
 
+def preview_proxy_url(emoji_id: str) -> str:
+    """Стабильный URL прокси-превью для Mini App.
+
+    Telegram file URLs содержат bot token и не являются хорошим источником для
+    браузерного превью: они могут истекать, а сам token нельзя отдавать клиенту.
+    Поэтому Mini App получает картинку через наш backend, по одному emoji_id.
+    """
+    from urllib.parse import quote
+    return f"/api/stickerImage?emoji_id={quote(str(emoji_id), safe='')}"
+
+
 def get_emojis(group_id: str = "", query: str = "") -> list[dict]:
     """Вернуть список premium emoji для группы (+ глобальные).
 
     Порядок: глобальные (group_id='') + эмодзи этой группы, без дублей.
+    Для Mini App previewUrl всегда указывает на безопасный backend-прокси,
+    а не раскрывает Telegram file URL с bot token.
     """
     with db_lock:
         rows = conn.execute(
@@ -62,7 +75,7 @@ def get_emojis(group_id: str = "", query: str = "") -> list[dict]:
         seen.add(emoji_id)
         if query and query.lower() not in name.lower():
             continue
-        result.append({"id": emoji_id, "name": name, "previewUrl": preview_url})
+        result.append({"id": emoji_id, "name": name, "previewUrl": preview_proxy_url(emoji_id)})
     return result
 
 
@@ -83,6 +96,8 @@ def delete_emoji(emoji_id: str, group_id: str = "") -> None:
 _API = f"https://api.telegram.org/bot{TOKEN}"
 _FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 _SESSION = requests.Session()
+_PREVIEW_CACHE: dict[str, tuple[float, str, bytes]] = {}
+_PREVIEW_CACHE_TTL = 600
 
 
 def _tg(method: str, **params) -> dict:
@@ -90,6 +105,46 @@ def _tg(method: str, **params) -> dict:
     resp = _SESSION.post(f"{_API}/{method}", json=params, timeout=15)
     resp.raise_for_status()
     return resp.json()
+
+
+def fetch_preview_bytes(emoji_id: str) -> tuple[str, bytes] | None:
+    """Получить статичное превью custom emoji для backend-прокси.
+
+    Возвращает (content_type, bytes). Результат кэшируется, чтобы открытие
+    Mini App не создавало отдельный запрос к Telegram для каждого клика.
+    """
+    key = str(emoji_id)
+    now = time.time()
+    cached = _PREVIEW_CACHE.get(key)
+    if cached and cached[0] > now:
+        return cached[1], cached[2]
+
+    try:
+        data = _tg("getCustomEmojiStickers", custom_emoji_ids=[key])
+        stickers = data.get("result") or []
+        if not stickers:
+            return None
+        sticker = stickers[0]
+        thumb = sticker.get("thumbnail") or sticker.get("thumb")
+        source = thumb or sticker
+        file_id = source.get("file_id") if isinstance(source, dict) else None
+        if not file_id:
+            return None
+        fp = _tg("getFile", file_id=file_id)
+        file_path = (fp.get("result") or {}).get("file_path")
+        if not file_path:
+            return None
+        resp = _SESSION.get(f"{_FILE_API}/{file_path}", timeout=15)
+        resp.raise_for_status()
+        content_type = (resp.headers.get("Content-Type") or "image/webp").split(";", 1)[0]
+        payload = resp.content
+        if not payload or len(payload) > 2 * 1024 * 1024:
+            return None
+        _PREVIEW_CACHE[key] = (now + _PREVIEW_CACHE_TTL, content_type, payload)
+        return content_type, payload
+    except Exception as exc:
+        log.warning("[premium_emoji] fetch_preview_bytes(%s) error: %s", emoji_id, exc)
+        return None
 
 
 def fetch_preview_url(emoji_id: str) -> str | None:
@@ -149,7 +204,7 @@ def process_message_for_emojis(message, group_id: str = "") -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Raw send helpers (недокументированный Bot API для emoji в кнопках)
+# Raw send helpers для custom emoji в кнопках (Bot API 9.4+)
 # ---------------------------------------------------------------------------
 
 def _build_button_with_emoji(btn_text: str, emoji_id: str | None, **kwargs) -> dict:
@@ -159,9 +214,9 @@ def _build_button_with_emoji(btn_text: str, emoji_id: str | None, **kwargs) -> d
     ``icon_custom_emoji_id``. Оно как раз предназначено для показа
     premium-эмодзи непосредственно перед текстом кнопки.
 
-    Раньше здесь использовался недокументированный трюк с ``entities`` и
-    нулевой шириной пробела. Он больше не нужен и мог приводить к тому,
-    что emoji отображался в Mini App, но исчезал в реальной публикации.
+    Для реальной публикации используется официальный ``icon_custom_emoji_id``.
+    Для браузерного предпросмотра используется отдельный proxy endpoint
+    ``/api/stickerImage`` — по смыслу такой же подход, как у GroupHelpBot.
     """
     btn = {"text": str(btn_text or "Кнопка")}
     if emoji_id:

@@ -59,6 +59,28 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
             emojis_data = pe.get_emojis(group_id=group_id, query=query)
             return self._json(200, emojis_data)
 
+        if path == "/api/stickerImage":
+            # Аналог подхода GroupHelpBot: браузер получает картинку через
+            # backend-прокси, а не напрямую с Telegram file API. Это важно,
+            # потому что прямой URL содержит bot token и может быть
+            # недоступен/нестабилен из Mini App.
+            qs = parse_qs(parsed.query)
+            emoji_id = (qs.get("emoji_id") or [""])[0]
+            if not emoji_id:
+                return self._json(400, {"error": "emoji_id required"})
+            result = pe.fetch_preview_bytes(emoji_id)
+            if not result:
+                return self._json(404, {"error": "Preview not found"})
+            content_type, payload = result
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "public, max-age=600")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if path == "/api/emojis/rename":
             # GET /api/emojis/rename?emoji_id=...&name=...&group_id=...
             qs = parse_qs(parsed.query)
@@ -97,13 +119,7 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                 return self._json(404, {"error": "Публикация не найдена"})
 
             # Старые сохранённые кнопки могли содержать только custom_emoji_id.
-            # Подтягиваем preview из библиотеки, чтобы Mini App после повторного
-            # открытия сразу показывал выбранный premium-эмодзи перед названием.
-            emoji_map = {
-                str(item.get("id")): item.get("previewUrl")
-                for item in pe.get_emojis(group_id=str(gid_i))
-                if item.get("id")
-            }
+            # Для них тоже строим стабильный URL нашего preview-прокси.
             rows = []
             for row in (post.get("buttons") or []):
                 out_row = []
@@ -112,10 +128,11 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                         continue
                     out = dict(btn)
                     emoji_id = out.get("custom_emoji_id")
-                    if emoji_id and not out.get("custom_emoji_preview"):
-                        preview = emoji_map.get(str(emoji_id))
-                        if preview:
-                            out["custom_emoji_preview"] = preview
+                    if emoji_id:
+                        # Всегда используем локальный прокси-превью. Старые
+                        # Telegram file URLs могли протухнуть или содержать
+                        # bot token и поэтому не отображались в Mini App.
+                        out["custom_emoji_preview"] = pe.preview_proxy_url(str(emoji_id))
                     out_row.append(out)
                 rows.append(out_row)
             return self._json(200, {"rows": rows})
@@ -184,15 +201,7 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                             # Храним preview вместе с конфигурацией публикации.
                             # Это позволяет Mini App показывать тот же emoji после
                             # повторного открытия, не полагаясь только на текущий UI.
-                            preview = btn.get("custom_emoji_preview")
-                            if not preview:
-                                preview = next(
-                                    (e.get("previewUrl") for e in pe.get_emojis(group_id=str(gid))
-                                     if str(e.get("id")) == emoji_id),
-                                    None,
-                                )
-                            if preview:
-                                out["custom_emoji_preview"] = preview
+                            out["custom_emoji_preview"] = pe.preview_proxy_url(emoji_id)
                         out_row.append(out)
                     normalized.append(out_row)
                 store.update_post(gid, pid, buttons=normalized)
