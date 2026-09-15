@@ -13,6 +13,7 @@ from telebot import types
 from config import TZ
 from database import db_get, db_update_json
 from utils import extract_target, get_mention
+from runtime import bot
 
 MAX_LEVEL = 40
 DAILY_XP_CAP = 100
@@ -183,7 +184,7 @@ def _create_request_to(message, actor_id, target_id, target_name=None):
     sender = _display_user(actor_id, getattr(message.from_user, "first_name", None) or "Пользователь")
     text = f"🤝 <b>Новое предложение дружбы!</b>\n\n{sender} предлагает вам начать дружбу.\n\nВыберите действие ниже."
     try:
-        sent = message.bot.send_message(target_id, text, parse_mode="HTML", reply_markup=kb)
+        sent = bot.send_message(target_id, text, parse_mode="HTML", reply_markup=kb)
     except Exception:
         bot_reply(message, "📩 Не получилось отправить предложение в личку этому участнику. Пусть он сначала откроет чат с Лизой и напишет ей <code>старт</code>.")
         # Keep the request so it can be retried/handled later only if DM becomes available.
@@ -482,7 +483,7 @@ def send_actions_to_user(message, user_id, chat_id=None):
         lines.append(f"⭐ Для основного друга сейчас открыт уровень: <b>{main_level}</b>.")
     else:
         lines.append("⭐ Чтобы список показывал точный прогресс, сначала установи основного друга через <code>отн основа</code> в группе.")
-    message.bot.send_message(user_id, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
+    bot.send_message(user_id, "\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
 
 
 def execute_action(message, action_name, args):
@@ -579,7 +580,7 @@ def execute_action(message, action_name, args):
 
 
 def bot_reply(message, text, **kwargs):
-    return message.bot.reply_to(message, text, parse_mode=kwargs.pop("parse_mode", "HTML"), **kwargs)
+    return bot.reply_to(message, text, parse_mode=kwargs.pop("parse_mode", "HTML"), **kwargs)
 
 
 @__import__("runtime").bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("rel|"))
