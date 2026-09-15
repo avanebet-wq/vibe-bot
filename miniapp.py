@@ -294,15 +294,6 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._error(414, "request URI too long")
             parsed = urlparse(self.path)
 
-            if parsed.path == "/":
-                return self._send(200, b"Liza is alive!", "text/plain; charset=utf-8")
-
-            if parsed.path in ("/app", "/app/"):
-                if not INDEX_PATH.exists():
-                    return self._error(500, "Mini App file is missing")
-                data = INDEX_PATH.read_bytes()
-                return self._send(200, data, "text/html; charset=utf-8")
-
             if parsed.path == "/health":
                 return self._json(200, {"ok": True, "service": "liza-miniapp"})
 
@@ -325,12 +316,16 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return self._json(200, {"rows": _to_public_rows(post.get("buttons"))})
 
             if parsed.path == "/api/emojis":
-                # The ready-made UI supports a premium-emoji library. The
-                # existing bot does not yet maintain one, so return an empty
-                # authenticated library instead of pretending arbitrary
-                # Telegram emoji IDs are valid.
                 _auth_user(self)
                 return self._json(200, [])
+
+            # Умный fallback: если это не API, всегда отдаём интерфейс. 
+            # Это спасёт от любых опечаток в ссылках BotFather (типа /App, /app/ или пробелов)
+            if not parsed.path.startswith("/api/"):
+                if not INDEX_PATH.exists():
+                    return self._error(500, "Mini App file is missing")
+                data = INDEX_PATH.read_bytes()
+                return self._send(200, data, "text/html; charset=utf-8")
 
             return self._error(404, "not found")
 
