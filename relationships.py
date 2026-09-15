@@ -90,10 +90,39 @@ def _chat(store, chat_id):
 
 
 def _display_user(user_id, fallback="Пользователь"):
+    """HTML-ссылка на Telegram-профиль пользователя.
+
+    Для отношений нельзя полагаться только на username: он может отсутствовать
+    или быть недоступен в локальном кеше. tg://user?id=... всегда даёт
+    кликабельное имя профиля, если Telegram разрешает его показать.
+    """
     try:
-        return get_mention(user_id, fallback)
+        uid = int(user_id)
     except Exception:
-        return html.escape(fallback)
+        return html.escape(str(fallback or "Пользователь"))
+
+    name = str(fallback or "Пользователь").strip() or "Пользователь"
+    # Если старый helper знает более точное имя — используем его только как
+    # источник текста, но не как источник разметки ссылки.
+    try:
+        known = get_mention(uid, name)
+        if known:
+            import re
+            m = re.search(r">([^<]+)</a>", str(known))
+            if m:
+                name = m.group(1)
+            elif not str(known).startswith("<"):
+                name = str(known)
+    except Exception:
+        pass
+    return f'<a href="tg://user?id={uid}">{html.escape(name)}</a>'
+
+
+def _actor_mention(message):
+    user = getattr(message, "from_user", None)
+    uid = getattr(user, "id", None)
+    name = getattr(user, "first_name", None) or getattr(user, "username", None) or "Пользователь"
+    return _display_user(uid, name)
 
 
 def _clean_old_requests(chat):
@@ -115,9 +144,11 @@ def _is_friends(rel):
     return bool(rel and rel.get("status") == "active")
 
 
-def _ensure_relation_defaults(rel, user_a, user_b):
+def _ensure_relation_defaults(rel, user_a, user_b, user_a_name=None, user_b_name=None):
     rel.setdefault("user_a", str(user_a))
     rel.setdefault("user_b", str(user_b))
+    rel.setdefault("user_a_name", user_a_name or "Пользователь")
+    rel.setdefault("user_b_name", user_b_name or "Пользователь")
     rel.setdefault("status", "active")
     rel.setdefault("xp", 0)
     rel.setdefault("level", 1)
@@ -167,6 +198,35 @@ def _schedule_request_expiry(chat_id, token):
     timer = threading.Timer(REQUEST_TTL + 1, _expire_request, args=(chat_id, token))
     timer.daemon = True
     timer.start()
+
+
+def _request_sweeper():
+    """Persistent safety net for request expiry across Railway restarts.
+
+    Timers are useful for a precise timeout while the process is alive, but
+    they disappear on restart. This lightweight daemon periodically scans the
+    persisted JSON and expires stale requests exactly once.
+    """
+    while True:
+        try:
+            store = db_get("stats", {}) or {}
+            now = time.time()
+            for chat_id, chat in list(store.items()):
+                requests = (chat or {}).get("relationship_requests", {}) or {}
+                for token, req in list(requests.items()):
+                    try:
+                        expired = now - float(req.get("created_at", 0) or 0) >= REQUEST_TTL
+                    except Exception:
+                        expired = True
+                    if expired:
+                        _expire_request(chat_id, token)
+        except Exception:
+            logging.exception("[relationships] request sweeper failed")
+        time.sleep(60)
+
+
+_sweeper_thread = threading.Thread(target=_request_sweeper, name="relationship-request-sweeper", daemon=True)
+_sweeper_thread.start()
 
 
 def create_request(message):
@@ -290,9 +350,16 @@ def _finish_request(call, accepted):
                 # Preserve progress when friendship is restored.
                 rel = existing
                 rel["status"] = "active"
+                if not rel.get("user_a_name") or rel.get("user_a_name") == "Пользователь":
+                    rel["user_a_name"] = result["from_name"]
+                if not rel.get("user_b_name") or rel.get("user_b_name") == "Пользователь":
+                    rel["user_b_name"] = result["to_name"]
                 rel["updated_at"] = time.time()
             else:
-                rel = _ensure_relation_defaults({}, from_id, to_id)
+                rel = _ensure_relation_defaults(
+                    {}, from_id, to_id,
+                    result["from_name"], result["to_name"],
+                )
                 rels[key] = rel
             result["level"] = int(rel.get("level", 1))
             result["ok"] = True
@@ -302,25 +369,38 @@ def _finish_request(call, accepted):
     if not result["ok"]:
         bot.answer_callback_query(call.id, "Предложение уже недействительно.", show_alert=True)
         try:
-            call.message.edit_text("⌛ <b>Предложение дружбы недействительно.</b>", parse_mode="HTML")
+            call.message.edit_text("⌛ <b>Предложение дружбы недействительно.</b>", parse_mode="HTML", reply_markup=None)
         except Exception:
             pass
         return
     if accepted:
         text = (
-            "🎉 <b>Дружба началась!</b>\n\n"
-            f"{_display_user(from_id, result['from_name'])} и {_display_user(to_id, result['to_name'])} теперь друзья. 🤝\n\n"
-            f"⭐ Уровень отношений: <b>{result['level']}</b>\n"
+            "🎉 <b>Поздравляем! Новая дружба началась! 🤝</b>\n\n"
+            f"{_display_user(from_id, result['from_name'])} и {_display_user(to_id, result['to_name'])} теперь друзья.\n\n"
+            f"⭐ <b>Уровень отношений: {result['level']}/{MAX_LEVEL}</b>\n"
+            f"🏷️ {_level_title(result['level'])}\n"
             "📈 Развивайте дружбу совместными действиями."
         )
         bot.answer_callback_query(call.id, "Дружба создана! 🤝")
     else:
-        text = f"❌ <b>Предложение отклонено.</b>\n\n{_display_user(to_id, result['to_name'])} отклонил(а) предложение дружбы от {_display_user(from_id, result['from_name'])}."
+        text = (
+            "❌ <b>Предложение дружбы отклонено.</b>\n\n"
+            f"{_display_user(to_id, result['to_name'])} отклонил(а) предложение "
+            f"дружбы от {_display_user(from_id, result['from_name'])}."
+        )
         bot.answer_callback_query(call.id, "Предложение отклонено.")
     try:
-        call.message.edit_text(text, parse_mode="HTML")
+        call.message.edit_text(text, parse_mode="HTML", reply_markup=None, disable_web_page_preview=True)
     except Exception:
         logging.exception("[relationships] failed to edit request message")
+
+
+def _relation_name(rel, user_id):
+    if str(rel.get("user_a")) == str(user_id):
+        return rel.get("user_a_name") or "Пользователь"
+    if str(rel.get("user_b")) == str(user_id):
+        return rel.get("user_b_name") or "Пользователь"
+    return "Пользователь"
 
 
 def _relationship_list(chat_id, user_id):
@@ -451,7 +531,7 @@ def _confirm_end(call, accepted):
         )
         bot.answer_callback_query(call.id, "Дружба расторгнута.")
         try:
-            call.message.edit_text(text, parse_mode="HTML")
+            call.message.edit_text(text, parse_mode="HTML", reply_markup=None, disable_web_page_preview=True)
         except Exception:
             pass
         return
@@ -488,7 +568,7 @@ def show_relationship(message, args):
                 return
             lines = ["🤝 <b>Твои отношения</b>"]
             for uid, rel in rels[:15]:
-                lines.append(f"• {_display_user(uid)} — <b>{rel.get('level', 1)} ур.</b>, {rel.get('xp', 0)} XP")
+                lines.append(f"• {_display_user(uid, _relation_name(rel, uid))} — <b>{rel.get('level', 1)} ур.</b>, {rel.get('xp', 0)} XP")
             bot_reply(message, "\n".join(lines), disable_web_page_preview=True)
             return
     rel = _get_relationship(message.chat.id, message.from_user.id, target_id)
@@ -503,8 +583,12 @@ def show_relationship(message, args):
     need = max(1, next_xp - current_floor)
     main = _main_user(message.chat.id, message.from_user.id)
     marker = " ⭐ основа" if str(main) == str(target_id) else ""
+    relation_target_name = target_name or (
+        rel.get("user_b_name") if str(rel.get("user_a")) == str(message.from_user.id)
+        else rel.get("user_a_name")
+    ) or "Пользователь"
     text = (
-        f"🤝 <b>Отношения с {_display_user(target_id, target_name or 'Пользователь')}</b>{marker}\n\n"
+        f"🤝 <b>Отношения с {_display_user(target_id, relation_target_name)}</b>{marker}\n\n"
         f"🏷️ {html.escape(_level_title(level))}\n"
         f"⭐ Уровень: <b>{level}/{MAX_LEVEL}</b>\n"
         f"📈 Опыт: <b>{xp}</b> XP\n"
@@ -635,6 +719,12 @@ def execute_action(message, action_name, args):
         new_level = _xp_to_level(new_xp)
         current["xp"] = new_xp
         current["level"] = new_level
+        if str(current.get("user_a")) == str(message.from_user.id):
+            current["user_a_name"] = getattr(message.from_user, "first_name", None) or current.get("user_a_name") or "Пользователь"
+            current["user_b_name"] = target_name or current.get("user_b_name") or "Пользователь"
+        else:
+            current["user_b_name"] = getattr(message.from_user, "first_name", None) or current.get("user_b_name") or "Пользователь"
+            current["user_a_name"] = target_name or current.get("user_a_name") or "Пользователь"
         current["updated_at"] = now
         cooldowns[key] = now
         counts = current.setdefault("action_counts", {})
@@ -657,9 +747,9 @@ def execute_action(message, action_name, args):
         bot_reply(message, "⚠️ Не удалось выполнить действие. Попробуй ещё раз.")
         return True
 
-    actor_name = getattr(message.from_user, "first_name", None) or "Пользователь"
+    actor_mention = _actor_mention(message)
     target_mention = _display_user(target_id, target_name or "Пользователь")
-    text = f"{item['emoji']} {html.escape(actor_name)} {item['text']} {target_mention}.\n⭐ <b>+{result['granted']} XP отношениям</b>"
+    text = f"{item['emoji']} {actor_mention} {item['text']} {target_mention}.\n⭐ <b>+{result['granted']} XP отношениям</b>"
     if result["new_level"] > result["old_level"]:
         text += f"\n\n🎉 <b>Новый уровень!</b> {result['old_level']} → {result['new_level']}\n🏷️ {_level_title(result['new_level'])}"
     bot_reply(message, text, disable_web_page_preview=True)
