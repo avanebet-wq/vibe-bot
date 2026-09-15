@@ -51,7 +51,6 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/emojis":
-            # Самые популярные и ходовые иконки для кнопок
             emojis_data = [
                 {"id": "fire", "symbol": "🔥", "name": "Огонь"},
                 {"id": "lightning", "symbol": "⚡️", "name": "Молния"},
@@ -154,22 +153,25 @@ def _get_miniapp_html():
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         * { box-sizing: border-box; }
-        body { background: #0f0f0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; overflow-x: hidden; }
+        body { background: #0f0f0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; overflow-x: hidden; width: 100%; }
         h2 { font-size: 18px; margin-bottom: 12px; }
-        .row-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 12px; margin-bottom: 12px; width: 100%; overflow: hidden; }
-        .btn-item { background: #262626; border: 1px solid #444; border-radius: 8px; padding: 10px; margin-bottom: 8px; width: 100%; }
+        .row-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 12px; margin-bottom: 12px; width: 100%; }
+        .btn-item { background: #262626; border: 1px solid #444; border-radius: 8px; padding: 10px; margin-bottom: 10px; width: 100%; }
         .btn-content { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
-        .input-group { flex: 1; min-width: 0; }
-        input[type="text"] { background: #121212; border: 1px solid #333; color: #fff; border-radius: 8px; padding: 8px; width: 100%; max-width: 100%; font-size: 14px; display: block; }
+        .input-group { flex: 1; min-width: 0; width: 100%; }
+        input[type="text"] { background: #121212; border: 1px solid #333; color: #fff; border-radius: 8px; padding: 10px; width: 100%; font-size: 14px; display: block; margin-top: 6px; }
         button { cursor: pointer; border: none; border-radius: 8px; padding: 10px 16px; font-weight: 600; font-size: 14px; }
         .btn-primary { background: #3b82f6; color: #fff; width: 100%; margin-top: 10px; }
         .btn-success { background: #10b981; color: #fff; width: 100%; margin-top: 20px; padding: 14px; font-size: 16px; }
         .btn-danger { background: #ef4444; color: #fff; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
-        .emoji-scroll { display: flex; gap: 6px; overflow-x: auto; white-space: nowrap; padding-bottom: 6px; width: 100%; -webkit-overflow-scrolling: touch; }
-        .emoji-scroll::-webkit-scrollbar { height: 4px; }
-        .emoji-scroll::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
-        .emoji-btn { background: #2a2a2a; border: none; border-radius: 6px; min-width: 36px; height: 36px; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
-        .emoji-btn:hover { background: #3b82f6; }
+        
+        /* Сетка эмодзи аккуратной плиткой */
+        .emoji-grid-box { background: #121212; border: 1px solid #333; border-radius: 8px; padding: 8px; margin-top: 6px; width: 100%; }
+        .emoji-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; max-height: 120px; overflow-y: auto; padding: 2px; }
+        .emoji-grid::-webkit-scrollbar { width: 4px; }
+        .emoji-grid::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+        .emoji-btn { background: #1f1f1f; border: 1px solid #2a2a2a; border-radius: 6px; height: 36px; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.15s; }
+        .emoji-btn:hover { background: #3b82f6; border-color: #3b82f6; }
     </style>
 </head>
 <body>
@@ -221,17 +223,19 @@ def _get_miniapp_html():
                     btnDiv.innerHTML = `
                         <div class="btn-content">
                             <div class="input-group">
-                                <div style="margin-bottom:6px; font-size:12px; color:#888;">Виберіть емодзи:</div>
-                                <div class="emoji-scroll" id="emojis-${rIdx}-${bIdx}"></div>
-                                <input type="text" placeholder="Назва кнопки" value="${escapeHtml(btn.text || '')}" id="text-${rIdx}-${bIdx}" style="margin-top:6px;">
-                                <input type="text" placeholder="Посилання (https://...)" value="${escapeHtml(btn.url || btn.popup || '')}" id="url-${rIdx}-${bIdx}" style="margin-top:6px;">
+                                <div style="font-size:12px; color:#888; margin-bottom:2px;">Виберіть емодзи:</div>
+                                <div class="emoji-grid-box">
+                                    <div class="emoji-grid" id="emojis-${rIdx}-${bIdx}"></div>
+                                </div>
+                                <input type="text" placeholder="Назва кнопки" value="${escapeHtml(btn.text || '')}" id="text-${rIdx}-${bIdx}">
+                                <input type="text" placeholder="Посилання (https://...)" value="${escapeHtml(btn.url || btn.popup || '')}" id="url-${rIdx}-${bIdx}">
                             </div>
                             <button class="btn-danger" onclick="deleteBtn(${rIdx}, ${bIdx})" style="margin-top:22px;">✕</button>
                         </div>
                     `;
                     rowDiv.appendChild(btnDiv);
 
-                    const scrollContainer = btnDiv.querySelector(`#emojis-${rIdx}-${bIdx}`);
+                    const gridContainer = btnDiv.querySelector(`#emojis-${rIdx}-${bIdx}`);
                     emojisList.forEach(em => {
                         const eb = document.createElement('button');
                         eb.className = 'emoji-btn';
@@ -241,7 +245,7 @@ def _get_miniapp_html():
                             let cleanText = input.value.replace(/^(\p{Emoji}|\u200d)+/gu, "").trim();
                             input.value = em.symbol + " " + cleanText;
                         };
-                        scrollContainer.appendChild(eb);
+                        gridContainer.appendChild(eb);
                     });
                 });
 
