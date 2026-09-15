@@ -894,7 +894,7 @@ else:
 
 
 @bot.message_handler(content_types=[
-    "photo", "video", "animation", "document", "voice", "audio", "sticker",
+    "photo", "video", "animation", "document", "voice", "audio", "sticker", "video_note",
 ])
 def _on_media_message(message):
     try:
@@ -912,6 +912,13 @@ def _on_media_message(message):
             pass
         if try_handle_pending_input(message):
             return
+
+        # Обработка голосовых сообщений и видеокружков через Groq Whisper
+        if message.content_type in ("voice", "video_note"):
+            from transcriber import handle_transcription
+            handle_transcription(message)
+            return
+
     except Exception as e:
         log.error(f"[media_message] {e}", exc_info=True)
 
