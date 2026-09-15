@@ -44,6 +44,7 @@ from stories import cmd_tell_story, cmd_stories_on, cmd_stories_off, maybe_autot
 from help import cmd_help
 from ai import ask_liza
 from queue import Queue, Full
+from tiktok_downloader import handle_message as handle_tiktok_message
 
 _AI_QUEUE = Queue(maxsize=24)
 _AI_ACTIVE_BY_CHAT = {}
@@ -750,6 +751,11 @@ def text_handler(message):
 
         # Явная оценка кармы: ответ + / - на сообщение участника.
         if _handle_manual_karma(message):
+            return
+
+        # TikTok-ссылки в группе обрабатываются отдельно и асинхронно,
+        # чтобы загрузка видео никогда не блокировала основной обработчик.
+        if is_group and handle_tiktok_message(message):
             return
 
         # УЛЬТРА-FAST PATH: известную команду маршрутизируем сразу.
