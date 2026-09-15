@@ -6,6 +6,7 @@ import html
 import logging
 import secrets
 import time
+import threading
 from datetime import datetime
 
 from telebot import types
@@ -17,7 +18,7 @@ from runtime import bot
 
 MAX_LEVEL = 40
 DAILY_XP_CAP = 100
-REQUEST_TTL = 48 * 3600
+REQUEST_TTL = 15 * 60
 
 # One shared relationship = one record for two users.
 # Actions are deliberately neutral/social, not romantic.
@@ -129,6 +130,45 @@ def _ensure_relation_defaults(rel, user_a, user_b):
     return rel
 
 
+
+def _expire_request(chat_id, token):
+    """Expire a friendship request after REQUEST_TTL and notify the group."""
+    result = {"expired": False, "message_id": None}
+
+    def mutate(store):
+        chat = _chat(store, chat_id)
+        requests = chat.setdefault("relationship_requests", {})
+        req = requests.get(token)
+        if not req:
+            return store
+        if time.time() - float(req.get("created_at", 0) or 0) < REQUEST_TTL:
+            return store
+        result["message_id"] = req.get("message_id")
+        requests.pop(token, None)
+        result["expired"] = True
+        return store
+
+    db_update_json("stats", mutate, {})
+    if not result["expired"]:
+        return
+
+    if result["message_id"]:
+        try:
+            bot.delete_message(chat_id, int(result["message_id"]))
+        except Exception:
+            pass
+    try:
+        bot.send_message(chat_id, "⏰ <b>Время на принятие предложения дружбы вышло.</b>", parse_mode="HTML")
+    except Exception:
+        pass
+
+
+def _schedule_request_expiry(chat_id, token):
+    timer = threading.Timer(REQUEST_TTL + 1, _expire_request, args=(chat_id, token))
+    timer.daemon = True
+    timer.start()
+
+
 def create_request(message):
     if message.chat.type not in ("group", "supergroup"):
         return False
@@ -207,6 +247,7 @@ def _create_request_to(message, actor_id, target_id, target_name=None):
             req["message_id"] = getattr(sent, "message_id", None)
         return store
     db_update_json("stats", save_message, {})
+    _schedule_request_expiry(message.chat.id, store_result["token"])
     return True
 
 def create_request_command(message, args):
@@ -353,7 +394,16 @@ def end_relationship(message, args):
         types.InlineKeyboardButton("💔 Расторгнуть", callback_data=f"rel|end|{message.chat.id}|{message.from_user.id}|{target_id}|{token}"),
         types.InlineKeyboardButton("↩️ Отмена", callback_data=f"rel|cancel_end|{message.chat.id}|{message.from_user.id}|{target_id}|{token}"),
     )
-    bot_reply(message, f"💔 <b>Расторгнуть дружбу с {_display_user(target_id, target_name or 'Пользователь')}?</b>\n\nПрогресс отношений будет сохранён на случай восстановления.\n\nПодтверди действие:", reply_markup=kb)
+    sent = bot_reply(message, f"💔 <b>Расторгнуть дружбу с {_display_user(target_id, target_name or 'Пользователь')}?</b>\n\nПрогресс отношений будет сохранён на случай восстановления.\n\nПодтверди действие:", reply_markup=kb)
+
+    def save_confirmation_message(store):
+        chat = _chat(store, message.chat.id)
+        item = chat.setdefault("relationship_confirmations", {}).get(token)
+        if item:
+            item["message_id"] = getattr(sent, "message_id", None)
+            item["command_message_id"] = getattr(message, "message_id", None)
+        return store
+    db_update_json("stats", save_confirmation_message, {})
 
 
 def _confirm_end(call, accepted):
@@ -362,14 +412,19 @@ def _confirm_end(call, accepted):
     if str(call.from_user.id) != str(user_id):
         bot.answer_callback_query(call.id, "Подтверждение доступно только автору команды.", show_alert=True)
         return
-    result = {"ok": False, "name": "Пользователь"}
+
+    result = {"ok": False, "target_mention": _display_user(target_id, "Пользователь"), "confirm_message_id": None, "command_message_id": None}
+
     def mutate(store):
         chat = _chat(store, chat_id)
         confirms = chat.setdefault("relationship_confirmations", {})
         item = confirms.get(token)
-        if not item or time.time() - float(item.get("created_at", 0)) > 10 * 60:
+        if not item or time.time() - float(item.get("created_at", 0) or 0) > 10 * 60:
             confirms.pop(token, None)
             return store
+
+        result["confirm_message_id"] = item.get("message_id")
+        result["command_message_id"] = item.get("command_message_id")
         if accepted:
             rel = chat.setdefault("relationships", {}).get(_key(user_id, target_id))
             if rel and rel.get("status") == "active":
@@ -377,7 +432,7 @@ def _confirm_end(call, accepted):
                 rel["ended_at"] = time.time()
                 rel["updated_at"] = time.time()
                 result["ok"] = True
-                result["name"] = rel.get("target_name") or "Пользователь"
+
             main = chat.setdefault("relationship_main", {})
             if main.get(str(user_id)) == str(target_id):
                 main.pop(str(user_id), None)
@@ -385,11 +440,39 @@ def _confirm_end(call, accepted):
                 main.pop(str(target_id), None)
         confirms.pop(token, None)
         return store
+
     db_update_json("stats", mutate, {})
-    bot.answer_callback_query(call.id, "Готово." if accepted else "Отмена.")
-    text = "💔 Дружба завершена. Прогресс сохранён, его можно восстановить при новом предложении." if accepted and result["ok"] else "↩️ Расторжение отменено."
+
+    if accepted and result["ok"]:
+        text = (
+            f"💔 <b>Дружба между {_display_user(user_id, 'Пользователь')} и "
+            f"{result['target_mention']} рассыпалась.</b>\n\n"
+            "Прогресс отношений сохранён — дружбу можно восстановить новым предложением."
+        )
+        bot.answer_callback_query(call.id, "Дружба расторгнута.")
+        try:
+            call.message.edit_text(text, parse_mode="HTML")
+        except Exception:
+            pass
+        return
+
+    if accepted:
+        bot.answer_callback_query(call.id, "Дружба уже не активна.", show_alert=True)
+        try:
+            call.message.edit_text("💔 <b>Эта дружба уже была расторгнута.</b>", parse_mode="HTML")
+        except Exception:
+            pass
+        return
+
+    # Cancel: remove the confirmation message and the user's original -отн command.
+    bot.answer_callback_query(call.id, "Отмена.")
     try:
-        call.message.edit_text(text)
+        bot.delete_message(chat_id, int(result["confirm_message_id"] or call.message.message_id))
+    except Exception:
+        pass
+    try:
+        if result["command_message_id"]:
+            bot.delete_message(chat_id, int(result["command_message_id"]))
     except Exception:
         pass
 
