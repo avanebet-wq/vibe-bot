@@ -51,24 +51,25 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/emojis":
-            # Премиум-эмодзи с реальными Telegram custom_emoji_id
             emojis_data = [
-                {"id": "fire", "symbol": "🔥", "emoji_id": "4983751282863899330", "name": "Огонь"},
-                {"id": "lightning", "symbol": "⚡️", "emoji_id": "5368324170671202286", "name": "Молния"},
-                {"id": "star", "symbol": "⭐", "emoji_id": "5368198642396119842", "name": "Звезда"},
-                {"id": "rocket", "symbol": "🚀", "emoji_id": "5368357805176883201", "name": "Ракета"},
-                {"id": "gem", "symbol": "💎", "emoji_id": "5368102379361250123", "name": "Кристалл"},
-                {"id": "heart", "symbol": "❤️‍🔥", "emoji_id": "5368297424630713495", "name": "Сердце"},
-                {"id": "money", "symbol": "💸", "emoji_id": "5368097567844229124", "name": "Деньги"},
-                {"id": "pin", "symbol": "📌", "emoji_id": "5368412586737920312", "name": "Пин"},
-                {"id": "check", "symbol": "✅", "emoji_id": "5368222957195829391", "name": "Галочка"},
-                {"id": "bell", "symbol": "🔔", "emoji_id": "5368264903679313936", "name": "Колокольчик"},
-                {"id": "chat", "symbol": "💬", "emoji_id": "5368371239335608384", "name": "Чат"},
-                {"id": "gift", "symbol": "🎁", "emoji_id": "5368292852738641951", "name": "Подарок"},
-                {"id": "trophy", "symbol": "🏆", "emoji_id": "5368311243297869311", "name": "Кубок"},
-                {"id": "target", "symbol": "🎯", "emoji_id": "5368392135005708234", "name": "Цель"},
-                {"id": "bulb", "symbol": "💡", "emoji_id": "5368334185293639451", "name": "Идея"},
-                {"id": "note", "symbol": "📝", "emoji_id": "5368423697197772836", "name": "Заметка"}
+                {"id": "fire", "symbol": "🔥", "name": "Огонь"},
+                {"id": "lightning", "symbol": "⚡️", "name": "Молния"},
+                {"id": "star", "symbol": "⭐", "name": "Звезда"},
+                {"id": "rocket", "symbol": "🚀", "name": "Ракета"},
+                {"id": "gem", "symbol": "💎", "name": "Кристалл"},
+                {"id": "heart", "symbol": "❤️‍🔥", "name": "Сердце"},
+                {"id": "money", "symbol": "💸", "name": "Деньги"},
+                {"id": "pin", "symbol": "📌", "name": "Пин"},
+                {"id": "check", "symbol": "✅", "name": "Галочка"},
+                {"id": "bell", "symbol": "🔔", "name": "Колокольчик"},
+                {"id": "chat", "symbol": "💬", "name": "Чат"},
+                {"id": "link", "symbol": "🔗", "name": "Ссылка"},
+                {"id": "gift", "symbol": "🎁", "name": "Подарок"},
+                {"id": "trophy", "symbol": "🏆", "name": "Кубок"},
+                {"id": "target", "symbol": "🎯", "name": "Цель"},
+                {"id": "bulb", "symbol": "💡", "name": "Идея"},
+                {"id": "note", "symbol": "📝", "name": "Заметка"},
+                {"id": "question", "symbol": "⁉️", "name": "Вопрос"}
             ]
             return self._json(200, emojis_data)
 
@@ -221,7 +222,7 @@ def _get_miniapp_html():
                     btnDiv.innerHTML = `
                         <div class="btn-content">
                             <div class="input-group">
-                                <div style="font-size:12px; color:#888; margin-bottom:2px;">Виберіть емодзи Premium:</div>
+                                <div style="font-size:12px; color:#888; margin-bottom:2px;">Виберіть емодзи:</div>
                                 <div class="emoji-grid-box">
                                     <div class="emoji-grid" id="emojis-${rIdx}-${bIdx}"></div>
                                 </div>
@@ -242,8 +243,6 @@ def _get_miniapp_html():
                             const input = document.getElementById(`text-${rIdx}-${bIdx}`);
                             let cleanText = input.value.replace(/^(\p{Emoji}|\u200d)+/gu, "").trim();
                             input.value = em.symbol + " " + cleanText;
-                            // Сохраняем также emoji_id в объекте кнопки для бэкенда
-                            btn.emoji_id = em.emoji_id;
                         };
                         gridContainer.appendChild(eb);
                     });
