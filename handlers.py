@@ -8,7 +8,7 @@ from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
 from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
 from profile import cmd_profile, touch_user
-from karma import observe_message, get_user_context, change_karma, auto_delta
+from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, auto_delta
 from contest_settings import open_settings as contest_settings_open, handle_pending as contest_settings_pending
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
@@ -21,6 +21,7 @@ import logging
 import time
 import threading
 import html
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from runtime import bot, WAKE_RE, BOT_ID
@@ -265,7 +266,7 @@ def _handle_manual_karma(message):
     if getattr(message.chat, "type", "") not in ("group", "supergroup"):
         return False
     text = (message.text or "").strip()
-    if text not in ("+", "-"):
+    if not re.fullmatch(r"\+{1,3}|-", text):
         return False
     reply = getattr(message, "reply_to_message", None)
     target = getattr(reply, "from_user", None)
@@ -276,20 +277,40 @@ def _handle_manual_karma(message):
     if target.id == actor.id:
         bot.reply_to(message, "😏 Сам себе карму накручивать не дам.")
         return True
-    delta = 1 if text == "+" else -1
-    old, new = change_karma(
-        message.chat.id,
-        target.id,
-        delta,
-        "плюс от участника" if delta > 0 else "минус от участника",
-        actor.id,
-    )
-    if new == old:
-        return True
+    if text.startswith("+"):
+        amount = len(text)
+        ok, old, new, used_today, reason = give_karma(
+            message.chat.id, actor.id, target.id, amount
+        )
+        if not ok:
+            remaining = max(0, 3 - used_today)
+            if reason == "достигнут максимум кармы":
+                bot.reply_to(message, "⚠️ У этого участника уже максимальная карма.")
+            elif reason == "дневной лимит":
+                bot.reply_to(
+                    message,
+                    f"⏳ Сегодня ты уже потратил(а) {used_today}/3 кармы. Осталось: {remaining}."
+                )
+            return True
+        delta = new - old
+        sign = f"+{delta}"
+        emoji = "📈"
+        verb = "повысила"
+    else:
+        delta = -1
+        old, new = change_karma(
+            message.chat.id,
+            target.id,
+            delta,
+            "минус от участника",
+            actor.id,
+        )
+        if new == old:
+            return True
+        sign = "-1"
+        emoji = "📉"
+        verb = "понизила"
     name = html.escape((target.first_name or "Пользователь").split(None, 1)[0])
-    sign = "+1" if delta > 0 else "-1"
-    emoji = "📈" if delta > 0 else "📉"
-    verb = "повысила" if delta > 0 else "понизила"
     bot.send_message(
         message.chat.id,
         f'{emoji} <a href="tg://user?id={target.id}">{name}</a>: Лиза {verb} карму на {sign}. Карма: <b>{new:+d}</b>',

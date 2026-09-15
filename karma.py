@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import datetime
+from config import TZ
 from database import db_get, db_update_json
 
 _MAX_KARMA = 100
@@ -116,6 +118,69 @@ def get_karma(chat_id, user_id):
         return int(user.get("karma", 0))
     except Exception:
         return 0
+
+
+def give_karma(chat_id, actor_user_id, target_user_id, amount=1):
+    """Give positive karma with a shared per-actor daily limit of 3 points.
+
+    The limit is independent of the recipient: + to three different users uses
+    all three points, while ++ / +++ spends 2 / 3 points at once.
+    Returns (ok, old, new, used_today, reason).
+    """
+    try:
+        amount = int(amount)
+    except Exception:
+        amount = 1
+    amount = max(1, min(3, amount))
+    if chat_id is None or actor_user_id is None or target_user_id is None:
+        return False, 0, 0, 0, "некорректные данные"
+    if str(actor_user_id) == str(target_user_id):
+        return False, get_karma(chat_id, target_user_id), get_karma(chat_id, target_user_id), 0, "сам себе"
+
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    result = {"ok": False, "old": 0, "new": 0, "used": 0, "reason": ""}
+
+    def mutate(store):
+        chat = store.setdefault(_key(chat_id), {})
+        actor = _ensure_user(chat, actor_user_id)
+        target = _ensure_user(chat, target_user_id)
+        given = actor.setdefault("karma_given_today", {"date": today, "count": 0})
+        if given.get("date") != today:
+            given["date"] = today
+            given["count"] = 0
+        used = int(given.get("count", 0) or 0)
+        if used + amount > 3:
+            result["used"] = used
+            result["reason"] = "дневной лимит"
+            result["old"] = int(target.get("karma", 0) or 0)
+            result["new"] = result["old"]
+            return store
+
+        old = int(target.get("karma", 0) or 0)
+        new = max(_MIN_KARMA, min(_MAX_KARMA, old + amount))
+        actual = new - old
+        if actual <= 0:
+            result["used"] = used
+            result["reason"] = "достигнут максимум кармы"
+            result["old"], result["new"] = old, new
+            return store
+
+        target["karma"] = new
+        given["count"] = used + actual
+        events = target["karma_events"]
+        events.append({
+            "delta": actual,
+            "reason": "плюс от участника",
+            "actor_id": str(actor_user_id),
+            "at": time.time(),
+        })
+        if len(events) > 30:
+            del events[:-30]
+        result.update(ok=True, old=old, new=new, used=used + actual)
+        return store
+
+    db_update_json("stats", mutate, {})
+    return result["ok"], result["old"], result["new"], result["used"], result["reason"]
 
 
 def change_karma(chat_id, target_user_id, delta, reason="", actor_user_id=None):
