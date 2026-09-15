@@ -183,6 +183,64 @@ def give_karma(chat_id, actor_user_id, target_user_id, amount=1):
     return result["ok"], result["old"], result["new"], result["used"], result["reason"]
 
 
+def give_negative_karma(chat_id, actor_user_id, target_user_id, amount=1):
+    """Give negative karma with a shared per-actor daily limit of 2 points."""
+    try:
+        amount = int(amount)
+    except Exception:
+        amount = 1
+    amount = max(1, min(2, amount))
+    if chat_id is None or actor_user_id is None or target_user_id is None:
+        return False, 0, 0, 0, "некорректные данные"
+    if str(actor_user_id) == str(target_user_id):
+        current = get_karma(chat_id, target_user_id)
+        return False, current, current, 0, "сам себе"
+
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    result = {"ok": False, "old": 0, "new": 0, "used": 0, "reason": ""}
+
+    def mutate(store):
+        chat = store.setdefault(_key(chat_id), {})
+        actor = _ensure_user(chat, actor_user_id)
+        target = _ensure_user(chat, target_user_id)
+        given = actor.setdefault("karma_minus_given_today", {"date": today, "count": 0})
+        if given.get("date") != today:
+            given["date"] = today
+            given["count"] = 0
+        used = int(given.get("count", 0) or 0)
+        result["used"] = used
+        if used + amount > 2:
+            result["reason"] = "дневной лимит"
+            result["old"] = int(target.get("karma", 0) or 0)
+            result["new"] = result["old"]
+            return store
+
+        old = int(target.get("karma", 0) or 0)
+        new = max(_MIN_KARMA, min(_MAX_KARMA, old - amount))
+        actual = old - new
+        if actual <= 0:
+            result["reason"] = "достигнут минимум кармы"
+            result["old"], result["new"] = old, new
+            return store
+
+        target["karma"] = new
+        given["count"] = used + actual
+        events = target["karma_events"]
+        events.append({
+            "delta": -actual,
+            "reason": "минус от участника",
+            "actor_id": str(actor_user_id),
+            "at": time.time(),
+        })
+        if len(events) > 30:
+            del events[:-30]
+        result.update(ok=True, old=old, new=new, used=used + actual)
+        return store
+
+    db_update_json("stats", mutate, {})
+    return result["ok"], result["old"], result["new"], result["used"], result["reason"]
+
+
 def change_karma(chat_id, target_user_id, delta, reason="", actor_user_id=None):
     """Atomically change karma and return (old, new)."""
     delta = int(delta)

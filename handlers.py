@@ -8,7 +8,7 @@ from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
 from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
 from profile import cmd_profile, touch_user
-from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, auto_delta
+from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, give_negative_karma, auto_delta
 from contest_settings import open_settings as contest_settings_open, handle_pending as contest_settings_pending
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
@@ -297,15 +297,18 @@ def _handle_manual_karma(message):
         emoji = "📈"
         verb = "повысила"
     else:
-        delta = -1
-        old, new = change_karma(
-            message.chat.id,
-            target.id,
-            delta,
-            "минус от участника",
-            actor.id,
+        ok, old, new, used_today, reason = give_negative_karma(
+            message.chat.id, actor.id, target.id, 1
         )
-        if new == old:
+        if not ok:
+            remaining = max(0, 2 - used_today)
+            if reason == "достигнут минимум кармы":
+                bot.reply_to(message, "⚠️ У этого участника уже минимальная карма.")
+            elif reason == "дневной лимит":
+                bot.reply_to(
+                    message,
+                    f"⏳ Сегодня ты уже поставил(а) {used_today}/2 минуса. Осталось: {remaining}."
+                )
             return True
         sign = "-1"
         emoji = "📉"
