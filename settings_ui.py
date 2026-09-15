@@ -311,7 +311,7 @@ def posts_list_text(gid):
         return header + "\n<i>пока нет ни одной публикации</i>"
 
     lines = []
-    nums = "1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣🔟"
+    nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     for pid, post in sorted(posts.items(), key=lambda x: int(x[0])):
         idx = int(pid) - 1
         emoji = nums[idx] if 0 <= idx < len(nums) else f"№{pid}"
@@ -330,7 +330,7 @@ def posts_list_text(gid):
 
 def posts_list_kb(gid):
     posts = get_posts(gid)
-    nums = "1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣🔟"
+    nums = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     rows = [[_btn("➕ Добавить сообщение", "paddp", gid)]]
     for pid, post in sorted(posts.items(), key=lambda x: int(x[0])):
         idx = int(pid) - 1
