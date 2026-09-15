@@ -210,9 +210,12 @@ def handle_callback(call):
     if action == "pdel":
         if len(parts) < 4:
             bot.answer_callback_query(call.id, "Некорректный участник.", show_alert=True); return True
+        # Гасим часики сразу же: итог операции и так виден в обновлённом
+        # списке участников ниже, поэтому не ждём db_update_json + edit
+        # перед answer_callback_query — раньше это держало клик "висящим".
+        bot.answer_callback_query(call.id)
         from contest import remove_participant
-        ok, text = remove_participant(gid, parts[3])
-        bot.answer_callback_query(call.id, text, show_alert=True)
+        remove_participant(gid, parts[3])
         return _edit_participants(call, gid)
     if action == "pclear":
         bot.answer_callback_query(call.id)
@@ -222,9 +225,11 @@ def handle_callback(call):
         )
         return bot.edit_message_text("🗑 <b>Очистить список участников?</b>\n\nБудут удалены только текущие записи участников. Счётчики приглашений останутся без изменений.", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
     if action == "pclear_yes":
+        # Та же логика: результат виден в обновлённом списке, поэтому
+        # отвечаем на клик сразу, не дожидаясь БД и edit_message_text.
+        bot.answer_callback_query(call.id)
         from contest import clear_participants
-        ok, text = clear_participants(gid)
-        bot.answer_callback_query(call.id, text, show_alert=True)
+        clear_participants(gid)
         return _edit_participants(call, gid)
     if action == "back":
         bot.answer_callback_query(call.id)
