@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from runtime import BOT_USERNAME
 from reliability import stopped
 import settings_store as store
+import premium_emoji as pe
 
 log = logging.getLogger("miniapp")
 
@@ -51,27 +52,33 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/emojis":
-            emojis_data = [
-                {"id": "fire", "symbol": "🔥", "name": "Огонь"},
-                {"id": "lightning", "symbol": "⚡️", "name": "Молния"},
-                {"id": "star", "symbol": "⭐", "name": "Звезда"},
-                {"id": "rocket", "symbol": "🚀", "name": "Ракета"},
-                {"id": "gem", "symbol": "💎", "name": "Кристалл"},
-                {"id": "heart", "symbol": "❤️‍🔥", "name": "Сердце"},
-                {"id": "money", "symbol": "💸", "name": "Деньги"},
-                {"id": "pin", "symbol": "📌", "name": "Пин"},
-                {"id": "check", "symbol": "✅", "name": "Галочка"},
-                {"id": "bell", "symbol": "🔔", "name": "Колокольчик"},
-                {"id": "chat", "symbol": "💬", "name": "Чат"},
-                {"id": "link", "symbol": "🔗", "name": "Ссылка"},
-                {"id": "gift", "symbol": "🎁", "name": "Подарок"},
-                {"id": "trophy", "symbol": "🏆", "name": "Кубок"},
-                {"id": "target", "symbol": "🎯", "name": "Цель"},
-                {"id": "bulb", "symbol": "💡", "name": "Идея"},
-                {"id": "note", "symbol": "📝", "name": "Заметка"},
-                {"id": "question", "symbol": "⁉️", "name": "Вопрос"}
-            ]
+            qs = parse_qs(parsed.query)
+            query = (qs.get("q") or [""])[0]
+            group_id = (qs.get("group_id") or [""])[0]
+            emojis_data = pe.get_emojis(group_id=group_id, query=query)
             return self._json(200, emojis_data)
+
+        if path == "/api/emojis/rename":
+            # GET /api/emojis/rename?emoji_id=...&name=...&group_id=...
+            qs = parse_qs(parsed.query)
+            emoji_id = (qs.get("emoji_id") or [""])[0]
+            name = (qs.get("name") or [""])[0]
+            group_id = (qs.get("group_id") or [""])[0]
+            if emoji_id and name:
+                existing = pe.get_emojis(group_id=group_id)
+                preview = next((e["previewUrl"] for e in existing if e["id"] == emoji_id), None)
+                pe.save_emoji(emoji_id, name, preview, group_id=group_id)
+                return self._json(200, {"ok": True})
+            return self._json(400, {"error": "emoji_id and name required"})
+
+        if path == "/api/emojis/delete":
+            qs = parse_qs(parsed.query)
+            emoji_id = (qs.get("emoji_id") or [""])[0]
+            group_id = (qs.get("group_id") or [""])[0]
+            if emoji_id:
+                pe.delete_emoji(emoji_id, group_id=group_id)
+                return self._json(200, {"ok": True})
+            return self._json(400, {"error": "emoji_id required"})
 
         if path.startswith("/api/buttons/"):
             parts = path.split("/")

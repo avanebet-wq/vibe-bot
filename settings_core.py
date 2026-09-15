@@ -20,6 +20,7 @@ from reliability import stopped
 
 import settings_store as store
 import settings_ui as ui
+import premium_emoji as pe
 
 log = logging.getLogger("settings")
 
@@ -532,8 +533,39 @@ def build_markup_from_buttons(rows, gid=None, pid=None):
 # =============================================================================
 
 def _deliver_post(chat_id, post, thread_id=None, pid=None):
-    markup = build_markup_from_buttons(post.get("buttons"), gid=chat_id, pid=pid)
+    raw_rows = post.get("buttons") or []
     media = post.get("media")
+
+    # Если есть premium emoji в кнопках — используем raw HTTP (недокументировано,
+    # но Telegram принимает entities в тексте inline-кнопки).
+    if pe.has_emoji_buttons(raw_rows):
+        pe_rows = _rows_to_pe_format(raw_rows, gid=chat_id, pid=pid)
+        text = post.get("text") or "​"
+        caption = (media.get("caption") if media else None) or text
+        if media and media["type"] not in ("sticker", "voice"):
+            resp = pe.send_media_with_emoji_buttons(
+                chat_id, media["type"], media["file_id"], caption,
+                pe_rows, message_thread_id=thread_id,
+            )
+        elif not media:
+            resp = pe.send_message_with_emoji_buttons(
+                chat_id, text, pe_rows, message_thread_id=thread_id,
+            )
+        else:
+            # sticker/voice не поддерживают emoji-кнопки — fallback
+            resp = None
+
+        if resp is not None and resp.get("ok"):
+            msg_id = resp["result"]["message_id"]
+            track_message(chat_id, msg_id)
+            # Возвращаем минимальный объект совместимый с кодом выше
+            class _FakeMsg:  # noqa: N801
+                def __init__(self, mid):
+                    self.message_id = mid
+            return _FakeMsg(msg_id)
+        # если raw-запрос не удался — падаем до обычного пути
+
+    markup = build_markup_from_buttons(raw_rows, gid=chat_id, pid=pid)
     if media:
         caption = media.get("caption") or post.get("text")
         sender = {
@@ -553,6 +585,32 @@ def _deliver_post(chat_id, post, thread_id=None, pid=None):
         msg = bot.send_message(chat_id, text, reply_markup=markup, message_thread_id=thread_id)
     track_message(chat_id, msg.message_id)
     return msg
+
+
+def _rows_to_pe_format(rows, gid=None, pid=None):
+    """Конвертировать rows из settings_store в формат premium_emoji.send_*."""
+    result = []
+    for row_index, row in enumerate(rows):
+        pe_row = []
+        for btn_index, b in enumerate(row):
+            text = b.get("text", "Кнопка")
+            emoji_id = b.get("custom_emoji_id") or None
+            btn = {"text": text, "custom_emoji_id": emoji_id}
+            if b.get("url"):
+                value = str(b.get("url") or "").strip()
+                parsed = urlparse(value)
+                if parsed.scheme in ("http", "https") and parsed.netloc:
+                    btn["url"] = value
+            elif b.get("share") is not None:
+                btn["url"] = f"https://t.me/share/url?text={b['share']}"
+            elif gid is not None and pid is not None:
+                cb = f"cf|postbtn|{gid}|{pid}|{row_index}:{btn_index}"
+                btn["callback_data"] = cb[:64]
+            else:
+                btn["callback_data"] = "cf|noop|0"
+            pe_row.append(btn)
+        result.append(pe_row)
+    return result
 
 
 def _preview_post(chat_id, gid, pid):

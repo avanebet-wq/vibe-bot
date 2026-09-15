@@ -2,13 +2,22 @@
 """Schema/migration marker for normalized PostgreSQL tables."""
 from database import conn, db_lock
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 
 def ensure_schema():
     with db_lock:
         try:
             conn.execute("CREATE TABLE IF NOT EXISTS migration_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("""CREATE TABLE IF NOT EXISTS premium_emojis (
+                emoji_id TEXT NOT NULL,
+                group_id TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                preview_url TEXT,
+                added_at REAL NOT NULL,
+                PRIMARY KEY (emoji_id, group_id)
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_premium_emojis_group ON premium_emojis(group_id)")
             conn.execute("CREATE TABLE IF NOT EXISTS user_facts (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, fact TEXT NOT NULL, source TEXT, importance INTEGER DEFAULT 1, created_at REAL NOT NULL, PRIMARY KEY(chat_id,user_id,fact))")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_facts_chat_user ON user_facts(chat_id,user_id)")
             conn.execute("CREATE TABLE IF NOT EXISTS app_events (chat_id TEXT, event_type TEXT, actor_id TEXT, target_id TEXT, created_at REAL NOT NULL, payload TEXT)")
@@ -26,7 +35,11 @@ def ensure_schema():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_drink_game_chat_time ON drink_game_events(chat_id,created_at)")
             conn.execute("CREATE TABLE IF NOT EXISTS chat_user_presence (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, first_seen REAL NOT NULL, last_seen REAL NOT NULL, PRIMARY KEY(chat_id,user_id))")
             conn.execute("CREATE TABLE IF NOT EXISTS profile_xp (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat_id,user_id))")
-            conn.execute("INSERT INTO migration_meta(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value", (str(SCHEMA_VERSION),))
+            conn.execute(
+                "INSERT INTO migration_meta(key,value) VALUES('schema_version',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+                (str(SCHEMA_VERSION),),
+            )
             conn.commit()
         except Exception:
             conn.rollback()

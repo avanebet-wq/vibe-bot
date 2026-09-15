@@ -604,19 +604,26 @@
       if (list.length === 0){
         var empty = document.createElement("div");
         empty.className = "emoji-empty";
-        empty.textContent = "Ничего не найдено";
+        empty.textContent = query
+          ? "Ничего не найдено"
+          : "Нет premium-эмодзи. Добавь через /addemoji в чате.";
         el.emojiGrid.appendChild(empty);
         return;
       }
       list.forEach(function(item){
         var cell = document.createElement("div");
         cell.className = "emoji-cell" + (item.id === selectedId ? " selected" : "");
+        cell.title = item.name || item.id;
         if (item.previewUrl){
           var img = document.createElement("img");
           img.src = item.previewUrl;
+          img.alt = item.name || "";
+          img.style.width = "26px";
+          img.style.height = "26px";
+          img.style.objectFit = "contain";
           cell.appendChild(img);
         } else {
-          cell.textContent = item.glyph || "🙂";
+          cell.textContent = item.glyph || "⭐";
         }
         cell.addEventListener("click", function(){
           var btn = state.rows[editing.rowIndex][editing.btnIndex];
@@ -637,7 +644,9 @@
       });
       return Promise.resolve(list);
     }
-    return authFetch("/api/emojis?q=" + encodeURIComponent(query || ""))
+    var url = "/api/emojis?q=" + encodeURIComponent(query || "");
+    if (CHAT_ID) url += "&group_id=" + encodeURIComponent(CHAT_ID);
+    return authFetch(url)
       .then(function(r){ return r.ok ? r.json() : []; })
       .catch(function(){ return []; });
   }

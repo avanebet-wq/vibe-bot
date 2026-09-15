@@ -15,6 +15,7 @@ from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
 from mood_state import decay as decay_mood
+import premium_emoji as pe
 # -*- coding: utf-8 -*-
 """Разбор сообщений и маршрутизация команд Лизы."""
 import random
@@ -722,6 +723,77 @@ def on_start(message):
 @bot.message_handler(commands=["help"])
 def on_help_cmd(message):
     cmd_help(message)
+
+
+# ---------------------------------------------------------------------------
+# Premium emoji management
+# ---------------------------------------------------------------------------
+
+@bot.message_handler(commands=["addemoji"])
+def on_addemoji(message):
+    """Добавить premium emoji в библиотеку бота.
+
+    Использование (в любом чате или личке):
+      /addemoji — в ответ на сообщение с премиум-эмодзи  (или то же сообщение содержит эмодзи)
+      Бот извлечёт custom_emoji_id из entities и сохранит в БД.
+    """
+    from utils import is_chat_admin
+    uid = message.from_user.id
+    cid = message.chat.id
+
+    # Проверяем права: в группе — только админ, в личке — любой
+    if message.chat.type != "private" and not is_chat_admin(cid, uid):
+        return
+
+    # Проверяем само сообщение и реплай
+    target = message.reply_to_message or message
+    group_id = "" if message.chat.type == "private" else str(cid)
+
+    saved = pe.process_message_for_emojis(target, group_id=group_id)
+
+    if not saved:
+        bot.reply_to(
+            message,
+            "🤔 Не нашла premium-эмодзи в этом сообщении.\n\n"
+            "Ответь этой командой на сообщение с <b>премиум-эмодзи</b> "
+            "(те, что отображаются как анимированные стикеры в тексте).",
+            parse_mode="HTML",
+        )
+    else:
+        count = len(saved)
+        bot.reply_to(
+            message,
+            f"✅ Добавила <b>{count}</b> premium-эмодзи в библиотеку.\n"
+            "Теперь их можно выбрать в конструкторе кнопок.",
+            parse_mode="HTML",
+        )
+
+
+@bot.message_handler(commands=["listemojis"])
+def on_listemojis(message):
+    """Показать список premium emoji в библиотеке."""
+    from utils import is_chat_admin
+    uid = message.from_user.id
+    cid = message.chat.id
+
+    if message.chat.type != "private" and not is_chat_admin(cid, uid):
+        return
+
+    group_id = "" if message.chat.type == "private" else str(cid)
+    emojis = pe.get_emojis(group_id=group_id)
+
+    if not emojis:
+        bot.reply_to(
+            message,
+            "📭 Библиотека premium-эмодзи пуста.\n"
+            "Используй /addemoji — ответом на сообщение с премиум-эмодзи.",
+        )
+        return
+
+    lines = [f"<b>Premium-эмодзи в библиотеке ({len(emojis)}):</b>"]
+    for i, em in enumerate(emojis, 1):
+        lines.append(f"{i}. <code>{em['id']}</code> — {em['name']}")
+    bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
 
 
 @bot.message_handler(content_types=["text"])
