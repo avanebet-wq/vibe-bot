@@ -32,7 +32,8 @@ def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str) ->
         LOG.error("[transcriber] Нет доступных ключей GROQ_API_KEY")
         return None
 
-    models = ("whisper-large-v3-turbo", "whisper-large-v3")
+    # ИСПРАВЛЕНИЕ 1: Сначала пробуем самую умную и точную модель, затем турбо
+    models = ("whisper-large-v3", "whisper-large-v3-turbo")
 
     for model in models:
         for _ in range(len(_keys)):
@@ -47,6 +48,8 @@ def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str) ->
                     "model": model,
                     "response_format": "json",
                     "temperature": 0.0,
+                    # ИСПРАВЛЕНИЕ 2: Специальная подсказка, чтобы модель ожидала ру/укр речь и суржик
+                    "prompt": "Это обычное голосовое сообщение в Telegram. Русская и украинская речь, суржик. Привет, як справи? Ага, хорошо, дякую. Давай."
                 }
                 resp = requests.post(
                     "https://api.groq.com/openai/v1/audio/transcriptions",
