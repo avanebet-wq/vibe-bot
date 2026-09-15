@@ -153,14 +153,14 @@ def _create_request_to(message, actor_id, target_id, target_name=None):
         bot_reply(message, "🤝 Вы уже друзья.")
         return True
 
-    store_result = {"token": None, "message_id": None, "already": False}
+    store_result = {"token": None, "already": False}
     def mutate(store):
         chat = _chat(store, message.chat.id)
         _clean_old_requests(chat)
         requests = chat.setdefault("relationship_requests", {})
-        for req in requests.values():
+        for token, req in requests.items():
             if req.get("from_id") == str(actor_id) and req.get("to_id") == str(target_id):
-                store_result["token"] = next(k for k, v in requests.items() if v is req)
+                store_result["token"] = token
                 store_result["already"] = True
                 return store
         token = secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
@@ -182,13 +182,24 @@ def _create_request_to(message, actor_id, target_id, target_name=None):
         types.InlineKeyboardButton("❌ Отклонить", callback_data=f"rel|decline|{message.chat.id}|{actor_id}|{target_id}|{store_result['token']}"),
     )
     sender = _display_user(actor_id, getattr(message.from_user, "first_name", None) or "Пользователь")
-    text = f"🤝 <b>Новое предложение дружбы!</b>\n\n{sender} предлагает вам начать дружбу.\n\nВыберите действие ниже."
+    target = _display_user(target_id, target_name or "Пользователь")
+    text = (
+        f"🤝 <b>Новое предложение дружбы!</b>\n\n"
+        f"{sender} предлагает {target} начать дружбу.\n\n"
+        "Только этот участник может принять или отклонить предложение."
+    )
     try:
-        sent = bot.send_message(target_id, text, parse_mode="HTML", reply_markup=kb)
+        sent = bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
     except Exception:
-        bot_reply(message, "📩 Не получилось отправить предложение в личку этому участнику. Пусть он сначала откроет чат с Лизой и напишет ей <code>старт</code>.")
-        # Keep the request so it can be retried/handled later only if DM becomes available.
+        # If the group message could not be posted, remove the pending request.
+        def rollback(store):
+            chat = _chat(store, message.chat.id)
+            chat.setdefault("relationship_requests", {}).pop(store_result["token"], None)
+            return store
+        db_update_json("stats", rollback, {})
+        bot_reply(message, "⚠️ Не удалось отправить предложение дружбы в этот чат.")
         return True
+
     def save_message(store):
         chat = _chat(store, message.chat.id)
         req = chat.setdefault("relationship_requests", {}).get(store_result["token"])
@@ -196,9 +207,7 @@ def _create_request_to(message, actor_id, target_id, target_name=None):
             req["message_id"] = getattr(sent, "message_id", None)
         return store
     db_update_json("stats", save_message, {})
-    bot_reply(message, "📩 Предложение дружбы отправлено.")
     return True
-
 
 def create_request_command(message, args):
     if message.chat.type not in ("group", "supergroup"):
@@ -221,7 +230,7 @@ def _finish_request(call, accepted):
     _, action, chat_id, from_id, to_id, token = parts
     actor_id = getattr(call.from_user, "id", None)
     if str(actor_id) != str(to_id):
-        call.bot.answer_callback_query(call.id, "Это предложение предназначено другому участнику.", show_alert=True)
+        bot.answer_callback_query(call.id, "Это предложение предназначено другому участнику.", show_alert=True)
         return
     result = {"ok": False, "from_name": "Пользователь", "to_name": "Пользователь", "level": 1}
     def mutate(store):
@@ -250,7 +259,7 @@ def _finish_request(call, accepted):
         return store
     db_update_json("stats", mutate, {})
     if not result["ok"]:
-        call.bot.answer_callback_query(call.id, "Предложение уже недействительно.", show_alert=True)
+        bot.answer_callback_query(call.id, "Предложение уже недействительно.", show_alert=True)
         try:
             call.message.edit_text("⌛ <b>Предложение дружбы недействительно.</b>", parse_mode="HTML")
         except Exception:
@@ -263,19 +272,14 @@ def _finish_request(call, accepted):
             f"⭐ Уровень отношений: <b>{result['level']}</b>\n"
             "📈 Развивайте дружбу совместными действиями."
         )
-        call.bot.answer_callback_query(call.id, "Дружба создана! 🤝")
+        bot.answer_callback_query(call.id, "Дружба создана! 🤝")
     else:
         text = f"❌ <b>Предложение отклонено.</b>\n\n{_display_user(to_id, result['to_name'])} отклонил(а) предложение дружбы от {_display_user(from_id, result['from_name'])}."
-        call.bot.answer_callback_query(call.id, "Предложение отклонено.")
+        bot.answer_callback_query(call.id, "Предложение отклонено.")
     try:
         call.message.edit_text(text, parse_mode="HTML")
     except Exception:
         logging.exception("[relationships] failed to edit request message")
-    if accepted:
-        try:
-            call.bot.send_message(int(chat_id), text, parse_mode="HTML", disable_web_page_preview=True)
-        except Exception:
-            pass
 
 
 def _relationship_list(chat_id, user_id):
@@ -356,7 +360,7 @@ def _confirm_end(call, accepted):
     parts = call.data.split("|")
     _, action, chat_id, user_id, target_id, token = parts
     if str(call.from_user.id) != str(user_id):
-        call.bot.answer_callback_query(call.id, "Подтверждение доступно только автору команды.", show_alert=True)
+        bot.answer_callback_query(call.id, "Подтверждение доступно только автору команды.", show_alert=True)
         return
     result = {"ok": False, "name": "Пользователь"}
     def mutate(store):
@@ -382,7 +386,7 @@ def _confirm_end(call, accepted):
         confirms.pop(token, None)
         return store
     db_update_json("stats", mutate, {})
-    call.bot.answer_callback_query(call.id, "Готово." if accepted else "Отмена.")
+    bot.answer_callback_query(call.id, "Готово." if accepted else "Отмена.")
     text = "💔 Дружба завершена. Прогресс сохранён, его можно восстановить при новом предложении." if accepted and result["ok"] else "↩️ Расторжение отменено."
     try:
         call.message.edit_text(text)
@@ -601,6 +605,6 @@ def relationship_callback(call):
     except Exception:
         logging.exception("[relationships] callback failed")
         try:
-            call.bot.answer_callback_query(call.id, "⚠️ Не удалось обработать действие.", show_alert=True)
+            bot.answer_callback_query(call.id, "⚠️ Не удалось обработать действие.", show_alert=True)
         except Exception:
             pass
