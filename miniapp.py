@@ -95,7 +95,30 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
             post = store.get_post(gid_i, pid)
             if post is None:
                 return self._json(404, {"error": "Публикация не найдена"})
-            return self._json(200, {"rows": post.get("buttons") or []})
+
+            # Старые сохранённые кнопки могли содержать только custom_emoji_id.
+            # Подтягиваем preview из библиотеки, чтобы Mini App после повторного
+            # открытия сразу показывал выбранный premium-эмодзи перед названием.
+            emoji_map = {
+                str(item.get("id")): item.get("previewUrl")
+                for item in pe.get_emojis(group_id=str(gid_i))
+                if item.get("id")
+            }
+            rows = []
+            for row in (post.get("buttons") or []):
+                out_row = []
+                for btn in (row or []):
+                    if not isinstance(btn, dict):
+                        continue
+                    out = dict(btn)
+                    emoji_id = out.get("custom_emoji_id")
+                    if emoji_id and not out.get("custom_emoji_preview"):
+                        preview = emoji_map.get(str(emoji_id))
+                        if preview:
+                            out["custom_emoji_preview"] = preview
+                    out_row.append(out)
+                rows.append(out_row)
+            return self._json(200, {"rows": rows})
 
         if path.startswith("/api/buttons/"):
             parts = path.split("/")
@@ -156,7 +179,20 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                         else:
                             raise ValueError(f"Неизвестный тип кнопки: {typ}")
                         if btn.get("custom_emoji_id"):
-                            out["custom_emoji_id"] = btn["custom_emoji_id"]
+                            emoji_id = str(btn["custom_emoji_id"])
+                            out["custom_emoji_id"] = emoji_id
+                            # Храним preview вместе с конфигурацией публикации.
+                            # Это позволяет Mini App показывать тот же emoji после
+                            # повторного открытия, не полагаясь только на текущий UI.
+                            preview = btn.get("custom_emoji_preview")
+                            if not preview:
+                                preview = next(
+                                    (e.get("previewUrl") for e in pe.get_emojis(group_id=str(gid))
+                                     if str(e.get("id")) == emoji_id),
+                                    None,
+                                )
+                            if preview:
+                                out["custom_emoji_preview"] = preview
                         out_row.append(out)
                     normalized.append(out_row)
                 store.update_post(gid, pid, buttons=normalized)

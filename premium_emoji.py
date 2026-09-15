@@ -153,28 +153,19 @@ def process_message_for_emojis(message, group_id: str = "") -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _build_button_with_emoji(btn_text: str, emoji_id: str | None, **kwargs) -> dict:
-    """Построить dict InlineKeyboardButton с custom_emoji entity в тексте.
+    """Построить InlineKeyboardButton с официальным custom emoji icon.
 
-    Telegram принимает поле entities в кнопке через raw JSON:
-      - text: невидимый символ + имя кнопки
-      - entities: [{type: custom_emoji, offset: 0, length: 1, custom_emoji_id: ...}]
-    Это недокументировано, но поддерживается Telegram-сервером начиная с ~2023.
+    Начиная с Bot API 9.4 у InlineKeyboardButton есть поле
+    ``icon_custom_emoji_id``. Оно как раз предназначено для показа
+    premium-эмодзи непосредственно перед текстом кнопки.
+
+    Раньше здесь использовался недокументированный трюк с ``entities`` и
+    нулевой шириной пробела. Он больше не нужен и мог приводить к тому,
+    что emoji отображался в Mini App, но исчезал в реальной публикации.
     """
-    if not emoji_id:
-        btn = {"text": btn_text}
-        btn.update(kwargs)
-        return btn
-
-    # \u200b — нулевой пробел, занимает 1 символ и туда «вставляется» эмодзи
-    placeholder = "\u200b"
-    full_text = placeholder + " " + btn_text
-    entity = {
-        "type": "custom_emoji",
-        "offset": 0,
-        "length": len(placeholder),
-        "custom_emoji_id": str(emoji_id),
-    }
-    btn = {"text": full_text, "entities": [entity]}
+    btn = {"text": str(btn_text or "Кнопка")}
+    if emoji_id:
+        btn["icon_custom_emoji_id"] = str(emoji_id)
     btn.update(kwargs)
     return btn
 

@@ -128,6 +128,16 @@
   .field{ margin-bottom:22px; }
   .field-label{ font-size:17px; font-weight:700; margin-bottom:10px; }
   .field-hint{ font-size:13px; color:var(--hint); margin-top:8px; line-height:1.4; }
+  .button-name-preview{
+    display:flex; align-items:center; gap:8px;
+    min-height:42px; margin-top:10px; padding:9px 12px;
+    border:1px solid var(--outline); border-radius:10px;
+    background:var(--secondary-bg); color:var(--text);
+    font-size:15px; font-weight:600;
+  }
+  .button-name-preview img{ width:22px; height:22px; flex:0 0 auto; object-fit:contain; }
+  .button-name-preview .preview-label{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .button-name-preview.empty{ color:var(--hint); font-weight:400; }
 
   .control{
     width:100%;
@@ -259,6 +269,9 @@
     <div class="field">
       <div class="field-label">Имя</div>
       <input id="fName" class="control" type="text" maxlength="30" placeholder="Название на кнопке" />
+      <div id="buttonNamePreview" class="button-name-preview empty">
+        <span class="preview-label">Предпросмотр кнопки</span>
+      </div>
     </div>
 
     <div class="field" id="fValueField">
@@ -390,6 +403,7 @@
     editorClose:  document.getElementById("editorClose"),
     fType:        document.getElementById("fType"),
     fName:        document.getElementById("fName"),
+    buttonNamePreview: document.getElementById("buttonNamePreview"),
     fValueField:  document.getElementById("fValueField"),
     fValueLabel:  document.getElementById("fValueLabel"),
     fValue:       document.getElementById("fValue"),
@@ -481,6 +495,7 @@
     el.fStyle.value = btn.style;
     syncValueField(btn.type);
     renderEmojiGrid(btn.customEmojiId, btn.customEmojiPreview);
+    renderButtonNamePreview(btn);
     el.emojiSearch.value = "";
 
     el.screenMain.classList.add("hidden");
@@ -506,6 +521,30 @@
     }
   }
   el.fType.addEventListener("change", function(){ syncValueField(el.fType.value); });
+
+  function renderButtonNamePreview(btn){
+    el.buttonNamePreview.innerHTML = "";
+    var previewText = (el.fName.value || btn.name || TYPE_BY_ID[btn.type].label || "Название").trim();
+    if (btn.customEmojiPreview){
+      var img = document.createElement("img");
+      img.src = btn.customEmojiPreview;
+      img.alt = "";
+      el.buttonNamePreview.appendChild(img);
+      el.buttonNamePreview.classList.remove("empty");
+    } else {
+      el.buttonNamePreview.classList.add("empty");
+    }
+    var span = document.createElement("span");
+    span.className = "preview-label";
+    span.textContent = previewText || "Название кнопки";
+    el.buttonNamePreview.appendChild(span);
+  }
+
+  el.fName.addEventListener("input", function(){
+    if (!editing) return;
+    var btn = state.rows[editing.rowIndex][editing.btnIndex];
+    renderButtonNamePreview(btn);
+  });
 
   function closeEditorDiscard(){
     // if a brand-new empty button was never saved, drop it and its row if now empty
@@ -596,6 +635,7 @@
     addCell.addEventListener("click", function(){
       var btn = state.rows[editing.rowIndex][editing.btnIndex];
       btn.customEmojiId = null; btn.customEmojiPreview = null;
+      renderButtonNamePreview(btn);
       renderEmojiGrid(null, null, el.emojiSearch.value);
     });
     el.emojiGrid.appendChild(addCell);
@@ -629,6 +669,7 @@
           var btn = state.rows[editing.rowIndex][editing.btnIndex];
           btn.customEmojiId = item.id;
           btn.customEmojiPreview = item.previewUrl || null;
+          renderButtonNamePreview(btn);
           renderEmojiGrid(item.id, item.previewUrl, el.emojiSearch.value);
         });
         el.emojiGrid.appendChild(cell);
@@ -694,7 +735,8 @@
             name: b.name,
             value: b.value,
             style: b.style,
-            custom_emoji_id: b.customEmojiId
+            custom_emoji_id: b.customEmojiId,
+            custom_emoji_preview: b.customEmojiPreview
           };
         });
       })
