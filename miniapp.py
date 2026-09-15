@@ -277,6 +277,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise ValueError("invalid chat_id")
         post_id = str((qs.get("post_id") or [""])[0]).strip()
+        
+        # --- ИСПРАВЛЕНИЕ: Очищаем суффикс _e от фронтенда ---
+        if post_id.endswith("_e"):
+            post_id = post_id[:-2]
+        # ----------------------------------------------------
+
         if not chat_id or not post_id:
             raise ValueError("chat_id and post_id are required")
         return chat_id, post_id
@@ -353,6 +359,12 @@ class MiniAppHandler(BaseHTTPRequestHandler):
 
             chat_id = int(body.get("chat_id"))
             post_id = str(body.get("post_id", "")).strip()
+
+            # --- ИСПРАВЛЕНИЕ: Очищаем суффикс _e от фронтенда ---
+            if post_id.endswith("_e"):
+                post_id = post_id[:-2]
+            # ----------------------------------------------------
+
             if not chat_id or not post_id:
                 return self._error(400, "chat_id and post_id are required")
 
