@@ -9,6 +9,7 @@ from contest import (is_active as contest_is_active, cmd_start as contest_start,
 from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
 from profile import cmd_profile, touch_user
 from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, give_negative_karma, auto_delta
+from relationships import create_request_command, end_relationship, set_main, remove_main, show_relationship, actions_dm, execute_action
 from contest_settings import open_settings as contest_settings_open, handle_pending as contest_settings_pending
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
@@ -211,6 +212,20 @@ _COMPOUND_COMMANDS = [
     ("защищай админов", lambda m, a: cmd_set_protect_admins(m, True)),
     ("не защищай админов", lambda m, a: cmd_set_protect_admins(m, False)),
 ]
+_COMPOUND_COMMANDS += [
+    ("-отн основа", lambda m, a: remove_main(m)),
+    ("отн действия", lambda m, a: actions_dm(m)),
+    ("отн основа", lambda m, a: set_main(m, a)),
+    ("отн", lambda m, a: show_relationship(m, a)),
+    ("дать пять", lambda m, a: execute_action(m, "дать пять", a)),
+    ("позвать в приключение", lambda m, a: execute_action(m, "позвать в приключение", a)),
+    ("устроить прикол", lambda m, a: execute_action(m, "устроить прикол", a)),
+    ("выручить по-крупному", lambda m, a: execute_action(m, "выручить по-крупному", a)),
+    ("совместный челлендж", lambda m, a: execute_action(m, "совместный челлендж", a)),
+    ("особая поддержка", lambda m, a: execute_action(m, "особая поддержка", a)),
+    ("легендарный прикол", lambda m, a: execute_action(m, "легендарный прикол", a)),
+    ("легендарная выручка", lambda m, a: execute_action(m, "легендарная выручка", a)),
+]
 _COMPOUND_COMMANDS.sort(key=lambda x: -len(x[0]))
 
 _SINGLE_COMMANDS = {
@@ -247,6 +262,21 @@ _SINGLE_COMMANDS = {
     "стата": lambda m, a: cmd_minigame_stats(m, a),
     "топ": lambda m, a: cmd_minigame_stats(m, a),
     "калл": lambda m, a: _cmd_call(m, a),
+    "+отн": lambda m, a: create_request_command(m, a),
+    "-отн": lambda m, a: end_relationship(m, a),
+    "поздороваться": lambda m, a: execute_action(m, "поздороваться", a),
+    "поблагодарить": lambda m, a: execute_action(m, "поблагодарить", a),
+    "похвалить": lambda m, a: execute_action(m, "похвалить", a),
+    "поддержать": lambda m, a: execute_action(m, "поддержать", a),
+    "подбодрить": lambda m, a: execute_action(m, "подбодрить", a),
+    "помочь": lambda m, a: execute_action(m, "помочь", a),
+    "угостить": lambda m, a: execute_action(m, "угостить", a),
+    "подколоть": lambda m, a: execute_action(m, "подколоть", a),
+    "рассмешить": lambda m, a: execute_action(m, "рассмешить", a),
+    "выручить": lambda m, a: execute_action(m, "выручить", a),
+    "подарить": lambda m, a: execute_action(m, "подарить", a),
+    "поиграть": lambda m, a: execute_action(m, "поиграть", a),
+    "защитить": lambda m, a: execute_action(m, "защитить", a),
 }
 
 
