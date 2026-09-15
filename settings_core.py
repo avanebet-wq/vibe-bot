@@ -1372,16 +1372,8 @@ def _dispatch_callback(call):
         post = store.get_post(gid, pid)
         bot.answer_callback_query(call.id)
 
-        # The recurring post is only a template at this stage: there is no
-        # Telegram message_id yet. The Mini App therefore edits the saved
-        # post configuration by (chat_id, post_id), and the scheduler applies
-        # that configuration when the post is published.
-        # Inline Web App buttons are supported only in private chats.
-        # The settings menu can be opened in a group, so use the bot's
-        # Main Mini App direct link instead. Telegram still supplies
-        # initData and passes startapp through to tg.initDataUnsafe.start_param.
         start_param = f"c{gid}_p{pid}"
-        miniapp_url = f"https://t.me/{BOT_USERNAME}?startapp={start_param}"
+        miniapp_url = f"https://t.me/{BOT_USERNAME}/app?startapp={start_param}"
 
         hint = (
             "👉🏻 Здесь можно настроить кнопки для этой публикации.\n\n"
@@ -1395,7 +1387,7 @@ def _dispatch_callback(call):
             parse_mode="HTML",
             reply_markup=ui.buttons_prompt_kb(
                 gid, pid, bool(post.get("buttons")), miniapp_url=miniapp_url,
-                edit_url=(f"https://t.me/{BOT_USERNAME}?startapp=c{gid}_p{pid}_e") if post.get("buttons") else None
+                edit_url=(f"https://t.me/{BOT_USERNAME}/app?startapp=c{gid}_p{pid}_e") if post.get("buttons") else None
             ),
         )
         track_message(chat_id, msg.message_id)
@@ -1595,4 +1587,3 @@ def _dispatch_callback(call):
         return
 
     bot.answer_callback_query(call.id)
-
