@@ -6,7 +6,6 @@ Python standard library and the already-created runtime.bot instance.
 """
 import hashlib
 from security import allow
-from database import db_claim_replay
 from reliability import health
 import hmac
 import json
@@ -28,7 +27,6 @@ log = logging.getLogger("miniapp")
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_PATH = BASE_DIR / "miniapp_index.html"
 MAX_INIT_DATA_AGE = 300
-_REPLAY_TTL = MAX_INIT_DATA_AGE
 MAX_BODY = 256 * 1024
 ALLOWED_TYPES = {
     "url", "popup", "alert", "share", "copy", "rules",
@@ -51,6 +49,7 @@ def validate_init_data(init_data: str) -> dict:
     except (TypeError, ValueError):
         raise ValueError("invalid auth_date")
 
+    # Базовая защита сессии: токен живет не больше 5 минут (MAX_INIT_DATA_AGE)
     if auth_date <= 0 or abs(time.time() - auth_date) > MAX_INIT_DATA_AGE:
         raise ValueError("initData expired")
 
@@ -66,10 +65,6 @@ def validate_init_data(init_data: str) -> dict:
 
     if not hmac.compare_digest(calculated, received_hash):
         raise ValueError("invalid initData hash")
-
-    replay_key = pairs.get("query_id") or hashlib.sha256(init_data.encode("utf-8")).hexdigest()
-    if not db_claim_replay(replay_key, time.time(), _REPLAY_TTL):
-        raise ValueError("initData replay detected")
 
     user_raw = pairs.get("user")
     if not user_raw:
@@ -319,8 +314,6 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 _auth_user(self)
                 return self._json(200, [])
 
-            # Умный fallback: если это не API, всегда отдаём интерфейс. 
-            # Это спасёт от любых опечаток в ссылках BotFather (типа /App, /app/ или пробелов)
             if not parsed.path.startswith("/api/"):
                 if not INDEX_PATH.exists():
                     return self._error(500, "Mini App file is missing")
