@@ -18,7 +18,6 @@ PORT = 8080
 
 class MiniAppHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Подавляем стандартный шум логов HTTP-сервера, пишем через наш логгер
         log.debug("%s - - [%s] %s", self.client_address[0], self.log_date_time_string(), format % args)
 
     def _json(self, status, data):
@@ -51,7 +50,6 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # Эндпоинт со списком премиум-иконок для кнопок
         if path == "/api/emojis":
             emojis_data = [
                 {"id": "lightning", "symbol": "⚡️", "name": "Молния"},
@@ -69,7 +67,6 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
             ]
             return self._json(200, emojis_data)
 
-        # Получение сохраненных кнопок для конкретного поста
         if path.startswith("/api/buttons/"):
             parts = path.split("/")
             if len(parts) >= 4:
@@ -81,7 +78,6 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                     return self._json(200, {"buttons": buttons})
             return self._json(400, {"error": "Invalid parameters"})
 
-        # Главная страница интерфейса редактора Mini App
         self._html(200, _get_miniapp_html())
 
     def do_POST(self):
@@ -108,7 +104,6 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
         self._json(404, {"error": "Not found"})
 
     def _parse_identifier(self, identifier):
-        # Поддерживаем форматы c{gid}_p{pid} с возможным суффиксом _e
         identifier = identifier.split("_e")[0]
         if identifier.startswith("c") and "_p" in identifier:
             try:
@@ -151,17 +146,22 @@ def _get_miniapp_html():
     <title>Конструктор кнопок - Лиза</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        body { background: #0f0f0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; }
+        * { box-sizing: border-box; }
+        body { background: #0f0f0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; overflow-x: hidden; }
         h2 { font-size: 18px; margin-bottom: 12px; }
-        .row-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
-        .btn-item { background: #262626; border: 1px solid #444; border-radius: 8px; padding: 8px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
-        input[type="text"] { background: #121212; border: 1px solid #333; color: #fff; border-radius: 8px; padding: 8px; width: 100%; box-sizing: border-box; font-size: 14px; }
+        .row-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 12px; margin-bottom: 12px; width: 100%; overflow: hidden; }
+        .btn-item { background: #262626; border: 1px solid #444; border-radius: 8px; padding: 10px; margin-bottom: 8px; width: 100%; }
+        .btn-content { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
+        .input-group { flex: 1; min-width: 0; }
+        input[type="text"] { background: #121212; border: 1px solid #333; color: #fff; border-radius: 8px; padding: 8px; width: 100%; max-width: 100%; font-size: 14px; display: block; }
         button { cursor: pointer; border: none; border-radius: 8px; padding: 10px 16px; font-weight: 600; font-size: 14px; }
         .btn-primary { background: #3b82f6; color: #fff; width: 100%; margin-top: 10px; }
         .btn-success { background: #10b981; color: #fff; width: 100%; margin-top: 20px; padding: 14px; font-size: 16px; }
-        .btn-danger { background: #ef4444; color: #fff; padding: 6px 10px; font-size: 12px; }
-        .emoji-grid { display: flex; gap: 6px; flex-wrap: row; margin-top: 6px; }
-        .emoji-btn { background: #2a2a2a; border: none; border-radius: 6px; width: 34px; height: 34px; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .btn-danger { background: #ef4444; color: #fff; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+        .emoji-scroll { display: flex; gap: 6px; overflow-x: auto; white-space: nowrap; padding-bottom: 6px; width: 100%; -webkit-overflow-scrolling: touch; }
+        .emoji-scroll::-webkit-scrollbar { height: 4px; }
+        .emoji-scroll::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+        .emoji-btn { background: #2a2a2a; border: none; border-radius: 6px; min-width: 36px; height: 36px; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .emoji-btn:hover { background: #3b82f6; }
     </style>
 </head>
@@ -178,21 +178,11 @@ def _get_miniapp_html():
         let rows = [];
         let emojisList = [];
 
-        // Вытаскиваем идентификатор из startapp
-        const urlParams = new URLSearchParams(window.location.search);
-        // Telegram передает startapp в параметре tgWebAppStartParam или через хэш/путь
         let startAppParam = "";
-        if (window.location.pathname.startsWith("/api/")) {
-            // Если открыто напрямую в браузере для теста
-        } else {
-            // Пытаемся извлечь из initData или параметров
-            startAppParam = tg.initDataUnsafe?.start_param || window.location.pathname.replace("/", "");
-        }
-        
-        // Запасной вариант парсинга из пути
-        if (!startAppParam || startAppParam === "") {
-            const segs = window.location.pathname.split("/");
-            startAppParam = segs[segs.length - 1];
+        const segs = window.location.pathname.split("/");
+        startAppParam = segs[segs.length - 1];
+        if (!startAppParam || startAppParam.startsWith("api")) {
+            startAppParam = tg.initDataUnsafe?.start_param || "";
         }
 
         fetch('/api/emojis')
@@ -216,39 +206,41 @@ def _get_miniapp_html():
             rows.forEach((row, rIdx) => {
                 const rowDiv = document.createElement('div');
                 rowDiv.className = 'row-box';
-                rowDiv.innerHTML = `<div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:12px; color:#aaa;"><span>Рядок ${rIdx + 1}</span><button class="btn-danger" onclick="deleteRow(${rIdx})">Видалити рядок</button></div>`;
+                rowDiv.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:12px; color:#aaa;"><span>Рядок ${rIdx + 1}</span><button class="btn-danger" onclick="deleteRow(${rIdx})">Видалити рядок</button></div>`;
                 
                 row.forEach((btn, bIdx) => {
                     const btnDiv = document.createElement('div');
                     btnDiv.className = 'btn-item';
                     btnDiv.innerHTML = `
-                        <div style="flex:1;">
-                            <div style="margin-bottom:6px; font-size:12px; color:#888;">Виберіть емодзи Premium:</div>
-                            <div class="emoji-grid" id="emojis-${rIdx}-${bIdx}"></div>
-                            <input type="text" placeholder="Назва кнопки" value="${escapeHtml(btn.text || '')}" id="text-${rIdx}-${bIdx}" style="margin-top:6px;">
-                            <input type="text" placeholder="Посилання (https://...)" value="${escapeHtml(btn.url || btn.popup || '')}" id="url-${rIdx}-${bIdx}" style="margin-top:6px;">
+                        <div class="btn-content">
+                            <div class="input-group">
+                                <div style="margin-bottom:6px; font-size:12px; color:#888;">Виберіть емодзи:</div>
+                                <div class="emoji-scroll" id="emojis-${rIdx}-${bIdx}"></div>
+                                <input type="text" placeholder="Назва кнопки" value="${escapeHtml(btn.text || '')}" id="text-${rIdx}-${bIdx}" style="margin-top:6px;">
+                                <input type="text" placeholder="Посилання (https://...)" value="${escapeHtml(btn.url || btn.popup || '')}" id="url-${rIdx}-${bIdx}" style="margin-top:6px;">
+                            </div>
+                            <button class="btn-danger" onclick="deleteBtn(${rIdx}, ${bIdx})" style="margin-top:22px;">✕</button>
                         </div>
-                        <button class="btn-danger" onclick="deleteBtn(${rIdx}, ${bIdx})" style="height:fit-content;">✕</button>
                     `;
                     rowDiv.appendChild(btnDiv);
 
-                    // Рендерим сетку иконок
-                    const grid = btnDiv.querySelector(`#emojis-${rIdx}-${bIdx}`);
+                    const scrollContainer = btnDiv.querySelector(`#emojis-${rIdx}-${bIdx}`);
                     emojisList.forEach(em => {
                         const eb = document.createElement('button');
                         eb.className = 'emoji-btn';
                         eb.innerText = em.symbol;
                         eb.onclick = () => {
                             const input = document.getElementById(`text-${rIdx}-${bIdx}`);
-                            input.value = em.symbol + " " + input.value.replace(/^[^\w\sа-яА-ЯіїєґІЇЄҐ]+/, "").trim();
+                            let cleanText = input.value.replace(/^(\p{Emoji}|\u200d)+/gu, "").trim();
+                            input.value = em.symbol + " " + cleanText;
                         };
-                        grid.appendChild(eb);
+                        scrollContainer.appendChild(eb);
                     });
                 });
 
                 const addBtn = document.createElement('button');
                 addBtn.className = 'btn-primary';
-                addBtn.style = "background: #262626; font-size:12px; padding:6px; margin-top:4px;";
+                addBtn.style = "background: #262626; font-size:12px; padding:8px; margin-top:4px;";
                 addBtn.innerText = "+ Додати кнопку в рядок";
                 addBtn.onclick = () => { row.push({text: "Кнопка", url: "https://t.me"}); render(); };
                 rowDiv.appendChild(addBtn);
@@ -274,7 +266,6 @@ def _get_miniapp_html():
         }
 
         function saveButtons() {
-            // Считываем актуальные данные из полей ввода
             rows.forEach((row, rIdx) => {
                 row.forEach((btn, bIdx) => {
                     const txt = document.getElementById(`text-${rIdx}-${bIdx}`).value;
