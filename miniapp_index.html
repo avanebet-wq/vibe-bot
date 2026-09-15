@@ -336,14 +336,14 @@
   var decodedStart = decodeStartParam(startParam);
   var CHAT_ID = qs.get("chat_id") || decodedStart.chat_id;
   var POST_ID = qs.get("post_id") || decodedStart.post_id;
-  var EDIT_MODE = qs.get("mode") === "edit";
+  var EDIT_MODE = qs.get("mode") === "edit" || !!decodedStart.edit;
   var INIT_DATA = tg ? tg.initData : "";
 
   function decodeStartParam(sp){
     // Bot side may encode something like "c-1001234567890_p1".
     var out = {chat_id:null, post_id:null};
     var m = /^c(-?\d+)_p([A-Za-z0-9_-]+)$/.exec(sp || "");
-    if (m){ out.chat_id = m[1]; out.post_id = m[2]; }
+    if (m){ out.chat_id = m[1]; out.post_id = m[2].replace(/_e$/, ""); out.edit = /_e$/.test(m[2]); }
     return out;
   }
 

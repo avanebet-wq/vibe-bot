@@ -4,6 +4,6 @@
 The HTTP Mini App implementation itself remains in miniapp.py. This module
 provides a dedicated settings-facing boundary without changing startup order.
 """
-from miniapp import start_server
+from miniapp import start_miniapp_server
 
-__all__ = ["start_server"]
+__all__ = ["start_miniapp_server"]

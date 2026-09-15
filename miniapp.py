@@ -5,6 +5,7 @@ import json
 import logging
 import urllib.parse
 import threading
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from runtime import BOT_USERNAME
@@ -80,6 +81,22 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True})
             return self._json(400, {"error": "emoji_id required"})
 
+        # Новый API конструктора: настройки строго привязаны к chat_id + post_id.
+        if path == "/api/context":
+            qs = parse_qs(parsed.query)
+            gid = (qs.get("chat_id") or [""])[0]
+            pid = (qs.get("post_id") or [""])[0]
+            if not gid or not pid:
+                return self._json(400, {"error": "chat_id и post_id обязательны"})
+            try:
+                gid_i = int(gid)
+            except (TypeError, ValueError):
+                return self._json(400, {"error": "Некорректный chat_id"})
+            post = store.get_post(gid_i, pid)
+            if post is None:
+                return self._json(404, {"error": "Публикация не найдена"})
+            return self._json(200, {"rows": post.get("buttons") or []})
+
         if path.startswith("/api/buttons/"):
             parts = path.split("/")
             if len(parts) >= 4:
@@ -89,13 +106,66 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                     post = store.get_post(gid, pid)
                     buttons = post.get("buttons", []) if post else []
                     return self._json(200, {"buttons": buttons})
-            return self._json(400, {"error": "Invalid parameters"})
+            return self._json(400, {"error": "Некорректные параметры"})
 
         self._html(200, _get_miniapp_html())
 
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        # Новый API сохранения конструктора.
+        if path == "/api/save-buttons":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+                gid = int(data.get("chat_id"))
+                pid = str(data.get("post_id"))
+                rows = data.get("rows")
+                if not isinstance(rows, list):
+                    raise ValueError("Поле rows должно быть массивом")
+                post = store.get_post(gid, pid)
+                if post is None:
+                    return self._json(404, {"error": "Публикация не найдена"})
+                # Нормализуем данные Mini App в формат, который использует settings_core.
+                normalized = []
+                for row in rows:
+                    if not isinstance(row, list):
+                        raise ValueError("Каждая строка кнопок должна быть массивом")
+                    out_row = []
+                    for btn in row:
+                        if not isinstance(btn, dict):
+                            raise ValueError("Некорректная кнопка")
+                        name = str(btn.get("name") or "").strip()
+                        if not name:
+                            raise ValueError("Укажите название каждой кнопки")
+                        typ = str(btn.get("type") or "url")
+                        value = str(btn.get("value") or "")
+                        out = {"text": name}
+                        if typ == "url":
+                            value = value.strip()
+                            parsed_url = urlparse(value)
+                            if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+                                raise ValueError(f"Некорректная ссылка: «{value}»")
+                            out["url"] = value
+                        elif typ in ("popup", "alert", "share", "copy", "rules", "user_command"):
+                            out[typ] = value
+                        elif typ == "delete_message":
+                            out["delete_message"] = True
+                        else:
+                            raise ValueError(f"Неизвестный тип кнопки: {typ}")
+                        if btn.get("custom_emoji_id"):
+                            out["custom_emoji_id"] = btn["custom_emoji_id"]
+                        out_row.append(out)
+                    normalized.append(out_row)
+                store.update_post(gid, pid, buttons=normalized)
+                return self._json(200, {"ok": True})
+            except (TypeError, ValueError, json.JSONDecodeError) as e:
+                return self._json(400, {"error": str(e) or "Некорректные данные"})
+            except Exception as e:
+                log.exception("[MiniApp] Ошибка сохранения кнопок")
+                return self._json(500, {"error": "Внутренняя ошибка сервера"})
 
         if path.startswith("/api/buttons/"):
             parts = path.split("/")
@@ -111,8 +181,9 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                         store.update_post(gid, pid, buttons=rows)
                         return self._json(200, {"status": "ok"})
                     except Exception as e:
+                        log.exception("[MiniApp] Ошибка сохранения legacy API")
                         return self._json(400, {"error": str(e)})
-            return self._json(400, {"error": "Invalid parameters"})
+            return self._json(400, {"error": "Некорректные параметры"})
 
         self._json(404, {"error": "Not found"})
 
@@ -151,212 +222,11 @@ def start_miniapp_server():
 
 
 def _get_miniapp_html():
-    return """<!DOCTYPE html>
-<html lang="uk">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Конструктор кнопок - Лиза</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <style>
-        * { box-sizing: border-box; }
-        body { background: #0f0f0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; overflow-x: hidden; width: 100%; }
-        h2 { font-size: 18px; margin-bottom: 12px; }
-        .row-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 12px; margin-bottom: 12px; width: 100%; }
-        .btn-item { background: #262626; border: 1px solid #444; border-radius: 8px; padding: 10px; margin-bottom: 10px; width: 100%; }
-        .btn-content { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
-        .input-group { flex: 1; min-width: 0; width: 100%; }
-        input[type="text"] { background: #121212; border: 1px solid #333; color: #fff; border-radius: 8px; padding: 10px; width: 100%; font-size: 14px; display: block; margin-top: 6px; }
-        button { cursor: pointer; border: none; border-radius: 8px; padding: 10px 16px; font-weight: 600; font-size: 14px; }
-        .btn-primary { background: #3b82f6; color: #fff; width: 100%; margin-top: 10px; }
-        .btn-success { background: #10b981; color: #fff; width: 100%; margin-top: 20px; padding: 14px; font-size: 16px; }
-        .btn-danger { background: #ef4444; color: #fff; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
-        
-        .emoji-grid-box { background: #121212; border: 1px solid #333; border-radius: 8px; padding: 8px; margin-top: 6px; width: 100%; }
-        .emoji-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; max-height: 120px; overflow-y: auto; padding: 2px; }
-        .emoji-grid::-webkit-scrollbar { width: 4px; }
-        .emoji-grid::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
-        .emoji-btn { background: #1f1f1f; border: 1px solid #2a2a2a; border-radius: 6px; height: 36px; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.15s; }
-        .emoji-btn:hover { background: #3b82f6; border-color: #3b82f6; }
-    </style>
-</head>
-<body>
-    <h2>Конструктор кнопок</h2>
-    <div id="editor-container"></div>
-    <button class="btn-primary" onclick="addRow()">+ Додати рядок</button>
-    <button class="btn-success" onclick="saveButtons()">Зберегти</button>
+    """Отдать актуальный русскоязычный интерфейс Mini App из miniapp_index.html."""
+    html_path = Path(__file__).with_name("miniapp_index.html")
+    try:
+        return html_path.read_text(encoding="utf-8")
+    except Exception:
+        log.exception("[MiniApp] Не удалось загрузить miniapp_index.html")
+        return "<!doctype html><html lang='ru'><body>Ошибка загрузки конструктора.</body></html>"
 
-    <script>
-        const tg = window.Telegram.WebApp;
-        tg.expand();
-
-        let rows = [];
-        let emojisList = [];
-
-        let startAppParam = "";
-        const segs = window.location.pathname.split("/");
-        startAppParam = segs[segs.length - 1];
-        if (!startAppParam || startAppParam.startsWith("api")) {
-            startAppParam = tg.initDataUnsafe?.start_param || "";
-        }
-
-        fetch('/api/emojis')
-            .then(res => res.json())
-            .then(data => { emojisList = data; loadButtons(); });
-
-        function loadButtons() {
-            if (!startAppParam) return;
-            fetch('/api/buttons/' + startAppParam)
-                .then(res => res.json())
-                .then(data => {
-                    rows = data.buttons || [];
-                    render();
-                });
-        }
-
-        function render() {
-            const container = document.getElementById('editor-container');
-            container.innerHTML = '';
-            
-            rows.forEach((row, rIdx) => {
-                const rowDiv = document.createElement('div');
-                rowDiv.className = 'row-box';
-                rowDiv.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:12px; color:#aaa;"><span>Рядок ${rIdx + 1}</span><button class="btn-danger" onclick="deleteRow(${rIdx})">Видалити рядок</button></div>`;
-                
-                row.forEach((btn, bIdx) => {
-                    const btnDiv = document.createElement('div');
-                    btnDiv.className = 'btn-item';
-                    const curEmojiId = btn.custom_emoji_id || '';
-                    const curEmoji = curEmojiId ? emojisList.find(e => e.id === curEmojiId) : null;
-                    const curPreview = curEmoji ? curEmoji.previewUrl : '';
-                    const curName = curEmoji ? curEmoji.name : '';
-                    btnDiv.innerHTML = `
-                        <div class="btn-content">
-                            <div class="input-group">
-                                <div style="font-size:12px; color:#888; margin-bottom:2px;">Виберіть емодзи:</div>
-                                <div id="sel-emoji-${rIdx}-${bIdx}" style="display:flex;align-items:center;gap:6px;margin-bottom:4px;min-height:22px;">
-                                    ${curPreview ? `<img src="${curPreview}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;">` : ''}
-                                    <span style="font-size:11px;color:#aaa;">${curEmojiId ? (curName || 'Емодзи обрано') : 'Не обрано'}</span>
-                                    ${curEmojiId ? `<button style="font-size:10px;padding:1px 5px;background:#333;border:1px solid #555;border-radius:3px;color:#ccc;cursor:pointer;" onclick="clearEmoji(${rIdx},${bIdx})">✕</button>` : ''}
-                                </div>
-                                <div class="emoji-grid-box">
-                                    <div class="emoji-grid" id="emojis-${rIdx}-${bIdx}"></div>
-                                </div>
-                                <input type="hidden" value="${escapeHtml(curEmojiId)}" id="eid-${rIdx}-${bIdx}">
-                                <input type="text" placeholder="Назва кнопки" value="${escapeHtml(btn.text || '')}" id="text-${rIdx}-${bIdx}">
-                                <input type="text" placeholder="Посилання (https://...)" value="${escapeHtml(btn.url || btn.popup || '')}" id="url-${rIdx}-${bIdx}">
-                            </div>
-                            <button class="btn-danger" onclick="deleteBtn(${rIdx}, ${bIdx})" style="margin-top:22px;">✕</button>
-                        </div>
-                    `;
-                    rowDiv.appendChild(btnDiv);
-
-                    const gridContainer = btnDiv.querySelector(`#emojis-${rIdx}-${bIdx}`);
-                    emojisList.forEach(em => {
-                        const eb = document.createElement('button');
-                        eb.className = 'emoji-btn';
-                        eb.title = em.name || em.id;
-                        if (em.previewUrl) {
-                            const img = document.createElement('img');
-                            img.src = em.previewUrl;
-                            img.style.cssText = 'width:22px;height:22px;pointer-events:none;border-radius:3px;';
-                            eb.appendChild(img);
-                        } else {
-                            eb.innerText = '?';
-                        }
-                        const savedEid = document.getElementById(`eid-${rIdx}-${bIdx}`);
-                        if (savedEid && savedEid.value === em.id) {
-                            eb.style.border = '2px solid #3b82f6';
-                        }
-                        eb.onclick = () => {
-                            const eidInput = document.getElementById(`eid-${rIdx}-${bIdx}`);
-                            eidInput.value = em.id;
-                            const selDiv = document.getElementById(`sel-emoji-${rIdx}-${bIdx}`);
-                            selDiv.innerHTML = (em.previewUrl
-                                ? `<img src="${em.previewUrl}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;">`
-                                : '') +
-                                `<span style="font-size:11px;color:#aaa;">${em.name || 'Емодзи обрано'}</span>` +
-                                `<button style="font-size:10px;padding:1px 5px;background:#333;border:1px solid #555;border-radius:3px;color:#ccc;cursor:pointer;" onclick="clearEmoji(${rIdx},${bIdx})">✕</button>`;
-                            gridContainer.querySelectorAll('.emoji-btn').forEach(b2 => b2.style.border = '1px solid #2a2a2a');
-                            eb.style.border = '2px solid #3b82f6';
-                        };
-                        gridContainer.appendChild(eb);
-                    });
-                });
-
-                const addBtn = document.createElement('button');
-                addBtn.className = 'btn-primary';
-                addBtn.style = "background: #262626; font-size:12px; padding:8px; margin-top:4px;";
-                addBtn.innerText = "+ Додати кнопку в рядок";
-                addBtn.onclick = () => { row.push({text: "Кнопка", url: "https://t.me"}); render(); };
-                rowDiv.appendChild(addBtn);
-
-                container.appendChild(rowDiv);
-            });
-        }
-
-        function addRow() {
-            rows.push([{text: "Кнопка", url: "https://t.me"}]);
-            render();
-        }
-
-        function deleteRow(rIdx) {
-            rows.splice(rIdx, 1);
-            render();
-        }
-
-        function deleteBtn(rIdx, bIdx) {
-            rows[rIdx].splice(bIdx, 1);
-            if (rows[rIdx].length === 0) rows.splice(rIdx, 1);
-            render();
-        }
-
-        function clearEmoji(rIdx, bIdx) {
-            document.getElementById(`eid-${rIdx}-${bIdx}`).value = '';
-            const selDiv = document.getElementById(`sel-emoji-${rIdx}-${bIdx}`);
-            if (selDiv) selDiv.innerHTML = '<span style="font-size:11px;color:#aaa;">Не обрано</span>';
-            const gridContainer = document.getElementById(`emojis-${rIdx}-${bIdx}`);
-            if (gridContainer) gridContainer.querySelectorAll('.emoji-btn').forEach(b => b.style.border = '1px solid #2a2a2a');
-        }
-
-        function saveButtons() {
-            rows.forEach((row, rIdx) => {
-                row.forEach((btn, bIdx) => {
-                    const txt = document.getElementById(`text-${rIdx}-${bIdx}`).value;
-                    const val = document.getElementById(`url-${rIdx}-${bIdx}`).value;
-                    const eidEl = document.getElementById(`eid-${rIdx}-${bIdx}`);
-                    btn.text = txt;
-                    if (eidEl && eidEl.value) {
-                        btn.custom_emoji_id = eidEl.value;
-                    } else {
-                        delete btn.custom_emoji_id;
-                    }
-                    if (val.startsWith("http")) {
-                        btn.url = val;
-                        delete btn.popup;
-                    } else {
-                        btn.popup = val;
-                        delete btn.url;
-                    }
-                });
-            });
-
-            fetch('/api/buttons/' + startAppParam, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ buttons: rows })
-            }).then(res => res.json()).then(data => {
-                if (data.status === 'ok') {
-                    tg.close();
-                } else {
-                    alert('Помилка збереження');
-                }
-            });
-        }
-
-        function escapeHtml(text) {
-            return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-        }
-    </script>
-</body>
-</html>"""
