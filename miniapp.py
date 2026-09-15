@@ -226,13 +226,23 @@ def _get_miniapp_html():
                 row.forEach((btn, bIdx) => {
                     const btnDiv = document.createElement('div');
                     btnDiv.className = 'btn-item';
+                    const curEmojiId = btn.custom_emoji_id || '';
+                    const curEmoji = curEmojiId ? emojisList.find(e => e.id === curEmojiId) : null;
+                    const curPreview = curEmoji ? curEmoji.previewUrl : '';
+                    const curName = curEmoji ? curEmoji.name : '';
                     btnDiv.innerHTML = `
                         <div class="btn-content">
                             <div class="input-group">
                                 <div style="font-size:12px; color:#888; margin-bottom:2px;">Виберіть емодзи:</div>
+                                <div id="sel-emoji-${rIdx}-${bIdx}" style="display:flex;align-items:center;gap:6px;margin-bottom:4px;min-height:22px;">
+                                    ${curPreview ? `<img src="${curPreview}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;">` : ''}
+                                    <span style="font-size:11px;color:#aaa;">${curEmojiId ? (curName || 'Емодзи обрано') : 'Не обрано'}</span>
+                                    ${curEmojiId ? `<button style="font-size:10px;padding:1px 5px;background:#333;border:1px solid #555;border-radius:3px;color:#ccc;cursor:pointer;" onclick="clearEmoji(${rIdx},${bIdx})">✕</button>` : ''}
+                                </div>
                                 <div class="emoji-grid-box">
                                     <div class="emoji-grid" id="emojis-${rIdx}-${bIdx}"></div>
                                 </div>
+                                <input type="hidden" value="${escapeHtml(curEmojiId)}" id="eid-${rIdx}-${bIdx}">
                                 <input type="text" placeholder="Назва кнопки" value="${escapeHtml(btn.text || '')}" id="text-${rIdx}-${bIdx}">
                                 <input type="text" placeholder="Посилання (https://...)" value="${escapeHtml(btn.url || btn.popup || '')}" id="url-${rIdx}-${bIdx}">
                             </div>
@@ -245,11 +255,30 @@ def _get_miniapp_html():
                     emojisList.forEach(em => {
                         const eb = document.createElement('button');
                         eb.className = 'emoji-btn';
-                        eb.innerText = em.symbol;
+                        eb.title = em.name || em.id;
+                        if (em.previewUrl) {
+                            const img = document.createElement('img');
+                            img.src = em.previewUrl;
+                            img.style.cssText = 'width:22px;height:22px;pointer-events:none;border-radius:3px;';
+                            eb.appendChild(img);
+                        } else {
+                            eb.innerText = '?';
+                        }
+                        const savedEid = document.getElementById(`eid-${rIdx}-${bIdx}`);
+                        if (savedEid && savedEid.value === em.id) {
+                            eb.style.border = '2px solid #3b82f6';
+                        }
                         eb.onclick = () => {
-                            const input = document.getElementById(`text-${rIdx}-${bIdx}`);
-                            let cleanText = input.value.replace(/^(\p{Emoji}|\u200d)+/gu, "").trim();
-                            input.value = em.symbol + " " + cleanText;
+                            const eidInput = document.getElementById(`eid-${rIdx}-${bIdx}`);
+                            eidInput.value = em.id;
+                            const selDiv = document.getElementById(`sel-emoji-${rIdx}-${bIdx}`);
+                            selDiv.innerHTML = (em.previewUrl
+                                ? `<img src="${em.previewUrl}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;">`
+                                : '') +
+                                `<span style="font-size:11px;color:#aaa;">${em.name || 'Емодзи обрано'}</span>` +
+                                `<button style="font-size:10px;padding:1px 5px;background:#333;border:1px solid #555;border-radius:3px;color:#ccc;cursor:pointer;" onclick="clearEmoji(${rIdx},${bIdx})">✕</button>`;
+                            gridContainer.querySelectorAll('.emoji-btn').forEach(b2 => b2.style.border = '1px solid #2a2a2a');
+                            eb.style.border = '2px solid #3b82f6';
                         };
                         gridContainer.appendChild(eb);
                     });
@@ -282,12 +311,26 @@ def _get_miniapp_html():
             render();
         }
 
+        function clearEmoji(rIdx, bIdx) {
+            document.getElementById(`eid-${rIdx}-${bIdx}`).value = '';
+            const selDiv = document.getElementById(`sel-emoji-${rIdx}-${bIdx}`);
+            if (selDiv) selDiv.innerHTML = '<span style="font-size:11px;color:#aaa;">Не обрано</span>';
+            const gridContainer = document.getElementById(`emojis-${rIdx}-${bIdx}`);
+            if (gridContainer) gridContainer.querySelectorAll('.emoji-btn').forEach(b => b.style.border = '1px solid #2a2a2a');
+        }
+
         function saveButtons() {
             rows.forEach((row, rIdx) => {
                 row.forEach((btn, bIdx) => {
                     const txt = document.getElementById(`text-${rIdx}-${bIdx}`).value;
                     const val = document.getElementById(`url-${rIdx}-${bIdx}`).value;
+                    const eidEl = document.getElementById(`eid-${rIdx}-${bIdx}`);
                     btn.text = txt;
+                    if (eidEl && eidEl.value) {
+                        btn.custom_emoji_id = eidEl.value;
+                    } else {
+                        delete btn.custom_emoji_id;
+                    }
                     if (val.startsWith("http")) {
                         btn.url = val;
                         delete btn.popup;
