@@ -32,7 +32,7 @@ def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str) ->
         LOG.error("[transcriber] Нет доступных ключей GROQ_API_KEY")
         return None
 
-    # ИСПРАВЛЕНИЕ 1: Сначала пробуем самую умную и точную модель, затем турбо
+    # Сначала пробуем самую умную и точную модель, затем турбо
     models = ("whisper-large-v3", "whisper-large-v3-turbo")
 
     for model in models:
@@ -48,7 +48,7 @@ def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str) ->
                     "model": model,
                     "response_format": "json",
                     "temperature": 0.0,
-                    # ИСПРАВЛЕНИЕ 2: Специальная подсказка, чтобы модель ожидала ру/укр речь и суржик
+                    # Специальная подсказка, чтобы модель ожидала ру/укр речь и суржик
                     "prompt": "Это обычное голосовое сообщение в Telegram. Русская и украинская речь, суржик. Привет, як справи? Ага, хорошо, дякую. Давай."
                 }
                 resp = requests.post(
@@ -118,8 +118,9 @@ def _process_audio_async(message, is_video_note: bool):
         safe_text = recognized_text.strip()[:3800]
         escaped = html.escape(safe_text)
 
+        # Выделяем заголовок жирным, а сам текст оборачиваем в цитату с моноширинным шрифтом
         header = "📹 <b>Расшифровка кружка:</b>\n" if is_video_note else "🗣 <b>Расшифровка:</b>\n"
-        bot.reply_to(message, f"{header}<i>{escaped}</i>", parse_mode="HTML")
+        bot.reply_to(message, f"{header}<blockquote><code>{escaped}</code></blockquote>", parse_mode="HTML")
 
         # Если в голосовом обратились к Лизе или это личка — даем ей ответить
         is_group = message.chat.type in ("group", "supergroup")
