@@ -4,9 +4,47 @@ import re
 import time
 import html
 import logging
+import threading
 
 from runtime import bot
 from database import db_get, db_set, db_update_json
+
+# ---------- Кэш статуса участника чата (админ/создатель/обычный) ----------
+# is_chat_admin()/is_protected() раньше дёргали bot.get_chat_member() синхронно
+# на каждый клик по инлайн-кнопке и на каждое сообщение (при включённой полной
+# тишине), из-за чего кнопки "подвисали" на время round-trip к Telegram API.
+# Права админа меняются редко, поэтому короткого TTL достаточно, чтобы почти
+# полностью убрать эти сетевые запросы, не давая устареть статусу заметно.
+_MEMBER_CACHE_TTL = 90.0
+_member_cache = {}
+_member_cache_lock = threading.RLock()
+
+
+def _get_chat_member_cached(chat_id, user_id):
+    """Возвращает telebot ChatMember для (chat_id, user_id), кэшируя результат
+    на _MEMBER_CACHE_TTL секунд, чтобы не ходить в Telegram на каждый вызов."""
+    key = (chat_id, user_id)
+    now = time.monotonic()
+    with _member_cache_lock:
+        cached = _member_cache.get(key)
+        if cached and now - cached[0] < _MEMBER_CACHE_TTL:
+            return cached[1]
+    member = bot.get_chat_member(chat_id, user_id)
+    with _member_cache_lock:
+        _member_cache[key] = (now, member)
+    return member
+
+
+def invalidate_member_cache(chat_id, user_id=None):
+    """Сбросить кэш статуса участника — вызывать после действий, которые сами
+    меняют права/членство (бан, размьют и т.п.), чтобы не ждать TTL."""
+    with _member_cache_lock:
+        if user_id is None:
+            for key in list(_member_cache):
+                if key[0] == chat_id:
+                    _member_cache.pop(key, None)
+        else:
+            _member_cache.pop((chat_id, user_id), None)
 
 # ---------- Настройки чата (простое key/value по чатам) ----------
 
@@ -144,7 +182,7 @@ def extract_target(message, args_text):
 
 def is_chat_admin(chat_id, user_id):
     try:
-        member = bot.get_chat_member(chat_id, user_id)
+        member = _get_chat_member_cached(chat_id, user_id)
         return member.status in ("administrator", "creator")
     except Exception:
         return False
@@ -156,7 +194,7 @@ def is_protected(chat_id, user_id):
     if user_id == BOT_ID:
         return True
     try:
-        member = bot.get_chat_member(chat_id, user_id)
+        member = _get_chat_member_cached(chat_id, user_id)
         return member.status == "creator"
     except Exception:
         return False
