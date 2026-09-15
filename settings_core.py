@@ -194,12 +194,7 @@ def _bot_is_in_chat(gid):
 
 
 def send_dm_start_group_picker(chat_id, user_id):
-    """Показывает чаты из постоянного реестра, где бот состоит, а пользователь админ.
-
-    Telegram Bot API не предоставляет способа перечислить все группы бота из лички,
-    поэтому реестр пополняется событиями вступления и обычной активностью бота.
-    Перед показом каждого чата дополнительно проверяются оба условия.
-    """
+    """Показывает чаты из постоянного реестра, где бот состоит, а пользователь админ."""
     groups = store.get_known_groups()
     my_groups = []
     stale = []
@@ -212,7 +207,6 @@ def send_dm_start_group_picker(chat_id, user_id):
             stale.append(gid)
             continue
         if _authorized(gid, user_id):
-            # Получаем актуальное название, а не полагаемся на старую запись.
             actual_title = _chat_title(gid)
             my_groups.append((gid, actual_title if actual_title != str(gid) else (title or str(gid))))
 
@@ -253,7 +247,6 @@ def send_group_start(message):
 
 
 def open_settings_in_dm(user_id, gid):
-    """Используется для deep-link `/start cfg-<gid>` — открыть меню настроек в личке."""
     if not _authorized(gid, user_id):
         bot.send_message(user_id, "⛔ Вы не администратор этого чата.")
         return
@@ -264,12 +257,6 @@ def open_settings_in_dm(user_id, gid):
 
 
 def cmd_settings_command(message):
-    """«настройки» открывает выбор типа настроек.
-
-    В группе меню уходит администратору в личные сообщения. Если Лиза ещё
-    не может написать пользователю в личку, в группе показывается кнопка
-    для открытия чата с ботом через deep-link.
-    """
     if message.chat.type == "private":
         if send_dm_start_group_picker(message.chat.id, message.from_user.id):
             return
@@ -290,7 +277,6 @@ def cmd_settings_command(message):
         track_message(msg.chat.id, msg.message_id)
         bot.reply_to(message, "⚙️ Отправила выбор настроек вам в личные сообщения.")
     except Exception:
-        # Бот не может начать диалог первым: даём администратору deep-link.
         fallback = types.InlineKeyboardMarkup()
         fallback.row(types.InlineKeyboardButton(
             "⚙️ Открыть настройки в ЛС",
@@ -360,7 +346,6 @@ def _start_captcha(message, user):
 
 
 def enforce_captcha(message):
-    """Удаляет сообщения пользователя, который ещё не прошёл капчу. True, если удалили."""
     gid = message.chat.id
     uid = message.from_user.id if message.from_user else None
     if uid is None or not store.is_captcha_pending(gid, uid):
@@ -420,7 +405,6 @@ _SYS_CONTENT_MAP = {
 
 
 def enforce_silence(message):
-    """True, если сообщение удалено режимом «Полная тишина»."""
     gid = message.chat.id
     if message.chat.type not in ("group", "supergroup"):
         return False
@@ -437,7 +421,6 @@ def enforce_silence(message):
 
 
 def enforce_system_message_deletion(message):
-    """True, если служебное сообщение удалено по настройке."""
     gid = message.chat.id
     key = _SYS_CONTENT_MAP.get(message.content_type, "other" if message.content_type not in
                                 ("text", "photo", "video", "sticker", "document", "voice",
@@ -476,7 +459,6 @@ _SPECIAL_PREFIXES = ("popup:", "alert:", "share:", "copy:", "rules")
 
 
 def parse_url_buttons(raw_text):
-    """Возвращает (rows, error). rows — список рядов [{"text":.., ...}]."""
     rows = []
     for line in raw_text.splitlines():
         line = line.strip()
@@ -530,8 +512,6 @@ def build_markup_from_buttons(rows, gid=None, pid=None):
                 value = str(b.get("url") or "").strip()
                 parsed = urlparse(value)
                 if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                    # Защита старых/повреждённых записей в БД: Telegram не примет
-                    # такую кнопку и вернёт 400, поэтому не отправляем её.
                     log.warning("[settings buttons] skipped invalid URL: %r", value)
                     continue
                 line.append(types.InlineKeyboardButton(text, url=value))
@@ -684,7 +664,6 @@ def _scheduler_tick():
             if now.timestamp() < next_run:
                 continue
 
-            # пора публиковать
             try:
                 if post.get("delete_last") and post.get("last_message_id") and post.get("last_chat_id"):
                     try:
@@ -728,7 +707,6 @@ def _scheduler_loop():
             log.error(f"[scheduler] {e}", exc_info=True)
         if stopped():
             break
-        # Ждём через общий stop-event, чтобы shutdown не задерживался на 20 с.
         from reliability import _STOP
         _STOP.wait(20)
 
@@ -760,18 +738,16 @@ def _send_post_screen_followup(chat_id, gid, pid):
 
 
 def try_handle_pending_input(message):
-    """Возвращает True, если сообщение было перехвачено как ответ на запрос настроек."""
     if not message.from_user:
         return False
     key_chat = message.chat.id
     uid = message.from_user.id
 
-    # Команда выбора темы может прийти прямо в группе, привязана к gid, а не к чату с меню.
     m = _TOPIC_CMD_RE.match((message.text or "").strip())
     if m:
         pending = store.get_pending(message.chat.id, uid)
         if pending and pending.get("kind") == "topic" and pending.get("gid") == message.chat.id:
-            thread_id = message.message_thread_id
+            thread_id = getattr(message, "message_thread_id", None)
             store.update_post(pending["gid"], pending["pid"], topic_id=thread_id)
             store.clear_pending(message.chat.id, uid)
             bot.reply_to(message, "✅ Тема для этой публикации сохранена.")
@@ -1019,22 +995,14 @@ def _dispatch_callback(call):
                 pass
         return
 
-    # Подтверждение капчи — особый случай: жать её должен вступивший пользователь,
-    # а не администратор, поэтому обрабатываем раньше общей проверки прав.
     if action == "capver":
         return _captcha_callback(call, gid, rest[0])
 
-    # Всё, что ниже, требует прав администратора целевой группы.
     if not _authorized(gid, call.from_user.id):
         return bot.answer_callback_query(call.id, "⛔ Только для админов чата.", show_alert=True)
 
     chat_id, message_id = call.message.chat.id, call.message.message_id
 
-    # Any settings callback exits the previous input mode. This prevents an
-    # old pending prompt (time/text/media/etc.) from consuming the next
-    # ordinary user message after navigating back or switching menus.
-    # The pending state is chat-scoped; topic selection historically uses
-    # the target group id, so clear both possible keys when they differ.
     store.clear_pending(chat_id, call.from_user.id)
     if gid != chat_id:
         store.clear_pending(gid, call.from_user.id)
@@ -1387,7 +1355,8 @@ def _dispatch_callback(call):
             parse_mode="HTML",
             reply_markup=ui.buttons_prompt_kb(
                 gid, pid, bool(post.get("buttons")), miniapp_url=miniapp_url,
-                edit_url=(f"https://t.me/{BOT_USERNAME}/app?startapp=c{gid}_p{pid}_e") if post.get("buttons") else None
+                # === ИСПРАВЛЕНИЕ ЗДЕСЬ: УБРАН ВРЕДНЫЙ СУФФИКС _e ===
+                edit_url=(f"https://t.me/{BOT_USERNAME}/app?startapp=c{gid}_p{pid}") if post.get("buttons") else None
             ),
         )
         track_message(chat_id, msg.message_id)
