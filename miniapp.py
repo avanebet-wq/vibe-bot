@@ -1,406 +1,311 @@
 # -*- coding: utf-8 -*-
-"""HTTP server for Лиза's Telegram Mini App button constructor.
-
-The bot itself remains on pyTelegramBotAPI. This module uses only the
-Python standard library and the already-created runtime.bot instance.
-"""
-import hashlib
-from security import allow
-from reliability import health
-import hmac
+"""Легковесный HTTP-сервер для Mini App настройки кнопок Лизы."""
+import http.server
 import json
 import logging
-import os
+import urllib.parse
 import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import parse_qs, parse_qsl, urlparse
+from urllib.parse import parse_qs, urlparse
 
-from config import TOKEN
-from runtime import bot
+from runtime import BOT_USERNAME
+from reliability import stopped
 import settings_store as store
-from admin_api import dashboard
 
 log = logging.getLogger("miniapp")
 
-BASE_DIR = Path(__file__).resolve().parent
-INDEX_PATH = BASE_DIR / "miniapp_index.html"
-MAX_INIT_DATA_AGE = 300
-MAX_BODY = 256 * 1024
-ALLOWED_TYPES = {
-    "url", "popup", "alert", "share", "copy", "rules",
-    "user_command", "delete_message",
-}
+PORT = 8080
 
 
-def validate_init_data(init_data: str) -> dict:
-    """Validate Telegram WebApp initData and return its parsed fields."""
-    if not init_data:
-        raise ValueError("missing Telegram initData")
+class MiniAppHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Подавляем стандартный шум логов HTTP-сервера, пишем через наш логгер
+        log.debug("%s - - [%s] %s", self.client_address[0], self.log_date_time_string(), format % args)
 
-    pairs = dict(parse_qsl(init_data, strict_parsing=True))
-    received_hash = pairs.pop("hash", None)
-    if not received_hash:
-        raise ValueError("missing hash")
-
-    try:
-        auth_date = int(pairs.get("auth_date", "0"))
-    except (TypeError, ValueError):
-        raise ValueError("invalid auth_date")
-
-    # Базовая защита сессии: токен живет не больше 5 минут (MAX_INIT_DATA_AGE)
-    if auth_date <= 0 or abs(time.time() - auth_date) > MAX_INIT_DATA_AGE:
-        raise ValueError("initData expired")
-
-    data_check_string = "\n".join(
-        f"{key}={value}" for key, value in sorted(pairs.items())
-    )
-    secret_key = hmac.new(
-        b"WebAppData", TOKEN.encode("utf-8"), hashlib.sha256
-    ).digest()
-    calculated = hmac.new(
-        secret_key, data_check_string.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-
-    if not hmac.compare_digest(calculated, received_hash):
-        raise ValueError("invalid initData hash")
-
-    user_raw = pairs.get("user")
-    if not user_raw:
-        raise ValueError("Telegram user is missing")
-    try:
-        pairs["user"] = json.loads(user_raw)
-    except json.JSONDecodeError:
-        raise ValueError("invalid Telegram user data")
-
-    return pairs
-
-
-def _auth_user(handler):
-    auth = handler.headers.get("Authorization", "")
-    if not auth.startswith("tma "):
-        raise PermissionError("missing Telegram authorization")
-    return validate_init_data(auth[4:])["user"]
-
-
-def _require_admin(user_id: int, chat_id: int):
-    try:
-        member = bot.get_chat_member(chat_id, user_id)
-    except Exception as exc:
-        raise PermissionError("cannot verify chat administrator") from exc
-    if member.status not in ("administrator", "creator"):
-        raise PermissionError("user is not an administrator of this chat")
-
-
-def _normalize_url(value: str) -> str:
-    value = str(value or "").strip()
-    if value.startswith(("t.me/", "www.t.me/")):
-        value = "https://" + value
-    elif value.startswith("@"):
-        value = "https://t.me/" + value[1:]
-    parsed = urlparse(value)
-    if parsed.scheme.lower() not in {"http", "https"}:
-        raise ValueError("URL must use http:// or https://")
-    if not parsed.netloc:
-        raise ValueError("URL host is required")
-    return value[:2048]
-
-
-def _to_public_rows(rows):
-    """Convert the bot's stored button format to Mini App format."""
-    result = []
-    for row in rows or []:
-        out_row = []
-        for b in row or []:
-            if not isinstance(b, dict):
-                continue
-            if b.get("url") is not None:
-                typ, value = "url", b.get("url", "")
-            elif b.get("popup") is not None:
-                typ, value = "popup", b.get("popup", "")
-            elif b.get("alert") is not None:
-                typ, value = "alert", b.get("alert", "")
-            elif b.get("share") is not None:
-                typ, value = "share", b.get("share", "")
-            elif b.get("copy") is not None:
-                typ, value = "copy", b.get("copy", "")
-            elif b.get("rules") is not None:
-                typ, value = "rules", b.get("rules") if isinstance(b.get("rules"), str) else ""
-            elif b.get("user_command") is not None:
-                typ, value = "user_command", b.get("user_command", "")
-            elif b.get("delete_message"):
-                typ, value = "delete_message", ""
-            else:
-                continue
-
-            out_row.append({
-                "type": typ,
-                "name": str(b.get("text", ""))[:30],
-                "value": str(value or ""),
-                "style": b.get("style", "transparent"),
-                "custom_emoji_id": b.get("custom_emoji_id"),
-                "custom_emoji_preview": b.get("custom_emoji_preview"),
-            })
-        result.append(out_row)
-    return result
-
-
-def _from_public_rows(rows):
-    if not isinstance(rows, list):
-        raise ValueError("rows must be an array")
-    if len(rows) > 15:
-        raise ValueError("maximum 15 rows")
-
-    result = []
-    for row in rows:
-        if not isinstance(row, list):
-            raise ValueError("each row must be an array")
-        if len(row) > 4:
-            raise ValueError("maximum 4 buttons per row")
-
-        out_row = []
-        for b in row:
-            if not isinstance(b, dict):
-                raise ValueError("invalid button")
-            typ = str(b.get("type", "")).strip()
-            name = str(b.get("name", "")).strip()[:30]
-            value = str(b.get("value", "")).strip()
-            style = str(b.get("style", "transparent")).strip()
-
-            if typ not in ALLOWED_TYPES:
-                raise ValueError("unsupported button type")
-            if not name:
-                raise ValueError("button name is required")
-            if typ != "delete_message" and not value:
-                raise ValueError("button value is required")
-
-            item = {
-                "text": name,
-                "style": style if style in {"transparent", "blue", "green", "red"} else "transparent",
-            }
-
-            if typ == "url":
-                item["url"] = _normalize_url(value)
-            elif typ == "popup":
-                item["popup"] = value
-            elif typ == "alert":
-                item["alert"] = value
-            elif typ == "share":
-                item["share"] = value
-            elif typ == "copy":
-                item["copy"] = value
-            elif typ == "rules":
-                item["rules"] = value
-            elif typ == "user_command":
-                item["user_command"] = value
-            elif typ == "delete_message":
-                item["delete_message"] = True
-
-            # Telegram inline buttons cannot render a custom emoji entity in
-            # their text, but keep the metadata so the constructor does not
-            # lose it on a later edit.
-            emoji_id = b.get("custom_emoji_id")
-            if emoji_id:
-                item["custom_emoji_id"] = str(emoji_id)[:128]
-            if b.get("custom_emoji_preview"):
-                item["custom_emoji_preview"] = str(b["custom_emoji_preview"])[:2048]
-
-            out_row.append(item)
-        result.append(out_row)
-
-    return result
-
-
-def _post_from_request(user_id, chat_id, post_id):
-    _require_admin(user_id, chat_id)
-    post = store.get_post(chat_id, str(post_id))
-    if not post:
-        raise LookupError("publication not found")
-    return post
-
-
-class _BoundedHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-    request_queue_size = 64
-
-    def __init__(self, server_address, RequestHandlerClass, max_workers=16):
-        super().__init__(server_address, RequestHandlerClass)
-        self._slots = threading.BoundedSemaphore(max_workers)
-
-    def process_request_thread(self, request, client_address):
-        if not self._slots.acquire(blocking=False):
-            try:
-                request.close()
-            except Exception:
-                pass
-            return
-        try:
-            super().process_request_thread(request, client_address)
-        finally:
-            self._slots.release()
-
-
-class MiniAppHandler(BaseHTTPRequestHandler):
-    server_version = "LizaMiniApp/1.0"
-    protocol_version = "HTTP/1.1"
-
-    def setup(self):
-        super().setup()
-        self.connection.settimeout(15)
-
-    def _send(self, status, body, content_type="application/json; charset=utf-8"):
-        if isinstance(body, str):
-            body = body.encode("utf-8")
+    def _json(self, status, data):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Telegram-Init-Data")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, status, payload):
-        self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-
-    def _error(self, status, message):
-        self._json(status, {"ok": False, "error": message})
-
-    def _parse_ids(self):
-        parsed = urlparse(self.path)
-        qs = parse_qs(parsed.query)
-        try:
-            chat_id = int((qs.get("chat_id") or [""])[0])
-        except ValueError:
-            raise ValueError("invalid chat_id")
-        post_id = str((qs.get("post_id") or [""])[0]).strip()
-        
-        # --- ИСПРАВЛЕНИЕ: Очищаем суффикс _e от фронтенда ---
-        if post_id.endswith("_e"):
-            post_id = post_id[:-2]
-        # ----------------------------------------------------
-
-        if not chat_id or not post_id:
-            raise ValueError("chat_id and post_id are required")
-        return chat_id, post_id
-
-    def do_GET(self):
-        try:
-            if not allow("miniapp:" + self.client_address[0], limit=60, window=60):
-                return self._error(429, "rate limit")
-            if len(self.path) > 8192:
-                return self._error(414, "request URI too long")
-            parsed = urlparse(self.path)
-
-            if parsed.path == "/health":
-                return self._json(200, {"ok": True, "service": "liza-miniapp"})
-
-            if parsed.path == "/api/health":
-                _auth_user(self)
-                return self._json(200, {"ok": True, "service": "liza-miniapp", "health": health()})
-
-            if parsed.path == "/api/dashboard":
-                user = _auth_user(self)
-                qs = parse_qs(parsed.query)
-                try: chat_id = int((qs.get("chat_id") or [""])[0])
-                except ValueError: raise ValueError("invalid chat_id")
-                _require_admin(user["id"], chat_id)
-                return self._json(200, dashboard(chat_id))
-
-            if parsed.path == "/api/context":
-                user = _auth_user(self)
-                chat_id, post_id = self._parse_ids()
-                post = _post_from_request(user["id"], chat_id, post_id)
-                return self._json(200, {"rows": _to_public_rows(post.get("buttons"))})
-
-            if parsed.path == "/api/emojis":
-                _auth_user(self)
-                return self._json(200, [])
-
-            if not parsed.path.startswith("/api/"):
-                if not INDEX_PATH.exists():
-                    return self._error(500, "Mini App file is missing")
-                data = INDEX_PATH.read_bytes()
-                return self._send(200, data, "text/html; charset=utf-8")
-
-            return self._error(404, "not found")
-
-        except PermissionError as exc:
-            return self._error(401, str(exc))
-        except LookupError as exc:
-            return self._error(404, str(exc))
-        except ValueError as exc:
-            return self._error(400, str(exc))
-        except Exception:
-            log.exception("Mini App GET failed")
-            return self._error(500, "internal server error")
+    def _html(self, status, html_content):
+        body = html_content.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_OPTIONS(self):
-        self._send(204, b"", "text/plain; charset=utf-8")
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Telegram-Init-Data")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Эндпоинт со списком премиум-иконок для кнопок
+        if path == "/api/emojis":
+            emojis_data = [
+                {"id": "lightning", "symbol": "⚡️", "name": "Молния"},
+                {"id": "pin", "symbol": "📌", "name": "Пин"},
+                {"id": "money", "symbol": "💸", "name": "Деньги"},
+                {"id": "heart", "symbol": "❤️‍🔥", "name": "Сердце"},
+                {"id": "note", "symbol": "📝", "name": "Заметка"},
+                {"id": "fire", "symbol": "🔥", "name": "Огонь"},
+                {"id": "question", "symbol": "⁉️", "name": "Вопрос"},
+                {"id": "star", "symbol": "⭐", "name": "Звезда"},
+                {"id": "rocket", "symbol": "🚀", "name": "Ракета"},
+                {"id": "gem", "symbol": "💎", "name": "Алмаз"},
+                {"id": "bell", "symbol": "🔔", "name": "Колокольчик"},
+                {"id": "chat", "symbol": "💬", "name": "Чат"}
+            ]
+            return self._json(200, emojis_data)
+
+        # Получение сохраненных кнопок для конкретного поста
+        if path.startswith("/api/buttons/"):
+            parts = path.split("/")
+            if len(parts) >= 4:
+                identifier = parts[3]
+                gid, pid = self._parse_identifier(identifier)
+                if gid and pid:
+                    post = store.get_post(gid, pid)
+                    buttons = post.get("buttons", []) if post else []
+                    return self._json(200, {"buttons": buttons})
+            return self._json(400, {"error": "Invalid parameters"})
+
+        # Главная страница интерфейса редактора Mini App
+        self._html(200, _get_miniapp_html())
 
     def do_POST(self):
-        try:
-            if not allow("miniapp:" + self.client_address[0], limit=30, window=60):
-                return self._error(429, "rate limit")
-            parsed = urlparse(self.path)
-            if parsed.path != "/api/save-buttons":
-                return self._error(404, "not found")
+        parsed = urlparse(self.path)
+        path = parsed.path
 
-            user = _auth_user(self)
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_BODY:
-                return self._error(400, "invalid request body")
+        if path.startswith("/api/buttons/"):
+            parts = path.split("/")
+            if len(parts) >= 4:
+                identifier = parts[3]
+                gid, pid = self._parse_identifier(identifier)
+                if gid and pid:
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length)
+                    try:
+                        data = json.loads(body.decode('utf-8'))
+                        rows = data.get("buttons", [])
+                        store.update_post(gid, pid, buttons=rows)
+                        return self._json(200, {"status": "ok"})
+                    except Exception as e:
+                        return self._json(400, {"error": str(e)})
+            return self._json(400, {"error": "Invalid parameters"})
 
-            raw = self.rfile.read(length)
-            body = json.loads(raw.decode("utf-8"))
+        self._json(404, {"error": "Not found"})
 
-            chat_id = int(body.get("chat_id"))
-            post_id = str(body.get("post_id", "")).strip()
-
-            # --- ИСПРАВЛЕНИЕ: Очищаем суффикс _e от фронтенда ---
-            if post_id.endswith("_e"):
-                post_id = post_id[:-2]
-            # ----------------------------------------------------
-
-            if not chat_id or not post_id:
-                return self._error(400, "chat_id and post_id are required")
-
-            _post_from_request(user["id"], chat_id, post_id)
-            buttons = _from_public_rows(body.get("rows", []))
-            updated = store.update_post(chat_id, post_id, buttons=buttons)
-            if updated is None:
-                return self._error(404, "publication not found")
-
-            return self._json(200, {"ok": True})
-
-        except PermissionError as exc:
-            return self._error(401, str(exc))
-        except LookupError as exc:
-            return self._error(404, str(exc))
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            return self._error(400, str(exc))
-        except Exception:
-            log.exception("Mini App POST failed")
-            return self._error(500, "internal server error")
-
-    def log_message(self, fmt, *args):
-        return
+    def _parse_identifier(self, identifier):
+        # Поддерживаем форматы c{gid}_p{pid} с возможным суффиксом _e
+        identifier = identifier.split("_e")[0]
+        if identifier.startswith("c") and "_p" in identifier:
+            try:
+                parts = identifier.split("_p")
+                gid = int(parts[0][1:])
+                pid = parts[1]
+                return gid, pid
+            except Exception:
+                pass
+        return None, None
 
 
-def start_server():
-    port = int(os.environ.get("PORT", "8080"))
+class _BoundedHTTPServer(http.server.HTTPServer):
+    def __init__(self, server_address, RequestHandlerClass):
+        super().__init__(server_address, RequestHandlerClass)
+
+
+def run_miniapp_server():
+    server_address = ("0.0.0.0", PORT)
     try:
-        server = _BoundedHTTPServer(("0.0.0.0", port), MiniAppHandler, max_workers=16)
-        log.info("Mini App server started on 0.0.0.0:%s", port)
-        server.serve_forever()
-    except Exception:
-        log.exception("Mini App server stopped unexpectedly")
+        httpd = _BoundedHTTPServer(server_address, MiniAppHandler)
+        log.info("[MiniApp] Сервер запущен на порту %s", PORT)
+        while not stopped():
+            httpd.handle_request()
+        httpd.server_close()
+    except Exception as e:
+        log.error("[MiniApp] Ошибка запуска сервера: %s", e)
 
 
 def start_miniapp_server():
-    thread = threading.Thread(target=start_server, daemon=True, name="liza-miniapp")
-    thread.start()
-    return thread
+    threading.Thread(target=run_miniapp_server, daemon=True, name="liza-miniapp").start()
+
+
+def _get_miniapp_html():
+    return """<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Конструктор кнопок - Лиза</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { background: #0f0f0f; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; }
+        h2 { font-size: 18px; margin-bottom: 12px; }
+        .row-box { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+        .btn-item { background: #262626; border: 1px solid #444; border-radius: 8px; padding: 8px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
+        input[type="text"] { background: #121212; border: 1px solid #333; color: #fff; border-radius: 8px; padding: 8px; width: 100%; box-sizing: border-box; font-size: 14px; }
+        button { cursor: pointer; border: none; border-radius: 8px; padding: 10px 16px; font-weight: 600; font-size: 14px; }
+        .btn-primary { background: #3b82f6; color: #fff; width: 100%; margin-top: 10px; }
+        .btn-success { background: #10b981; color: #fff; width: 100%; margin-top: 20px; padding: 14px; font-size: 16px; }
+        .btn-danger { background: #ef4444; color: #fff; padding: 6px 10px; font-size: 12px; }
+        .emoji-grid { display: flex; gap: 6px; flex-wrap: row; margin-top: 6px; }
+        .emoji-btn { background: #2a2a2a; border: none; border-radius: 6px; width: 34px; height: 34px; font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .emoji-btn:hover { background: #3b82f6; }
+    </style>
+</head>
+<body>
+    <h2>Конструктор кнопок</h2>
+    <div id="editor-container"></div>
+    <button class="btn-primary" onclick="addRow()">+ Додати рядок</button>
+    <button class="btn-success" onclick="saveButtons()">Зберегти</button>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        let rows = [];
+        let emojisList = [];
+
+        // Вытаскиваем идентификатор из startapp
+        const urlParams = new URLSearchParams(window.location.search);
+        // Telegram передает startapp в параметре tgWebAppStartParam или через хэш/путь
+        let startAppParam = "";
+        if (window.location.pathname.startsWith("/api/")) {
+            // Если открыто напрямую в браузере для теста
+        } else {
+            // Пытаемся извлечь из initData или параметров
+            startAppParam = tg.initDataUnsafe?.start_param || window.location.pathname.replace("/", "");
+        }
+        
+        // Запасной вариант парсинга из пути
+        if (!startAppParam || startAppParam === "") {
+            const segs = window.location.pathname.split("/");
+            startAppParam = segs[segs.length - 1];
+        }
+
+        fetch('/api/emojis')
+            .then(res => res.json())
+            .then(data => { emojisList = data; loadButtons(); });
+
+        function loadButtons() {
+            if (!startAppParam) return;
+            fetch('/api/buttons/' + startAppParam)
+                .then(res => res.json())
+                .then(data => {
+                    rows = data.buttons || [];
+                    render();
+                });
+        }
+
+        function render() {
+            const container = document.getElementById('editor-container');
+            container.innerHTML = '';
+            
+            rows.forEach((row, rIdx) => {
+                const rowDiv = document.createElement('div');
+                rowDiv.className = 'row-box';
+                rowDiv.innerHTML = `<div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:12px; color:#aaa;"><span>Рядок ${rIdx + 1}</span><button class="btn-danger" onclick="deleteRow(${rIdx})">Видалити рядок</button></div>`;
+                
+                row.forEach((btn, bIdx) => {
+                    const btnDiv = document.createElement('div');
+                    btnDiv.className = 'btn-item';
+                    btnDiv.innerHTML = `
+                        <div style="flex:1;">
+                            <div style="margin-bottom:6px; font-size:12px; color:#888;">Виберіть емодзи Premium:</div>
+                            <div class="emoji-grid" id="emojis-${rIdx}-${bIdx}"></div>
+                            <input type="text" placeholder="Назва кнопки" value="${escapeHtml(btn.text || '')}" id="text-${rIdx}-${bIdx}" style="margin-top:6px;">
+                            <input type="text" placeholder="Посилання (https://...)" value="${escapeHtml(btn.url || btn.popup || '')}" id="url-${rIdx}-${bIdx}" style="margin-top:6px;">
+                        </div>
+                        <button class="btn-danger" onclick="deleteBtn(${rIdx}, ${bIdx})" style="height:fit-content;">✕</button>
+                    `;
+                    rowDiv.appendChild(btnDiv);
+
+                    // Рендерим сетку иконок
+                    const grid = btnDiv.querySelector(`#emojis-${rIdx}-${bIdx}`);
+                    emojisList.forEach(em => {
+                        const eb = document.createElement('button');
+                        eb.className = 'emoji-btn';
+                        eb.innerText = em.symbol;
+                        eb.onclick = () => {
+                            const input = document.getElementById(`text-${rIdx}-${bIdx}`);
+                            input.value = em.symbol + " " + input.value.replace(/^[^\w\sа-яА-ЯіїєґІЇЄҐ]+/, "").trim();
+                        };
+                        grid.appendChild(eb);
+                    });
+                });
+
+                const addBtn = document.createElement('button');
+                addBtn.className = 'btn-primary';
+                addBtn.style = "background: #262626; font-size:12px; padding:6px; margin-top:4px;";
+                addBtn.innerText = "+ Додати кнопку в рядок";
+                addBtn.onclick = () => { row.push({text: "Кнопка", url: "https://t.me"}); render(); };
+                rowDiv.appendChild(addBtn);
+
+                container.appendChild(rowDiv);
+            });
+        }
+
+        function addRow() {
+            rows.push([{text: "Кнопка", url: "https://t.me"}]);
+            render();
+        }
+
+        function deleteRow(rIdx) {
+            rows.splice(rIdx, 1);
+            render();
+        }
+
+        function deleteBtn(rIdx, bIdx) {
+            rows[rIdx].splice(bIdx, 1);
+            if (rows[rIdx].length === 0) rows.splice(rIdx, 1);
+            render();
+        }
+
+        function saveButtons() {
+            // Считываем актуальные данные из полей ввода
+            rows.forEach((row, rIdx) => {
+                row.forEach((btn, bIdx) => {
+                    const txt = document.getElementById(`text-${rIdx}-${bIdx}`).value;
+                    const val = document.getElementById(`url-${rIdx}-${bIdx}`).value;
+                    btn.text = txt;
+                    if (val.startsWith("http")) {
+                        btn.url = val;
+                        delete btn.popup;
+                    } else {
+                        btn.popup = val;
+                        delete btn.url;
+                    }
+                });
+            });
+
+            fetch('/api/buttons/' + startAppParam, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ buttons: rows })
+            }).then(res => res.json()).then(data => {
+                if (data.status === 'ok') {
+                    tg.close();
+                } else {
+                    alert('Помилка збереження');
+                }
+            });
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+    </script>
+</body>
+</html>"""
