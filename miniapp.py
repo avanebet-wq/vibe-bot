@@ -51,19 +51,26 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/emojis":
+            # Самые популярные и ходовые иконки для кнопок
             emojis_data = [
-                {"id": "lightning", "symbol": "⚡️", "name": "Молния"},
-                {"id": "pin", "symbol": "📌", "name": "Пин"},
-                {"id": "money", "symbol": "💸", "name": "Деньги"},
-                {"id": "heart", "symbol": "❤️‍🔥", "name": "Сердце"},
-                {"id": "note", "symbol": "📝", "name": "Заметка"},
                 {"id": "fire", "symbol": "🔥", "name": "Огонь"},
-                {"id": "question", "symbol": "⁉️", "name": "Вопрос"},
+                {"id": "lightning", "symbol": "⚡️", "name": "Молния"},
                 {"id": "star", "symbol": "⭐", "name": "Звезда"},
                 {"id": "rocket", "symbol": "🚀", "name": "Ракета"},
-                {"id": "gem", "symbol": "💎", "name": "Алмаз"},
+                {"id": "gem", "symbol": "💎", "name": "Кристалл"},
+                {"id": "heart", "symbol": "❤️‍🔥", "name": "Сердце"},
+                {"id": "money", "symbol": "💸", "name": "Деньги"},
+                {"id": "pin", "symbol": "📌", "name": "Пин"},
+                {"id": "check", "symbol": "✅", "name": "Галочка"},
                 {"id": "bell", "symbol": "🔔", "name": "Колокольчик"},
-                {"id": "chat", "symbol": "💬", "name": "Чат"}
+                {"id": "chat", "symbol": "💬", "name": "Чат"},
+                {"id": "link", "symbol": "🔗", "name": "Ссылка"},
+                {"id": "gift", "symbol": "🎁", "name": "Подарок"},
+                {"id": "trophy", "symbol": "🏆", "name": "Кубок"},
+                {"id": "target", "symbol": "🎯", "name": "Цель"},
+                {"id": "bulb", "symbol": "💡", "name": "Идея"},
+                {"id": "note", "symbol": "📝", "name": "Заметка"},
+                {"id": "question", "symbol": "⁉️", "name": "Вопрос"}
             ]
             return self._json(200, emojis_data)
 
