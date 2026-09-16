@@ -38,6 +38,7 @@ def root_kb(gid):
     return _kb([
         [_btn("👅 Настройки Лизы", "settings_liza", gid)],
         [_btn("⚙️ Настройки чата", "settings_chat", gid)],
+        [_btn("🎯 Настройки игры", "settings_game", gid)],
         [_btn("✅ Закрыть", "close", gid)],
     ])
 

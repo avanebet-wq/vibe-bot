@@ -1135,6 +1135,29 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id)
         return _show(chat_id, message_id, "settings_chat", gid)
 
+    if action == "settings_game":
+        # Открываем существующее меню игры «Слова» прямо из общего меню
+        # настроек. Никакой отдельной команды для входа в игровой раздел
+        # пользователю не требуется.
+        try:
+            import word_settings
+            selected = word_settings._ensure_selected(gid)
+            if selected:
+                text = word_settings.settings_text(gid, selected)
+                kb = word_settings.settings_kb(gid, selected)
+            else:
+                text, kb = word_settings._choose_text(gid)
+            bot.answer_callback_query(call.id)
+            return bot.edit_message_text(
+                text, chat_id=chat_id, message_id=message_id,
+                reply_markup=kb, parse_mode="HTML"
+            )
+        except Exception as e:
+            log.error("[settings game] %s", e, exc_info=True)
+            return bot.answer_callback_query(
+                call.id, "⚠️ Не удалось открыть настройки игры.", show_alert=True
+            )
+
     if action == "liza":
         bot.answer_callback_query(call.id); return _show(chat_id, message_id, "liza", gid)
 
