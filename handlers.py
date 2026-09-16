@@ -876,6 +876,15 @@ def text_handler(message):
         # Ожидаемый ввод настроек обрабатываем только если это НЕ команда.
         if contest_settings_pending(message):
             return
+        # Настройки игры «Слова» должны перехватывать ожидаемый ввод
+        # ДО обычного обработчика настроек и, главное, ДО AI.
+        # Состояния игры имеют вид word_text/word_photo/word_start/...
+        # и общий try_handle_pending_input() их намеренно не обрабатывает.
+        try:
+            if word_settings.handle_pending(message):
+                return
+        except Exception:
+            log.exception("[word settings pending] failed")
         if try_handle_pending_input(message):
             return
 
