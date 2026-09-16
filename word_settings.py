@@ -59,7 +59,8 @@ def settings_text(gid, pid):
     cfg = _cfg(gid, pid)
     interval_txt, start_txt, prizes_txt = _cfg_label(cfg)
     text_status = "задан" if post.get("text") else "не задан"
-    photo_status = "задано" if post.get("media", {}).get("type") == "photo" else "не задано"
+    media = post.get("media") or {}
+    photo_status = "задано" if media.get("type") == "photo" else "не задано"
     delete_txt = "включено ✅" if cfg.get("delete_last", True) else "выключено ❌"
     reward = cfg.get("reward_username") or "не задан"
     return (
