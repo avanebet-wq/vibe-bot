@@ -11,6 +11,8 @@ from profile import cmd_profile, touch_user
 from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, give_negative_karma, auto_delta
 from relationships import create_request_command, end_relationship, set_main, remove_main, show_relationship, actions_dm, execute_action
 from contest_settings import open_settings as contest_settings_open, handle_pending as contest_settings_pending
+import word_settings
+from word_game import cmd_register as word_game_register, stop as word_game_stop
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
@@ -203,9 +205,13 @@ _COMPOUND_COMMANDS = [
     ("моя статистика", lambda m, a: cmd_stats(m, "моя")),
     ("статистика пользователя", lambda m, a: cmd_stats(m, "пользователь " + a)),
     ("настройки розыгрыша", lambda m, a: contest_settings_open(m)),
+    ("настройки слова", lambda m, a: word_settings.open_from_group(m, a)),
+    ("настрйоки слова", lambda m, a: word_settings.open_from_group(m, a)),
+    ("стоп игру", lambda m, a: word_game_stop(m)),
     ("стоп запись", lambda m, a: contest_stop(m)),
     ("добавить", lambda m, a: contest_add_participant(m, a)),
     ("записать", lambda m, a: contest_add_participant(m, a)),
+    ("запись слова", lambda m, a: word_game_register(m, a)),
     ("очистить память", lambda m, a: _cmd_clear_memory(m)),
     ("закрыть цель", lambda m, a: _cmd_goal_done(m, a)),
     ("удалить цель", lambda m, a: _cmd_goal_delete(m, a)),
@@ -712,6 +718,14 @@ def on_start(message):
                 gid = None
             if gid is not None:
                 return open_settings_in_dm(message.from_user.id, gid)
+        if payload.startswith("wordcfg-"):
+            gid_str = payload[len("wordcfg-"):].split("-", 1)[0]
+            try:
+                gid = int(gid_str)
+            except ValueError:
+                gid = None
+            if gid is not None:
+                return word_settings.open_settings_in_dm(message.from_user.id, gid)
 
         if send_dm_start_group_picker(message.chat.id, message.from_user.id):
             return

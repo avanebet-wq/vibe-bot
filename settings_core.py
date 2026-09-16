@@ -1400,6 +1400,18 @@ def _dispatch_callback(call):
         store.set_pending(chat_id, call.from_user.id, {"kind": "media", "gid": gid, "pid": pid})
         return
 
+    if action == "wordgame":
+        pid = rest[0] if rest else ""
+        if not store.get_post(gid, pid):
+            return bot.answer_callback_query(call.id, "⚠️ Публикация не найдена.", show_alert=True)
+        try:
+            import word_settings
+            word_settings.open_settings_in_dm(call.from_user.id, gid, pid)
+            bot.answer_callback_query(call.id, "🎯 Настройки игры отправлены в ЛС.")
+        except Exception:
+            bot.answer_callback_query(call.id, "📩 Сначала откройте ЛС с Лизой и попробуйте ещё раз.", show_alert=True)
+        return
+
     if action == "pbtn":
         pid = rest[0]
         post = store.get_post(gid, pid)
