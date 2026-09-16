@@ -8,6 +8,10 @@ import random
 import threading
 import time
 from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 from telebot import types
 
@@ -166,16 +170,24 @@ def _refresh_registration(gid, session):
 
 
 def _schedule_start_timestamp(raw):
+    """Convert configured HH:MM to a Kyiv-local timestamp.
+
+    Railway containers commonly run in UTC, while the admin configures the
+    game using local Ukrainian time. Using the container timezone caused a
+    scheduled 15:55 game to be interpreted as 15:55 UTC.
+    """
     if not raw:
         return time.time()
     try:
         hh, mm = map(int, raw.split(":"))
-        now = datetime.now().astimezone()
+        tz = ZoneInfo("Europe/Kyiv") if ZoneInfo else datetime.now().astimezone().tzinfo
+        now = datetime.now(tz)
         dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if dt <= now:
             dt += timedelta(days=1)
         return dt.timestamp()
     except Exception:
+        LOG.exception("invalid word game start_time: %r", raw)
         return time.time()
 
 
@@ -550,13 +562,13 @@ def _callback_router(call):
         except Exception: pass
 
 
-@bot.message_handler(content_types=["text"], func=lambda m: is_active(m.chat.id) and getattr(m.chat, "type", "") in ("group", "supergroup"))
+@bot.message_handler(content_types=["text"], func=lambda m: bool(_get(m.chat.id) and _get(m.chat.id).get("phase") == "playing") and getattr(m.chat, "type", "") in ("group", "supergroup"))
 def _active_text_router(message):
     return handle_text(message)
 
 
 @bot.message_handler(content_types=[
     "photo", "video", "animation", "document", "voice", "audio", "sticker", "video_note"
-], func=lambda m: is_active(m.chat.id) and getattr(m.chat, "type", "") in ("group", "supergroup"))
+], func=lambda m: bool(_get(m.chat.id) and _get(m.chat.id).get("phase") == "playing") and getattr(m.chat, "type", "") in ("group", "supergroup"))
 def _active_media_router(message):
     return handle_media(message)
