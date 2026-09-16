@@ -369,22 +369,40 @@ def has_pending(message):
         return False
 
 
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("wgs|"))
 def _callback_router(call):
+    """Маршрутизатор callback-кнопок меню «Настройки слова»."""
     try:
-        handle_callback(call)
+        handled = handle_callback(call)
+        if handled is False:
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
     except Exception:
         import logging
         logging.getLogger("word_settings").exception("word settings callback failed")
-        try: bot.answer_callback_query(call.id, "⚠️ Ошибка настройки.", show_alert=True)
-        except Exception: pass
+        try:
+            bot.answer_callback_query(call.id, "⚠️ Ошибка настройки. Попробуйте ещё раз.", show_alert=True)
+        except Exception:
+            pass
 
 
-@bot.message_handler(content_types=["text"], func=has_pending)
 def _pending_text_router(message):
     return handle_pending(message)
 
 
-@bot.message_handler(content_types=["photo"], func=has_pending)
 def _pending_photo_router(message):
     return handle_pending(message)
+
+
+def register_handlers():
+    """Зарегистрировать обработчики после загрузки всех модулей проекта."""
+    if getattr(bot, "_liza_word_settings_handlers_registered", False):
+        return
+    bot.register_callback_query_handler(
+        _callback_router,
+        func=lambda c: bool(c.data and c.data.startswith("wgs|")),
+    )
+    bot.register_message_handler(_pending_text_router, content_types=["text"], func=has_pending)
+    bot.register_message_handler(_pending_photo_router, content_types=["photo"], func=has_pending)
+    bot._liza_word_settings_handlers_registered = True

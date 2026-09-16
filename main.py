@@ -2,7 +2,7 @@
 """Лиза — production entry point."""
 import time, logging, os
 from runtime import bot
-import handlers, settings
+import handlers, settings, word_settings
 from moderation import start_moderation_scheduler
 from reliability import safe_loop, mark_ok, mark_error, stop, stopped
 from db_schema import ensure_schema
@@ -17,6 +17,8 @@ def _goal_tick():
     return None
 
 if __name__ == "__main__":
+    # Явно регистрируем обработчики игры после импорта всех модулей.
+    word_settings.register_handlers()
     ensure_schema(); ensure_minigame_schema(); ensure_profile_schema(); start_miniapp_server(); settings.start_scheduler(); start_moderation_scheduler(); install(bot)
     try: bot.remove_webhook()
     except Exception: logging.exception("[REMOVE WEBHOOK]")
