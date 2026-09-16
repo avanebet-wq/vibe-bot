@@ -35,8 +35,7 @@ def _save(store):
     db_set("moderation", store)
 
 
-def _chat_bucket(cid):
-    store = _store()
+def _chat_bucket_from_store(store, cid):
     bucket = store.setdefault(str(cid), {})
     bucket.setdefault("bans", {})
     bucket.setdefault("mutes", {})
@@ -47,6 +46,10 @@ def _chat_bucket(cid):
     for key, value in _DEFAULTS.items():
         cfg.setdefault(key, value)
     return bucket
+
+
+def _chat_bucket(cid):
+    return _chat_bucket_from_store(_store(), cid)
 
 
 
@@ -221,6 +224,196 @@ def cmd_banlist(message):
 
 
 # ---------------------------------------------------------------- МУТ ----
+
+
+_CHAT_PERMISSION_FIELDS = (
+    "can_send_messages",
+    "can_send_audios",
+    "can_send_documents",
+    "can_send_photos",
+    "can_send_videos",
+    "can_send_video_notes",
+    "can_send_voice_notes",
+    "can_send_polls",
+    "can_send_other_messages",
+    "can_add_web_page_previews",
+    "can_change_info",
+    "can_invite_users",
+    "can_pin_messages",
+    "can_manage_topics",
+)
+
+
+def _permissions_to_dict(permissions):
+    """Serialize Telegram ChatPermissions without storing a TeleBot object."""
+    if permissions is None:
+        return {}
+    try:
+        data = permissions.to_dict()
+    except Exception:
+        data = {}
+        for field in _CHAT_PERMISSION_FIELDS:
+            value = getattr(permissions, field, None)
+            if value is not None:
+                data[field] = bool(value)
+    return {
+        field: bool(data[field])
+        for field in _CHAT_PERMISSION_FIELDS
+        if field in data and data[field] is not None
+    }
+
+
+def _chat_lock_permissions(current_permissions):
+    """Disable sending while preserving unrelated default chat permissions."""
+    kwargs = {
+        field: bool(current_permissions[field])
+        for field in ("can_change_info", "can_invite_users", "can_pin_messages", "can_manage_topics")
+        if field in current_permissions
+    }
+    kwargs.update({
+        "can_send_messages": False,
+        "can_send_audios": False,
+        "can_send_documents": False,
+        "can_send_photos": False,
+        "can_send_videos": False,
+        "can_send_video_notes": False,
+        "can_send_voice_notes": False,
+        "can_send_polls": False,
+        "can_send_other_messages": False,
+        "can_add_web_page_previews": False,
+    })
+    return ChatPermissions(**kwargs)
+
+
+def _restore_chat_permissions(cid, permissions_data):
+    """Restore previously saved default permissions."""
+    kwargs = {
+        field: bool(permissions_data[field])
+        for field in _CHAT_PERMISSION_FIELDS
+        if field in permissions_data
+    }
+    # A chat returned by Telegram may omit some optional fields. Omitting them
+    # here keeps the restoration compatible with Telegram's current defaults.
+    return bot.set_chat_permissions(
+        cid,
+        permissions=ChatPermissions(**kwargs),
+        use_independent_chat_permissions=True,
+    )
+
+
+def cmd_chat_off(message, args_text=""):
+    """Temporarily prohibit ordinary members from sending messages in the chat."""
+    cid = message.chat.id
+    if message.chat.type not in ("group", "supergroup"):
+        return bot.reply_to(message, "⚠️ Эта команда работает только в группе или супергруппе.")
+    if not is_chat_admin(cid, message.from_user.id):
+        return _admin_only_reply(message)
+
+    store = _store()
+    bucket = _chat_bucket_from_store(store, cid)
+    config = bucket.setdefault("config", {})
+    if config.get("chat_locked"):
+        return bot.reply_to(message, "🔒 Чат уже закрыт для сообщений участников.")
+
+    try:
+        chat = bot.get_chat(cid)
+        current_permissions = _permissions_to_dict(getattr(chat, "permissions", None))
+        if not current_permissions:
+            # Telegram normally returns permissions here. If it does not,
+            # use the standard writable defaults so +чат can still recover.
+            current_permissions = {
+                "can_send_messages": True,
+                "can_send_audios": True,
+                "can_send_documents": True,
+                "can_send_photos": True,
+                "can_send_videos": True,
+                "can_send_video_notes": True,
+                "can_send_voice_notes": True,
+                "can_send_polls": True,
+                "can_send_other_messages": True,
+                "can_add_web_page_previews": True,
+            }
+
+        bot.set_chat_permissions(
+            cid,
+            permissions=_chat_lock_permissions(current_permissions),
+            use_independent_chat_permissions=True,
+        )
+    except Exception as e:
+        logging.error("[chat off] %s", e, exc_info=True)
+        return bot.reply_to(
+            message,
+            "⚠️ Не получилось закрыть чат.\n"
+            "Проверь, что Лиза — администратор и у неё есть право "
+            "управлять разрешениями участников.",
+        )
+
+    config["chat_locked"] = True
+    config["chat_permissions_before_lock"] = current_permissions
+    _save(store)
+    _log_action(cid, "chat_lock", actor_id=message.from_user.id)
+    bot.reply_to(
+        message,
+        "🔒 <b>Чат закрыт.</b>\n"
+        "Обычные участники больше не могут отправлять сообщения.\n"
+        "Администраторы по-прежнему могут писать.",
+    )
+
+
+def cmd_chat_on(message, args_text=""):
+    """Restore ordinary members' default chat permissions."""
+    cid = message.chat.id
+    if message.chat.type not in ("group", "supergroup"):
+        return bot.reply_to(message, "⚠️ Эта команда работает только в группе или супергруппе.")
+    if not is_chat_admin(cid, message.from_user.id):
+        return _admin_only_reply(message)
+
+    store = _store()
+    bucket = _chat_bucket_from_store(store, cid)
+    config = bucket.setdefault("config", {})
+    if not config.get("chat_locked"):
+        return bot.reply_to(message, "🔓 Чат уже открыт для сообщений участников.")
+
+    permissions_data = config.get("chat_permissions_before_lock") or {}
+    try:
+        if permissions_data:
+            _restore_chat_permissions(cid, permissions_data)
+        else:
+            bot.set_chat_permissions(
+                cid,
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_audios=True,
+                    can_send_documents=True,
+                    can_send_photos=True,
+                    can_send_videos=True,
+                    can_send_video_notes=True,
+                    can_send_voice_notes=True,
+                    can_send_polls=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                ),
+                use_independent_chat_permissions=True,
+            )
+    except Exception as e:
+        logging.error("[chat on] %s", e, exc_info=True)
+        return bot.reply_to(
+            message,
+            "⚠️ Не получилось открыть чат.\n"
+            "Проверь, что Лиза — администратор и у неё есть право "
+            "управлять разрешениями участников.",
+        )
+
+    config["chat_locked"] = False
+    config.pop("chat_permissions_before_lock", None)
+    _save(store)
+    _log_action(cid, "chat_unlock", actor_id=message.from_user.id)
+    bot.reply_to(
+        message,
+        "🔓 <b>Чат снова открыт.</b>\n"
+        "Участники снова могут отправлять сообщения.",
+    )
+
 
 def cmd_mute(message, args_text):
     cid = message.chat.id
@@ -514,6 +707,7 @@ for _name in (
     "cmd_warn", "cmd_unwarn", "cmd_set_warn_limit",
     "cmd_set_warn_action", "cmd_set_warn_mute_duration",
     "cmd_set_auto_delete", "cmd_set_protect_admins",
+    "cmd_chat_off", "cmd_chat_on",
 ):
     _fn = globals().get(_name)
     if _fn is not None and not getattr(_fn, "_liza_locked", False):

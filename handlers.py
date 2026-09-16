@@ -41,6 +41,7 @@ from moderation import (
     cmd_warn, cmd_unwarn, cmd_mywarns, cmd_warns_of,
     cmd_moderation_settings, cmd_set_warn_limit, cmd_set_warn_action,
     cmd_set_warn_mute_duration, cmd_set_auto_delete, cmd_set_protect_admins, cmd_modlog,
+    cmd_chat_off, cmd_chat_on,
 )
 from stats import cmd_stats, record_message, record_command, record_liza_request, record_liza_response
 from stories import cmd_tell_story, cmd_stories_on, cmd_stories_off, maybe_autotell
@@ -267,6 +268,8 @@ _SINGLE_COMMANDS = {
     "заварить": lambda m, a: cmd_coffee(m),
     "выпить": lambda m, a: cmd_drink(m),
     "профиль": lambda m, a: cmd_profile(m),
+    "-чат": cmd_chat_off,
+    "+чат": cmd_chat_on,
     "стата": lambda m, a: cmd_minigame_stats(m, a),
     "топ": lambda m, a: cmd_minigame_stats(m, a),
     "калл": lambda m, a: _cmd_call(m, a),
@@ -592,6 +595,12 @@ def _dispatch(message, cmd_text):
     low = text.lower()
     if not low:
         return False
+
+    # Разрешаем оба варианта: "-чат"/"+чат" и "- чат"/"+ чат".
+    chat_toggle = re.fullmatch(r"([+-])\s*чат", low)
+    if chat_toggle:
+        low = chat_toggle.group(1) + "чат"
+        text = low
 
     for phrase, handler in _COMPOUND_COMMANDS:
         if low == phrase or low.startswith(phrase + " "):
