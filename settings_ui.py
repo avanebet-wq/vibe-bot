@@ -38,7 +38,6 @@ def root_kb(gid):
     return _kb([
         [_btn("👅 Настройки Лизы", "settings_liza", gid)],
         [_btn("⚙️ Настройки чата", "settings_chat", gid)],
-        [_btn("🎯 Настройки игры", "settings_game", gid)],
         [_btn("✅ Закрыть", "close", gid)],
     ])
 
@@ -371,7 +370,6 @@ def post_edit_kb(gid, pid):
     rows = [
         [_btn("✍️ Настроить сообщение", "ptxt", gid, pid), _btn("📸 Медиа", "pmedia", gid, pid)],
         [_btn("🔠 URL-кнопки", "pbtn", gid, pid)],
-        [_btn("🎯 Игра «Слова»", "wordgame", gid, pid)],
         [_btn("🕓 Время", "ptime", gid, pid), _btn("🔁 Повторение", "prep", gid, pid)],
         [_btn("🗓️ Дни недели", "pwd", gid, pid), _btn("📆 Дни месяца", "pmd", gid, pid)],
         [_btn("⏱️ Установить время", "pauto", gid, pid)],

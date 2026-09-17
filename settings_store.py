@@ -30,7 +30,6 @@ def _default_settings():
     return {
         "captcha": {"enabled": False},
         "posts": {},          # id(str) -> post dict
-        "word_game_post_id": None,  # выбранная публикация для игры «Слова»
         "deletion": {
             "silence": False,
             "system": {key: False for key, _ in SYSTEM_MESSAGE_TYPES},
@@ -69,18 +68,6 @@ def _default_post():
         "last_message_id": None,
         "last_chat_id": None,
         "next_run": None,
-        # Настройки игры «Слова» для этой конкретной публикации.
-        "word_game": {
-            "interval_seconds": 3600,
-            "delete_last": True,
-            "start_time": None,
-            "answer_time_minutes": 1,
-            "prize_places": 3,
-            "prizes": ["350₴", "300₴", "250₴"],
-            "max_participants": 10,
-            "total_words": 20,
-            "reward_username": None,
-        },
     }
 
 
@@ -183,42 +170,6 @@ def get_posts(gid):
 
 def get_post(gid, pid):
     return get_all_settings(gid)["posts"].get(str(pid))
-
-
-def get_word_game_post_id(gid):
-    return get_all_settings(gid).get("word_game_post_id")
-
-
-def set_word_game_post_id(gid, pid):
-    with _lock:
-        chat = get_all_settings(gid)
-        chat["word_game_post_id"] = str(pid) if pid is not None else None
-        save_all_settings(gid, chat)
-        return chat["word_game_post_id"]
-
-
-def get_word_game_config(gid, pid):
-    post = get_post(gid, pid)
-    if not post:
-        return None
-    defaults = _default_post()["word_game"]
-    cfg = dict(defaults)
-    cfg.update(post.get("word_game") or {})
-    return cfg
-
-
-def update_word_game_config(gid, pid, **fields):
-    with _lock:
-        chat = get_all_settings(gid)
-        post = chat["posts"].get(str(pid))
-        if post is None:
-            return None
-        cfg = dict(_default_post()["word_game"])
-        cfg.update(post.get("word_game") or {})
-        cfg.update(fields)
-        post["word_game"] = cfg
-        save_all_settings(gid, chat)
-        return dict(cfg)
 
 
 def add_post(gid):
