@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Модуль мгновенного распознавания речи и видеокружков через Groq Whisper с умной коррекцией."""
+"""Модуль мгновенного распознавания речи и видеокружков через Groq Whisper Large v3."""
 import html
 import logging
 import threading
@@ -7,7 +7,7 @@ import re
 import requests
 
 from runtime import bot, WAKE_RE
-from config import GROQ_KEYS, GROQ_KEY, GROQ_AI_MODEL
+from config import GROQ_KEYS, GROQ_KEY
 
 LOG = logging.getLogger("transcriber")
 
@@ -15,13 +15,13 @@ _keys = [k.strip() for k in (GROQ_KEYS or GROQ_KEY.split(",")) if k.strip()]
 _key_idx = 0
 _key_lock = threading.Lock()
 
-# Модель для пост-коррекции текста. Синхронизирована с основной моделью бота (config.GROQ_AI_MODEL),
-# т.к. llama3-8b-8192 давно устарела и снята с поддержки Groq.
-CLEAN_MODEL = GROQ_AI_MODEL or "openai/gpt-oss-20b"
+# Только полная модель — она заметно точнее на суржике/смешанной ру-укр речи, чем turbo.
+# Никакого текстового корректора после неё: модель должна понимать речь сама, без "причёсывания".
+MODEL = "whisper-large-v3"
 
-# Пороги отсева галлюцинаций — это те же эвристики, что использует референсный
+# Пороги отсева галлюцинаций — те же эвристики, что использует референсный
 # декодер OpenAI Whisper (no_speech_threshold / logprob_threshold / compression_ratio_threshold),
-# просто применённые вручную к сегментам, которые отдаёт Groq в verbose_json.
+# применённые к сегментам, которые Groq отдаёт в verbose_json.
 NO_SPEECH_THRESHOLD = 0.6
 LOGPROB_THRESHOLD = -1.0
 COMPRESSION_RATIO_THRESHOLD = 2.4
@@ -42,6 +42,15 @@ _HALLUCINATION_PATTERNS = [
     r"спасибо\s+за\s+внимание",
 ]
 _HALLUCINATION_RE = re.compile("|".join(_HALLUCINATION_PATTERNS), re.IGNORECASE)
+
+# Подсказка модели: даём ей живые примеры суржика и смеси ру/укр лексики и имён собственных,
+# чтобы она с первого прохода правильно ловила переключение между языками внутри одной фразы.
+WHISPER_PROMPT = (
+    "Это обычное голосовое сообщение в Telegram от русскоязычного и украиноязычного собеседника. "
+    "Речь часто смешанная — суржик: русские и украинские слова в одной фразе. "
+    "Примеры: Привет, як справи? Та ні, всьо норм, дякую. Слухай, я щас зайнятий, давай пізніше созвонимся. "
+    "Ти шо, серйозно? Ну добре, домовились. Короче, я тобі зараз скину файл."
+)
 
 
 def _get_key():
@@ -95,99 +104,40 @@ def _filter_segments(payload: dict) -> str:
 
 
 def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str, force_lang: str = None) -> str | None:
-    """Отправляет аудиофайл в Groq Whisper API (Уши)."""
+    """Отправляет аудиофайл в Groq Whisper Large v3."""
     if not _keys:
         LOG.error("[transcriber] Нет доступных ключей GROQ_API_KEY")
         return None
 
-    # v3 — точность в приоритете (ниже WER на суржике/смешанной речи), turbo — быстрый фолбэк.
-    # Groq на своём железе (LPU) отдаёт оба варианта кратно быстрее длительности самой записи,
-    # поэтому для коротких кружков/войсов разница в задержке между ними некритична,
-    # а вот разница в качестве на суржике — заметна.
-    models = ("whisper-large-v3", "whisper-large-v3-turbo")
-
-    for model in models:
-        for _ in range(len(_keys)):
-            key = _get_key()
-            if not key:
-                return None
-            try:
-                files = {
-                    "file": (filename, audio_bytes, mime_type)
-                }
-                data = {
-                    "model": model,
-                    "response_format": "verbose_json",  # нужен для сегментов и метрик галлюцинаций
-                    "temperature": 0.0,
-                    "prompt": "Это обычное голосовое сообщение в Telegram. Русская и украинская речь, суржик. Привет, як справи? Ага, хорошо, дякую. Давай.",
-                }
-                if force_lang:
-                    data["language"] = force_lang
-
-                resp = requests.post(
-                    "https://api.groq.com/openai/v1/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {key}"},
-                    files=files,
-                    data=data,
-                    timeout=(5, 30),
-                )
-                if resp.status_code == 200:
-                    payload = resp.json()
-                    text = _filter_segments(payload)
-                    text = _collapse_repetitions(text)
-                    return text.strip()
-                elif resp.status_code in (401, 429, 503):
-                    _switch_key()
-                    continue
-                else:
-                    break
-            except Exception:
-                _switch_key()
-    return None
-
-
-def clean_transcription_with_llm(raw_text: str) -> str:
-    """Отправляет кривую расшифровку в текстовый ИИ для умной коррекции (Мозг)."""
-    if not _keys or len(raw_text) < 5:
-        return raw_text
-
     for _ in range(len(_keys)):
         key = _get_key()
         if not key:
-            return raw_text
+            return None
         try:
+            files = {
+                "file": (filename, audio_bytes, mime_type)
+            }
+            data = {
+                "model": MODEL,
+                "response_format": "verbose_json",  # нужен для сегментов и метрик галлюцинаций
+                "temperature": 0.0,
+                "prompt": WHISPER_PROMPT,
+            }
+            if force_lang:
+                data["language"] = force_lang
+
             resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": CLEAN_MODEL,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Ты корректор. Твоя задача — исправить кривой текст после распознавания голоса нейросетью. "
-                                "Язык говорящего: смесь русского, украинского и суржика. "
-                                "Ориентируйся на логику. Убери галлюцинации (повторяющиеся слова, бессмысленные обрывки, случайные иностранные слова, "
-                                "а также любые остатки шаблонных фраз в духе «подписывайтесь на канал», «ставьте лайк», «редактор субтитров» — "
-                                "это артефакты обучения модели на видео, а не реальная речь говорящего). "
-                                "Исправь опечатки и расставь правильную пунктуацию. Сохрани оригинальный смысл, лексику и тон говорящего, "
-                                "не дописывай то, чего не было. "
-                                "Отвечай ТОЛЬКО исправленным текстом, никаких вводных слов, пояснений и кавычек."
-                            )
-                        },
-                        {"role": "user", "content": raw_text}
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 1024
-                },
-                timeout=8,
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {key}"},
+                files=files,
+                data=data,
+                timeout=(5, 30),
             )
             if resp.status_code == 200:
-                cleaned = resp.json()["choices"][0]["message"]["content"].strip()
-                return cleaned if cleaned else raw_text
+                payload = resp.json()
+                text = _filter_segments(payload)
+                text = _collapse_repetitions(text)
+                return text.strip()
             elif resp.status_code in (401, 429, 503):
                 _switch_key()
                 continue
@@ -195,7 +145,7 @@ def clean_transcription_with_llm(raw_text: str) -> str:
                 break
         except Exception:
             _switch_key()
-    return raw_text
+    return None
 
 
 def handle_transcription(message):
@@ -232,23 +182,19 @@ def _process_audio_async(message, is_video_note: bool):
         filename = "circle.mp4" if is_video_note else "voice.ogg"
         mime_type = "video/mp4" if is_video_note else "audio/ogg"
 
-        # ШАГ 1: Распознаем звук (Уши)
+        # Распознаём звук — без второго прохода через текстовый корректор.
         recognized_text = transcribe_audio_bytes(audio_bytes, filename, mime_type)
         if not recognized_text or len(recognized_text.strip()) < 2:
             return
 
-        # Проверка на полное отсутствие кириллицы (жесткая галлюцинация)
+        # Проверка на полное отсутствие кириллицы (жесткая галлюцинация: модель услышала
+        # не ру/укр речь и уехала в другой язык/алфавит) — форсируем язык и пробуем ещё раз.
         has_cyrillic = bool(re.search(r'[а-яА-ЯёЁіІїЇєЄґҐ]', recognized_text))
         if not has_cyrillic:
             LOG.warning("[transcriber] Фолбек на укр язык.")
             recognized_text = transcribe_audio_bytes(audio_bytes, filename, mime_type, force_lang="uk")
             if not recognized_text or not bool(re.search(r'[а-яА-ЯёЁіІїЇєЄґҐ]', recognized_text)):
                 return
-
-        # ШАГ 2: Чистим и правим логику через ИИ (Мозг)
-        cleaned_text = clean_transcription_with_llm(recognized_text)
-        if cleaned_text:
-            recognized_text = cleaned_text
 
         safe_text = recognized_text.strip()[:3800]
         escaped = html.escape(safe_text)
