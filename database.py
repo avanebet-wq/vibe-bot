@@ -250,8 +250,7 @@ _cache = {}
 _scoped_cache = {}
 _CACHE_TTL = 2.0
 _NO_CACHE_KEYS = {
-    "stats", "moderation", "contest_sessions", "contest_configs",
-    "contest_settings_pending", "group_settings", "known_groups",
+    "stats", "moderation", "group_settings", "known_groups",
     "goals",
 }
 

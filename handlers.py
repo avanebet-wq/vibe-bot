@@ -5,12 +5,10 @@ from events import emit as emit_event
 from mood_state import on_message as update_mood, on_event as update_mood_event
 from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_user_memory
 from social_context import observe as observe_social
-from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
 from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats, cmd_reset as cmd_reset_minigames
 from profile import cmd_profile, touch_user
 from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, give_negative_karma, auto_delta
 from relationships import create_request_command, end_relationship, set_main, remove_main, show_relationship, actions_dm, execute_action
-from contest_settings import open_settings as contest_settings_open, handle_pending as contest_settings_pending
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
 from chat_personality import get as get_chat_personality, set_value as set_chat_personality
@@ -203,10 +201,6 @@ _COMPOUND_COMMANDS = [
     ("мут за варны", cmd_set_warn_mute_duration),
     ("моя статистика", lambda m, a: cmd_stats(m, "моя")),
     ("статистика пользователя", lambda m, a: cmd_stats(m, "пользователь " + a)),
-    ("настройки розыгрыша", lambda m, a: contest_settings_open(m)),
-    ("стоп запись", lambda m, a: contest_stop(m)),
-    ("добавить", lambda m, a: contest_add_participant(m, a)),
-    ("записать", lambda m, a: contest_add_participant(m, a)),
     ("очистить память", lambda m, a: _cmd_clear_memory(m)),
     ("закрыть цель", lambda m, a: _cmd_goal_done(m, a)),
     ("удалить цель", lambda m, a: _cmd_goal_delete(m, a)),
@@ -257,7 +251,6 @@ _SINGLE_COMMANDS = {
     "цель": lambda m, a: _cmd_goal(m, a),
     "цели": lambda m, a: _cmd_goals(m),
     "характер": lambda m, a: _cmd_personality(m, a),
-    "запись": lambda m, a: contest_start(m, a),
     "пыхнуть": lambda m, a: cmd_smoke(m),
     "заварить": lambda m, a: cmd_coffee(m),
     "выпить": lambda m, a: cmd_drink(m),
@@ -854,28 +847,11 @@ def text_handler(message):
             return
 
         # УЛЬТРА-FAST PATH: известную команду маршрутизируем сразу.
-        # Она не должна ждать проверки конкурса, полной тишины, ожидания
+        # Она не должна ждать проверки полной тишины, ожидания
         # настроек, учёта сообщения, памяти и прочей аналитики.
         # Каждая административная команда сама проверяет права там, где это нужно.
         direct_command_text = text.strip()
         if _dispatch(message, direct_command_text):
-            return
-
-        # Во время активной записи обычный разговор блокируется, но
-        # прямое обращение «Лиза ...» остаётся рабочим AI-диалогом.
-        # Важно: проверка конкурса теперь выполняется ТОЛЬКО для текста,
-        # который не оказался известной командой.
-        if is_group and contest_is_active(cid):
-            active_wake = WAKE_RE.match(text)
-            if active_wake:
-                active_text = active_wake.group(1).strip().rstrip("?!. ")
-                record_liza_request(cid, getattr(message.from_user, "id", None))
-                _enqueue_ai_reply(
-                    message, active_text, angry=is_angry(cid), chat_id=cid,
-                    user_id=getattr(message.from_user, "id", None),
-                    group_context=_liza_ai_context(message), user_context=_ai_user_context(message),
-                    is_group=is_group, user_name=display_name,
-                )
             return
 
         # Обычные сообщения могут быть удалены «Полной тишиной».
@@ -884,8 +860,6 @@ def text_handler(message):
             return
 
         # Ожидаемый ввод настроек обрабатываем только если это НЕ команда.
-        if contest_settings_pending(message):
-            return
         if try_handle_pending_input(message):
             return
 
