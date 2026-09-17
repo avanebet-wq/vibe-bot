@@ -58,3 +58,5 @@ def summary(chat_id,user_id=None):
     if user_id is None:
         return {"recent_speakers":recent_count,"interactions":interactions}
     return sorted(outgoing,key=lambda x:-x[1])[:5]
+
+# updated 2026-09-18

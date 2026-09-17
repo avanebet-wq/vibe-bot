@@ -31,3 +31,5 @@ def safe_loop(name, fn, interval=30):
                 mark_error(exc); mark_background(name, False, exc); logging.exception("[%s] background loop failed", name)
             _STOP.wait(interval)
     t=threading.Thread(target=run, daemon=True, name=name); t.start(); return t
+
+# updated 2026-09-18

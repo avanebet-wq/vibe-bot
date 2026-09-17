@@ -118,3 +118,5 @@ def cmd_profile(message):
     else: lines.append(f'📈 До следующего ранга: <b>{remaining} XP</b>')
     lines += ['', '🎮 <b>Статистика мини-игр</b>', f'🚬 Сиг скурено: <b>{cigs}</b>', f'☕ Чашек выпито: <b>{cups}</b>', f'🥤 Revo выпито: <b>{drinks}</b>', f'💧 Литров Revo: <b>{liters:.1f} л</b>', '', f'⏱ В чате: <b>{html.escape(fmt_duration(time.time()-since))}</b>', f'⚖️ Карма: <b>{get_karma(cid, uid):+d}</b>']
     bot.reply_to(message,'\n'.join(lines),parse_mode='HTML')
+
+# updated 2026-09-18

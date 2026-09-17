@@ -102,3 +102,5 @@ def should_auto_reply(chat_id, text, base_chance=0.05):
     digest = hashlib.sha256(f"{chat_id}:{text}:{int(now // 8)}".encode()).digest()
     bucket = int.from_bytes(digest[:4], "big") / 2**32
     return bucket < score
+
+# updated 2026-09-18

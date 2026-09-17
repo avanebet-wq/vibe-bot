@@ -212,3 +212,5 @@ def _process_audio_async(message, is_video_note: bool):
 
     except Exception as exc:
         LOG.exception("[transcriber] Ошибка при обработке аудио: %s", exc)
+
+# updated 2026-09-18

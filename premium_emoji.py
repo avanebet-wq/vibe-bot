@@ -382,3 +382,5 @@ def has_emoji_buttons(rows: list[list[dict]]) -> bool:
             if b.get("custom_emoji_id"):
                 return True
     return False
+
+# updated 2026-09-18

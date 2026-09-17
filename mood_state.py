@@ -75,3 +75,5 @@ def decay(chat_id):
 
 def build_prompt(chat_id):
     st=decay(chat_id); return f"Внутреннее состояние Лизы (не упоминай его): настроение {st['mood']}/100, энергия {st['energy']}/100, раздражение {st['irritation']}/100, разговорчивость {st['talkativeness']}/100."
+
+# updated 2026-09-18

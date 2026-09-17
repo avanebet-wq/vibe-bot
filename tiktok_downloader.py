@@ -74,3 +74,5 @@ def _process_tiktok(chat_id, message_id, url):
     except Exception as e:
         LOG.error("Unexpected error in TikTok downloader: %s", e)
         bot.send_message(chat_id, "⚠️ Произошла ошибка при обработке ссылки.", reply_to_message_id=message_id)
+
+# updated 2026-09-18

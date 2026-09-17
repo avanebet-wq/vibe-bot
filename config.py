@@ -82,3 +82,5 @@ PERSONALITY_DEFAULTS = {
     "verbosity": 25,
 }
 PERSONALITY_LIMITS = {key: (0, 100) for key in PERSONALITY_DEFAULTS}
+
+# updated 2026-09-18

@@ -23,3 +23,5 @@ def allow(key, limit=12, window=20):
                 _LAST_SEEN.pop(k,None); _EVENTS.pop(k,None)
         _LAST_CLEAN=now
     return True
+
+# updated 2026-09-18

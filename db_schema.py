@@ -45,3 +45,5 @@ def ensure_schema():
             conn.rollback()
             raise
     return SCHEMA_VERSION
+
+# updated 2026-09-18

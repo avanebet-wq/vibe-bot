@@ -75,3 +75,5 @@ def infer_safe_fact(text):
             if 2 <= len(value) <= 120:
                 return "Предпочтение: " + value
     return None
+
+# updated 2026-09-18

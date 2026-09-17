@@ -320,3 +320,5 @@ def clear_captcha_pending(gid, user_id):
 def is_captcha_pending(gid, user_id):
     with _captcha_lock:
         return (gid, user_id) in _captcha_pending
+
+# updated 2026-09-18

@@ -94,3 +94,5 @@ def cmd_angry_on(message):
 def cmd_calm_down(message):
     set_setting(message.chat.id, "angry_mode", False)
     bot.reply_to(message, "😌 Ладно, выдохнула. Успокоилась.")
+
+# updated 2026-09-18

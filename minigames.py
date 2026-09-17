@@ -618,3 +618,5 @@ def cmd_stats(message, args=""):
     except Exception:
         LOG.exception("minigame stats failed")
         bot.reply_to(message, "⚠️ Не удалось показать топ. Попробуй ещё раз через пару секунд.")
+
+# updated 2026-09-18

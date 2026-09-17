@@ -17,3 +17,5 @@ def dashboard(chat_id):
         "personality": get_personality(chat_id), "mood": get_mood(chat_id),
         "open_goals": len(list_goals(chat_id)), "moderation_config": _chat_bucket(chat_id).get("config",{}),
     }
+
+# updated 2026-09-18

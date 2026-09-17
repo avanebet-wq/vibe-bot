@@ -535,3 +535,5 @@ def deeplink_kb(bot_username, gid):
     kb = types.InlineKeyboardMarkup()
     kb.row(types.InlineKeyboardButton("✉️ Открыть личку с ботом", url=url))
     return kb
+
+# updated 2026-09-18

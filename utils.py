@@ -198,3 +198,5 @@ def is_protected(chat_id, user_id):
         return member.status == "creator"
     except Exception:
         return False
+
+# updated 2026-09-18

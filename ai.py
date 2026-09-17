@@ -449,3 +449,5 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
     # Не показываем пользователю техническую ошибку/фолбэк-текст.
     # Очередь может повторить запрос, а обработчик сам даст нейтральный ответ.
     return None
+
+# updated 2026-09-18

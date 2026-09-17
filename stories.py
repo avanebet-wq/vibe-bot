@@ -68,3 +68,5 @@ def maybe_autotell(message, chance):
         bot.send_message(message.chat.id, "📖 Кстати, вспомнила...\n\n" + random_story())
         return True
     return False
+
+# updated 2026-09-18

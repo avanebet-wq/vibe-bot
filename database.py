@@ -697,3 +697,5 @@ def db_close():
         _pool.closeall()
     except Exception:
         pass
+
+# updated 2026-09-18

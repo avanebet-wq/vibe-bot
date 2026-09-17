@@ -74,3 +74,5 @@ WAKE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 MENTION_PREFIXES = ("!", ".", "/")
+
+# updated 2026-09-18

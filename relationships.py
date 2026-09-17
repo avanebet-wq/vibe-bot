@@ -781,3 +781,5 @@ def relationship_callback(call):
             bot.answer_callback_query(call.id, "⚠️ Не удалось обработать действие.", show_alert=True)
         except Exception:
             pass
+
+# updated 2026-09-18

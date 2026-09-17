@@ -275,3 +275,5 @@ def _get_miniapp_html():
         log.exception("[MiniApp] Не удалось загрузить miniapp_index.html")
         return "<!doctype html><html lang='ru'><body>Ошибка загрузки конструктора.</body></html>"
 
+
+# updated 2026-09-18

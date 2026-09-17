@@ -326,3 +326,5 @@ def stats_callback(call):
         send_stats(call.message.chat.id, getattr(call.message.chat, "title", None) or "Чат", period)
     except Exception as e:
         logging.error(f"[stats_callback] {e}")
+
+# updated 2026-09-18

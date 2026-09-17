@@ -63,3 +63,5 @@ def format_for_ai(chat_id, limit=10):
             line += f' [ответ пользователю: {row["reply_to_user"]}]'
         result.append({"role": "user", "content": line})
     return result
+
+# updated 2026-09-18
