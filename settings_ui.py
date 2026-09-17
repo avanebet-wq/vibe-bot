@@ -5,6 +5,11 @@ from telebot import types
 from utils import format_seconds
 from settings_store import SYSTEM_MESSAGE_TYPES, WEEKDAYS, get_posts, get_post, get_captcha, get_deletion, get_liza
 
+_CAP_TYPE_LABELS = {
+    "button": "Кнопка «Я не робот» в группе",
+    "subscribe": "Проверка подписки на канал",
+}
+
 CB = "cf"  # префикс callback_data, чтобы не путать с другими кнопками бота
 
 
@@ -38,6 +43,7 @@ def root_kb(gid):
     return _kb([
         [_btn("👅 Настройки Лизы", "settings_liza", gid)],
         [_btn("⚙️ Настройки чата", "settings_chat", gid)],
+        [_btn("🛡️ Безопасность", "security", gid)],
         [_btn("✅ Закрыть", "close", gid)],
     ])
 
@@ -76,8 +82,25 @@ def chat_settings_text(chat_title):
 def chat_settings_kb(gid):
     return _kb([
         [_btn("🕑 Повторяющиеся сообщения", "pst", gid)],
-        [_btn("🧠 Капча", "cap", gid)],
         [_btn("🗑️ Удаление сообщений", "del", gid)],
+        [_btn("⬅️ Выбор настроек", "back", gid, "root")],
+    ])
+
+
+# ------------------------------------------------------------ SECURITY ----
+
+def security_text(chat_title):
+    return (
+        "🛡️ <b>БЕЗОПАСНОСТЬ</b>\n"
+        f"Группа: «{chat_title}»\n\n"
+        "Здесь находятся функции защиты чата.\n\n"
+        "👇 Выберите раздел:"
+    )
+
+
+def security_kb(gid):
+    return _kb([
+        [_btn("🧠 Капча", "cap", gid)],
         [_btn("⬅️ Выбор настроек", "back", gid, "root")],
     ])
 
@@ -276,13 +299,19 @@ def reset_kb(gid):
 # --------------------------------------------------------------- CAPTCHA ----
 
 def captcha_text(gid):
-    enabled = get_captcha(gid).get("enabled", False)
+    captcha = get_captcha(gid)
+    enabled = captcha.get("enabled", False)
     status = "Вкл ✅" if enabled else "Выкл ❌"
+    ctype = captcha.get("type", "button")
+    type_label = _CAP_TYPE_LABELS.get(ctype, ctype)
+    if ctype == "subscribe":
+        type_label += f" ({captcha.get('channel_title') or 'канал не выбран'})"
     return (
         "🧠 <b>Капча</b>\n"
-        "При активации капчи, когда пользователь входит в группу он не сможет "
-        "отправлять сообщения, пока не подтвердит, что он не робот.\n\n"
-        f"Статус: {status}"
+        "При активации капчи новые участники не смогут писать в чат, "
+        "пока не пройдут проверку, что они не роботы.\n\n"
+        f"Статус: {status}\n"
+        f"Тип: {type_label}"
     )
 
 
@@ -290,10 +319,62 @@ def captcha_kb(gid):
     enabled = get_captcha(gid).get("enabled", False)
     rows = []
     if enabled:
-        rows.append([_btn("❌ Выключить", "capoff", gid)])
+        rows.append([_btn("❌ Выключить капчу", "capoff", gid)])
     else:
-        rows.append([_btn("✅ Активировать", "capon", gid)])
-    rows.append([_btn("⬅️ Назад", "back", gid, "root")])
+        rows.append([_btn("✅ Включить капчу", "capon", gid)])
+    rows.append([_btn("🎚️ Тип капчи", "cap_type", gid)])
+    rows.append([_btn("⬅️ Назад", "back", gid, "security")])
+    return _kb(rows)
+
+
+def cap_type_text(gid):
+    captcha = get_captcha(gid)
+    ctype = captcha.get("type", "button")
+    if ctype == "subscribe":
+        current = f"Проверка подписки на канал: <b>{captcha.get('channel_title') or 'не выбран'}</b>"
+    else:
+        current = "Кнопка «Я не робот» в группе"
+    return (
+        "🎚️ <b>Тип капчи</b>\n\n"
+        f"Сейчас выбрано: {current}\n\n"
+        "1️⃣ <b>Кнопка «Я не робот»</b> — при входе в группу Лиза упомянет пользователя "
+        "и попросит нажать кнопку прямо в группе.\n"
+        "2️⃣ <b>Проверка подписки на канал</b> — писать в чат смогут только подписчики "
+        "выбранного канала."
+    )
+
+
+def cap_type_kb(gid):
+    captcha = get_captcha(gid)
+    ctype = captcha.get("type", "button")
+    rows = [
+        [_btn(("✅ " if ctype == "button" else "▫️ ") + "Кнопка «Я не робот»", "cap_type_set", gid, "button")],
+        [_btn(("✅ " if ctype == "subscribe" else "▫️ ") + "Подписка на канал", "cap_channels", gid)],
+        [_btn("⬅️ Назад", "back", gid, "cap")],
+    ]
+    return _kb(rows)
+
+
+def channels_text(has_channels):
+    if not has_channels:
+        return (
+            "📢 <b>Выбор канала</b>\n\n"
+            "Каналов не найдено.\n\n"
+            "Чтобы канал появился в этом списке, добавьте меня в него "
+            "администратором — я покажу только каналы, где вы создатель "
+            "или администратор."
+        )
+    return (
+        "📢 <b>Выбор канала</b>\n\n"
+        "Выберите канал, подписку на который нужно будет проверять:"
+    )
+
+
+def channels_kb(gid, channels):
+    rows = []
+    for cid, title in channels:
+        rows.append([_btn(f"📢 {title}", "cap_channel_set", gid, cid)])
+    rows.append([_btn("⬅️ Назад", "back", gid, "cap_type")])
     return _kb(rows)
 
 

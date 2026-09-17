@@ -105,8 +105,12 @@ def _render(target, gid, pid=None):
                 "Действие можно повторить, но вернуть пользовательские данные из этого меню нельзя."), ui._kb([
                     [ui._btn("✅ Да, сбросить", "reset_do", gid), ui._btn("❌ Отмена", "back", gid, "reset")]
                 ])
+    if target == "security":
+        return ui.security_text(_chat_title(gid)), ui.security_kb(gid)
     if target == "cap":
         return ui.captcha_text(gid), ui.captcha_kb(gid)
+    if target == "cap_type":
+        return ui.cap_type_text(gid), ui.cap_type_kb(gid)
     if target == "pst":
         return ui.posts_list_text(gid), ui.posts_list_kb(gid)
     if target == "popen":
@@ -293,6 +297,16 @@ def cmd_settings_command(message):
 # Капча
 # =============================================================================
 
+def _schedule_message_autodelete(chat_id, message_id, delay=10.0):
+    """Удаляет сообщение через `delay` секунд, если оно ещё существует."""
+    def _job():
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+    threading.Timer(delay, _job).start()
+
+
 def handle_new_members(message):
     gid = message.chat.id
     for user in message.new_chat_members:
@@ -301,8 +315,33 @@ def handle_new_members(message):
             _offer_settings(gid, thread_id=getattr(message, "message_thread_id", None))
             continue
 
-        if store.get_captcha(gid).get("enabled", False):
+        captcha = store.get_captcha(gid)
+        # Капча «подписка на канал» не блокирует вход — она проверяется прямо
+        # при попытке написать сообщение (см. enforce_captcha ниже).
+        if captcha.get("enabled", False) and captcha.get("type", "button") == "button":
             _start_captcha(message, user)
+
+
+def _button_captcha_prompt_kb(gid, uid):
+    kb = types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("✅ Я не робот", callback_data=f"cf|capver|{gid}|{uid}"))
+    return kb
+
+
+def _send_button_captcha_prompt(gid, user, thread_id=None):
+    mention = get_mention(user.id, user.first_name or user.username or str(user.id))
+    text = (
+        f"🧠 {mention}, подтвердите, что вы не робот, нажав на кнопку ниже 👇\n"
+        "Пока вы этого не сделаете, писать в чат нельзя."
+    )
+    sent = bot.send_message(gid, text, reply_markup=_button_captcha_prompt_kb(gid, user.id),
+                             message_thread_id=thread_id)
+    track_message(gid, sent.message_id)
+    store.set_captcha_pending(gid, user.id, {
+        "msg_chat": sent.chat.id, "msg_id": sent.message_id, "joined_at": time.time(),
+    })
+    _schedule_message_autodelete(sent.chat.id, sent.message_id, 10.0)
+    return sent
 
 
 def _start_captcha(message, user):
@@ -312,47 +351,110 @@ def _start_captcha(message, user):
     except Exception as e:
         log.warning(f"[captcha restrict] {e}")
 
-    mention = get_mention(user.id, user.first_name or user.username or str(user.id))
-    text = (
-        f"🧠 {mention}, подтвердите, что вы не робот, нажав на кнопку ниже. "
-        "Пока вы этого не сделаете, писать в чат нельзя."
-    )
-    kb = types.InlineKeyboardMarkup()
-    kb.row(types.InlineKeyboardButton("✅ Я не робот", callback_data=f"cf|capver|{gid}|{user.id}"))
+    _send_button_captcha_prompt(gid, user, thread_id=getattr(message, "message_thread_id", None))
 
-    sent_privately = False
+
+def _reprompt_button_captcha(message, uid):
+    """Пользователь ещё не прошёл капчу и попытался написать — напоминаем."""
+    gid = message.chat.id
+    pending = store.get_captcha_pending(gid, uid)
+    if pending:
+        try:
+            bot.delete_message(pending["msg_chat"], pending["msg_id"])
+        except Exception:
+            pass
+    _send_button_captcha_prompt(gid, message.from_user, thread_id=getattr(message, "message_thread_id", None))
+
+
+def _is_subscribed(channel_id, user_id):
     try:
-        bot.send_message(user.id, text, reply_markup=kb)
-        sent_privately = True
+        member = bot.get_chat_member(channel_id, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        log.warning(f"[captcha subscribe check] {e}")
+        return False
+
+
+def _channel_invite_link(channel_id):
+    try:
+        chat = bot.get_chat(channel_id)
+        if getattr(chat, "username", None):
+            return f"https://t.me/{chat.username}"
+        if getattr(chat, "invite_link", None):
+            return chat.invite_link
+        return bot.export_chat_invite_link(channel_id)
+    except Exception as e:
+        log.warning(f"[captcha channel link] {e}")
+        return None
+
+
+def _enforce_subscribe_captcha(message):
+    gid = message.chat.id
+    uid = message.from_user.id
+    captcha = store.get_captcha(gid)
+    channel_id = captcha.get("channel_id")
+    if not channel_id:
+        return False
+
+    pending = store.get_captcha_sub_prompt(gid, uid)
+
+    if _is_subscribed(channel_id, uid):
+        # Пользователь подписан — убираем напоминание, если оно ещё висит,
+        # и пропускаем сообщение.
+        if pending:
+            try:
+                bot.delete_message(pending["msg_chat"], pending["msg_id"])
+            except Exception:
+                pass
+            store.clear_captcha_sub_prompt(gid, uid)
+        return False
+
+    try:
+        bot.delete_message(gid, message.message_id)
     except Exception:
         pass
 
-    if sent_privately:
-        group_msg = bot.send_message(
-            gid,
-            f"🧠 {mention}, я отправила вам подтверждение капчи в личные сообщения.",
-            message_thread_id=getattr(message, "message_thread_id", None),
-        )
-    else:
-        group_msg = bot.send_message(gid, text, reply_markup=kb,
-                                      message_thread_id=getattr(message, "message_thread_id", None))
-    track_message(gid, group_msg.message_id)
+    if pending:
+        try:
+            bot.delete_message(pending["msg_chat"], pending["msg_id"])
+        except Exception:
+            pass
 
-    store.set_captcha_pending(gid, user.id, {
-        "msg_chat": group_msg.chat.id, "msg_id": group_msg.message_id,
-        "joined_at": time.time(), "private": sent_privately,
-    })
+    kb = types.InlineKeyboardMarkup()
+    link = _channel_invite_link(channel_id)
+    if link:
+        kb.row(types.InlineKeyboardButton("📢 Подписаться", url=link))
+
+    sent = bot.send_message(
+        gid, "🔔 Чтобы писать в чат, нужно подписаться на канал 👇",
+        reply_markup=kb, message_thread_id=getattr(message, "message_thread_id", None),
+    )
+    track_message(gid, sent.message_id)
+    store.set_captcha_sub_prompt(gid, uid, {"msg_chat": sent.chat.id, "msg_id": sent.message_id})
+    _schedule_message_autodelete(sent.chat.id, sent.message_id, 10.0)
+    return True
 
 
 def enforce_captcha(message):
     gid = message.chat.id
     uid = message.from_user.id if message.from_user else None
-    if uid is None or not store.is_captcha_pending(gid, uid):
+    if uid is None:
+        return False
+
+    captcha = store.get_captcha(gid)
+    if not captcha.get("enabled", False):
+        return False
+
+    if captcha.get("type", "button") == "subscribe":
+        return _enforce_subscribe_captcha(message)
+
+    if not store.is_captcha_pending(gid, uid):
         return False
     try:
         bot.delete_message(gid, message.message_id)
     except Exception:
         pass
+    _reprompt_button_captcha(message, uid)
     return True
 
 
@@ -377,13 +479,36 @@ def _captcha_callback(call, gid, target_uid):
 
     if pending:
         try:
-            if pending.get("private"):
-                bot.edit_message_text("✅ Капча пройдена, теперь можно писать в чат.",
-                                       chat_id=pending["msg_chat"], message_id=pending["msg_id"])
-            else:
-                bot.delete_message(pending["msg_chat"], pending["msg_id"])
+            bot.delete_message(pending["msg_chat"], pending["msg_id"])
         except Exception:
             pass
+
+
+# =============================================================================
+# Каналы для капчи «подписка» — какие показывать в списке выбора
+# =============================================================================
+
+def _channel_admin_ids(channel_id):
+    try:
+        admins = bot.get_chat_administrators(channel_id)
+        return {a.user.id for a in admins if a.status in ("creator", "administrator")}
+    except Exception as e:
+        log.warning(f"[cap channel admins] {e}")
+        return set()
+
+
+def _eligible_channels(uid):
+    """Каналы, где бот состоит, а запрашивающий пользователь — создатель/админ."""
+    channels = store.get_known_channels()
+    result = []
+    for cid_str, title in channels.items():
+        try:
+            cid = int(cid_str)
+        except (TypeError, ValueError):
+            continue
+        if uid in _channel_admin_ids(cid):
+            result.append((cid, title))
+    return result
 
 
 # =============================================================================
@@ -925,6 +1050,12 @@ if hasattr(bot, "my_chat_member_handler"):
         try:
             gid = update.chat.id
             status = update.new_chat_member.status
+            if update.chat.type == "channel":
+                if status in ("left", "kicked"):
+                    store.remove_known_channel(gid)
+                else:
+                    store.register_known_channel(gid, update.chat.title)
+                return
             if status in ("left", "kicked"):
                 store.remove_known_group(gid)
             else:
@@ -1300,6 +1431,10 @@ def _dispatch_callback(call):
             pass
         return
 
+    if action == "security":
+        bot.answer_callback_query(call.id)
+        return _show(chat_id, message_id, "security", gid)
+
     if action == "cap":
         bot.answer_callback_query(call.id)
         return _show(chat_id, message_id, "cap", gid)
@@ -1313,6 +1448,43 @@ def _dispatch_callback(call):
         store.set_captcha_enabled(gid, False)
         bot.answer_callback_query(call.id, "❌ Капча выключена.")
         return _show(chat_id, message_id, "cap", gid)
+
+    if action == "cap_type":
+        bot.answer_callback_query(call.id)
+        return _show(chat_id, message_id, "cap_type", gid)
+
+    if action == "cap_type_set":
+        ctype = rest[0] if rest else "button"
+        if ctype != "button":
+            return bot.answer_callback_query(call.id, "⚠️ Некорректный тип.", show_alert=True)
+        store.set_captcha_type(gid, "button")
+        bot.answer_callback_query(call.id, "✅ Тип капчи обновлён.")
+        return _show(chat_id, message_id, "cap_type", gid)
+
+    if action == "cap_channels":
+        bot.answer_callback_query(call.id)
+        channels = _eligible_channels(call.from_user.id)
+        text = ui.channels_text(bool(channels))
+        kb = ui.channels_kb(gid, channels)
+        try:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id,
+                                   reply_markup=kb, parse_mode="HTML")
+        except Exception as e:
+            if "message is not modified" not in str(e):
+                log.warning(f"[cap_channels] {e}")
+        return
+
+    if action == "cap_channel_set":
+        try:
+            channel_id = int(rest[0])
+        except Exception:
+            return bot.answer_callback_query(call.id, "⚠️ Некорректный канал.", show_alert=True)
+        if call.from_user.id not in _channel_admin_ids(channel_id):
+            return bot.answer_callback_query(call.id, "⛔ Вы не администратор этого канала.", show_alert=True)
+        title = store.get_known_channels().get(str(channel_id), str(channel_id))
+        store.set_captcha_type(gid, "subscribe", channel_id=channel_id, channel_title=title)
+        bot.answer_callback_query(call.id, "✅ Канал выбран.")
+        return _show(chat_id, message_id, "cap_type", gid)
 
     if action == "selectgroup":
         bot.answer_callback_query(call.id)

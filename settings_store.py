@@ -28,7 +28,12 @@ MAX_POSTS = 20
 
 def _default_settings():
     return {
-        "captcha": {"enabled": False},
+        "captcha": {
+            "enabled": False,
+            "type": "button",          # "button" (кнопка в группе) | "subscribe" (подписка на канал)
+            "channel_id": None,
+            "channel_title": None,
+        },
         "posts": {},          # id(str) -> post dict
         "deletion": {
             "system": {key: False for key, _ in SYSTEM_MESSAGE_TYPES},
@@ -95,6 +100,12 @@ def get_all_settings(gid):
                 if key not in chat["liza"]:
                     chat["liza"][key] = value
                     changed = True
+            captcha_defaults = defaults.get("captcha", {})
+            chat.setdefault("captcha", {})
+            for key, value in captcha_defaults.items():
+                if key not in chat["captcha"]:
+                    chat["captcha"][key] = value
+                    changed = True
             for key, _ in SYSTEM_MESSAGE_TYPES:
                 if key not in chat["deletion"]["system"]:
                     chat["deletion"]["system"][key] = False
@@ -140,6 +151,20 @@ def set_captcha_enabled(gid, enabled):
     with _lock:
         chat = get_all_settings(gid)
         chat["captcha"]["enabled"] = bool(enabled)
+        save_all_settings(gid, chat)
+
+
+def set_captcha_type(gid, ctype, channel_id=None, channel_title=None):
+    """ctype: "button" — кнопка «Я не робот» в группе; "subscribe" — проверка подписки на канал."""
+    with _lock:
+        chat = get_all_settings(gid)
+        chat["captcha"]["type"] = ctype
+        if ctype == "subscribe":
+            chat["captcha"]["channel_id"] = channel_id
+            chat["captcha"]["channel_title"] = channel_title
+        else:
+            chat["captcha"]["channel_id"] = None
+            chat["captcha"]["channel_title"] = None
         save_all_settings(gid, chat)
 
 
@@ -248,6 +273,31 @@ def remove_known_group(gid):
 
 
 # ---------------------------------------------------------------------------
+# Реестр каналов, куда бот добавлен администратором (для капчи «подписка»)
+# ---------------------------------------------------------------------------
+
+def get_known_channels():
+    with _lock:
+        return db_get("known_channels", {})
+
+
+def register_known_channel(channel_id, title):
+    with _lock:
+        def mutate(channels):
+            channels[str(channel_id)] = title or str(channel_id)
+            return channels
+        db_update_json("known_channels", mutate, {})
+
+
+def remove_known_channel(channel_id):
+    with _lock:
+        def mutate(channels):
+            channels.pop(str(channel_id), None)
+            return channels
+        db_update_json("known_channels", mutate, {})
+
+
+# ---------------------------------------------------------------------------
 # Состояния "ожидаю ввод от пользователя" (текст / медиа / кнопки / дата и т.п.)
 # Ключ: (asker_chat_id, user_id) -> {"kind":.., "gid":.., "pid":.., ...}
 # ---------------------------------------------------------------------------
@@ -312,5 +362,28 @@ def clear_captcha_pending(gid, user_id):
 def is_captcha_pending(gid, user_id):
     with _captcha_lock:
         return (gid, user_id) in _captcha_pending
+
+
+# ---------------------------------------------------------------------------
+# Последняя подсказка «подпишитесь на канал» для (gid, user_id) — чтобы можно
+# было моментально убрать её, как только пользователь подписался.
+# ---------------------------------------------------------------------------
+_captcha_sub_prompt = {}
+_captcha_sub_lock = threading.RLock()
+
+
+def set_captcha_sub_prompt(gid, user_id, data):
+    with _captcha_sub_lock:
+        _captcha_sub_prompt[(gid, user_id)] = data
+
+
+def get_captcha_sub_prompt(gid, user_id):
+    with _captcha_sub_lock:
+        return _captcha_sub_prompt.get((gid, user_id))
+
+
+def clear_captcha_sub_prompt(gid, user_id):
+    with _captcha_sub_lock:
+        _captcha_sub_prompt.pop((gid, user_id), None)
 
 # updated 2026-09-18
