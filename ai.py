@@ -6,7 +6,7 @@ from social_context import summary as social_summary
 from chat_personality import get as get_chat_personality
 from security import allow
 from utils import get_setting
-import logging, threading, requests, time
+import logging, re, threading, requests, time
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from config import (
@@ -28,6 +28,17 @@ _circuit_until = 0.0
 _CIRCUIT_THRESHOLD = 5
 _CIRCUIT_COOLDOWN = 30.0
 _HTTP_LOCAL = threading.local()
+
+# Same name set Liza answers to (see runtime.WAKE_NAMES) — kept as a local
+# constant instead of importing runtime, since importing runtime triggers a
+# live Telegram API call at module load time and would needlessly couple
+# this module to the bot's network startup.
+_SELF_LABEL_RE = re.compile(
+    r'^\s*(?:лизонька|лізонька|лизочка|лізочка|лизушка|лизуня|лізуня|'
+    r'лизуся|лізуся|лизуха|лизка|лізка|элиза|лиза|ліза|вета)\s*[:\-–—]\s*',
+    re.IGNORECASE,
+)
+
 # Personality/mood/facts/social-graph/dialogue/history lookups below are
 # independent of each other and several hit the database. Running them
 # concurrently turns N sequential round trips into roughly one.
@@ -97,6 +108,12 @@ def clean_response(text):
     text = str(text or "").strip()
     text = text.replace("<think>", "").replace("</think>", "").replace("```", "")
     text = text.replace("(", "").replace(")", "")
+    # Belt-and-braces: even with the system prompt forbidding it, the model
+    # sometimes still opens its reply with a self-label like "Лиза: ..." —
+    # picked up from the "Имя: текст" pattern used to attribute other
+    # speakers in the context we feed it. Strip a leading self-label so it
+    # never reaches Telegram, regardless of why the model added it.
+    text = _SELF_LABEL_RE.sub("", text, count=1)
     return text.strip()
 
 
@@ -351,7 +368,7 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
             content = str(item.get("content", "")).strip()
             if not content:
                 continue
-            lines.append(f"Лиза: {content}" if item.get("role") == "assistant" else content)
+            lines.append(f"(твоя предыдущая реплика в чате) {content}" if item.get("role") == "assistant" else content)
         if lines:
             extra.append(
                 "Контекст последних сообщений группы (каждая строка от своего человека):\n"

@@ -51,7 +51,14 @@ def format_for_ai(chat_id, limit=10):
     rows = get(chat_id, limit)
     result = []
     for row in rows:
-        line = f'{row["speaker"]}: {row["text"]}'
+        speaker = row["speaker"]
+        # Liza's own past lines must never be shown to the model as literal
+        # "Лиза: текст" — the model otherwise starts copying that "Имя:"
+        # pattern into its own new reply instead of just answering with text.
+        if speaker == "Лиза":
+            line = f'(твоя предыдущая реплика в чате) {row["text"]}'
+        else:
+            line = f'{speaker}: {row["text"]}'
         if row.get("reply_to_user"):
             line += f' [ответ пользователю: {row["reply_to_user"]}]'
         result.append({"role": "user", "content": line})
