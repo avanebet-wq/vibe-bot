@@ -7,13 +7,41 @@ import re
 import requests
 
 from runtime import bot, WAKE_RE
-from config import GROQ_KEYS, GROQ_KEY
+from config import GROQ_KEYS, GROQ_KEY, GROQ_AI_MODEL
 
 LOG = logging.getLogger("transcriber")
 
 _keys = [k.strip() for k in (GROQ_KEYS or GROQ_KEY.split(",")) if k.strip()]
 _key_idx = 0
 _key_lock = threading.Lock()
+
+# Модель для пост-коррекции текста. Синхронизирована с основной моделью бота (config.GROQ_AI_MODEL),
+# т.к. llama3-8b-8192 давно устарела и снята с поддержки Groq.
+CLEAN_MODEL = GROQ_AI_MODEL or "openai/gpt-oss-20b"
+
+# Пороги отсева галлюцинаций — это те же эвристики, что использует референсный
+# декодер OpenAI Whisper (no_speech_threshold / logprob_threshold / compression_ratio_threshold),
+# просто применённые вручную к сегментам, которые отдаёт Groq в verbose_json.
+NO_SPEECH_THRESHOLD = 0.6
+LOGPROB_THRESHOLD = -1.0
+COMPRESSION_RATIO_THRESHOLD = 2.4
+
+# Типовые "ютубовские" галлюцинации — Whisper обучался на субтитрах роликов с YouTube/TikTok
+# и на тишине/шуме иногда достаёт эти фразы из training-данных вместо реальной речи.
+_HALLUCINATION_PATTERNS = [
+    r"подпис(ыва[ий]тесь|ывайся|ывайтесь)\s+на\s+(мо[йи]|наш)?\s*канал",
+    r"ставь?те?\s+лайк",
+    r"не\s+забудьте?\s+подписаться",
+    r"спасибо\s+за\s+просмотр",
+    r"увидимся\s+в\s+следующ",
+    r"редактор\s+субтитров",
+    r"субтитры\s+(делал|сделал|создал)",
+    r"продолжение\s+следует",
+    r"\[?музыка\]?",
+    r"\(?аплодисменты\)?",
+    r"спасибо\s+за\s+внимание",
+]
+_HALLUCINATION_RE = re.compile("|".join(_HALLUCINATION_PATTERNS), re.IGNORECASE)
 
 
 def _get_key():
@@ -27,12 +55,55 @@ def _switch_key():
         _key_idx += 1
 
 
+def _collapse_repetitions(text: str) -> str:
+    """Схлопывает зацикленные повторы слов/фраз — классический баг Whisper на шуме/тишине."""
+    if not text:
+        return text
+    # одно и то же слово 3+ раза подряд -> оставляем одно
+    text = re.sub(r"\b(\S+)(\s+\1\b){2,}", r"\1", text, flags=re.IGNORECASE)
+    # одна и та же короткая фраза (1-5 слов) 3+ раза подряд -> оставляем одно вхождение
+    text = re.sub(r"((?:\S+\s+){1,5}\S+)(\s+\1){2,}", r"\1", text, flags=re.IGNORECASE)
+    return text
+
+
+def _filter_segments(payload: dict) -> str:
+    """Отбрасывает сегменты, которые сам Whisper считает тишиной/шумом/зацикливанием."""
+    segments = payload.get("segments")
+    if not segments:
+        return (payload.get("text") or "").strip()
+
+    kept = []
+    for seg in segments:
+        seg_text = (seg.get("text") or "").strip()
+        if not seg_text:
+            continue
+        no_speech = seg.get("no_speech_prob", 0.0) or 0.0
+        avg_logprob = seg.get("avg_logprob", 0.0) or 0.0
+        compression = seg.get("compression_ratio", 0.0) or 0.0
+
+        if no_speech > NO_SPEECH_THRESHOLD and avg_logprob < LOGPROB_THRESHOLD:
+            continue  # почти наверняка тишина/шум, а не речь
+        if compression > COMPRESSION_RATIO_THRESHOLD:
+            continue  # зацикленный повтор — классическая галлюцинация
+        if _HALLUCINATION_RE.search(seg_text):
+            continue  # типовой артефакт обучения на YouTube/TikTok субтитрах
+
+        kept.append(seg_text)
+
+    joined = " ".join(kept).strip()
+    return joined if joined else (payload.get("text") or "").strip()
+
+
 def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str, force_lang: str = None) -> str | None:
     """Отправляет аудиофайл в Groq Whisper API (Уши)."""
     if not _keys:
         LOG.error("[transcriber] Нет доступных ключей GROQ_API_KEY")
         return None
 
+    # v3 — точность в приоритете (ниже WER на суржике/смешанной речи), turbo — быстрый фолбэк.
+    # Groq на своём железе (LPU) отдаёт оба варианта кратно быстрее длительности самой записи,
+    # поэтому для коротких кружков/войсов разница в задержке между ними некритична,
+    # а вот разница в качестве на суржике — заметна.
     models = ("whisper-large-v3", "whisper-large-v3-turbo")
 
     for model in models:
@@ -46,9 +117,9 @@ def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str, fo
                 }
                 data = {
                     "model": model,
-                    "response_format": "json",
+                    "response_format": "verbose_json",  # нужен для сегментов и метрик галлюцинаций
                     "temperature": 0.0,
-                    "prompt": "Это обычное голосовое сообщение в Telegram. Русская и украинская речь, суржик. Привет, як справи? Ага, хорошо, дякую. Давай."
+                    "prompt": "Это обычное голосовое сообщение в Telegram. Русская и украинская речь, суржик. Привет, як справи? Ага, хорошо, дякую. Давай.",
                 }
                 if force_lang:
                     data["language"] = force_lang
@@ -58,10 +129,13 @@ def transcribe_audio_bytes(audio_bytes: bytes, filename: str, mime_type: str, fo
                     headers={"Authorization": f"Bearer {key}"},
                     files=files,
                     data=data,
-                    timeout=(5, 25),
+                    timeout=(5, 30),
                 )
                 if resp.status_code == 200:
-                    return (resp.json().get("text") or "").strip()
+                    payload = resp.json()
+                    text = _filter_segments(payload)
+                    text = _collapse_repetitions(text)
+                    return text.strip()
                 elif resp.status_code in (401, 429, 503):
                     _switch_key()
                     continue
@@ -89,15 +163,18 @@ def clean_transcription_with_llm(raw_text: str) -> str:
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": "llama3-8b-8192",  # Супер-быстрая и умная модель для коррекции
+                    "model": CLEAN_MODEL,
                     "messages": [
                         {
-                            "role": "system", 
+                            "role": "system",
                             "content": (
                                 "Ты корректор. Твоя задача — исправить кривой текст после распознавания голоса нейросетью. "
                                 "Язык говорящего: смесь русского, украинского и суржика. "
-                                "Ориентируйся на логику. Убери галлюцинации (повторяющиеся слова, бессмысленные обрывки, случайные иностранные слова). "
-                                "Исправь опечатки и расставь правильную пунктуацию. Сохрани оригинальный смысл и тон. "
+                                "Ориентируйся на логику. Убери галлюцинации (повторяющиеся слова, бессмысленные обрывки, случайные иностранные слова, "
+                                "а также любые остатки шаблонных фраз в духе «подписывайтесь на канал», «ставьте лайк», «редактор субтитров» — "
+                                "это артефакты обучения модели на видео, а не реальная речь говорящего). "
+                                "Исправь опечатки и расставь правильную пунктуацию. Сохрани оригинальный смысл, лексику и тон говорящего, "
+                                "не дописывай то, чего не было. "
                                 "Отвечай ТОЛЬКО исправленным текстом, никаких вводных слов, пояснений и кавычек."
                             )
                         },
@@ -106,7 +183,7 @@ def clean_transcription_with_llm(raw_text: str) -> str:
                     "temperature": 0.1,
                     "max_tokens": 1024
                 },
-                timeout=5
+                timeout=8,
             )
             if resp.status_code == 200:
                 cleaned = resp.json()["choices"][0]["message"]["content"].strip()
@@ -168,7 +245,7 @@ def _process_audio_async(message, is_video_note: bool):
             if not recognized_text or not bool(re.search(r'[а-яА-ЯёЁіІїЇєЄґҐ]', recognized_text)):
                 return
 
-        # ШАГ 2: Чистим и правим логику через Llama 3 (Мозг)
+        # ШАГ 2: Чистим и правим логику через ИИ (Мозг)
         cleaned_text = clean_transcription_with_llm(recognized_text)
         if cleaned_text:
             recognized_text = cleaned_text
