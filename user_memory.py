@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Persistent per-user facts with bounded storage and privacy-friendly controls."""
+"""Persistent per-user facts with bounded storage and privacy-friendly controls.
+
+Storage is scoped per "chat_id:user_id" row (see database.db_*_scoped).
+Previously every read here (`get_facts`, called on *every* AI request via
+`format_facts`) loaded a single JSON blob containing every user's facts in
+every chat the bot is in, uncached ("user_memory" was in _NO_CACHE_KEYS).
+That is now a single small cached row lookup for one user.
+"""
 import re
 import time
-from database import db_get, db_set, db_update_json
+from database import db_get_scoped, db_set_scoped, db_update_json_scoped
 
 MAX_FACTS = 40
 MIN_FACT_IMPORTANCE = 0
@@ -10,52 +17,46 @@ MIN_FACT_IMPORTANCE = 0
 MAX_FACT_LEN = 240
 _STOP = {"я", "мне", "меня", "мой", "моя", "это", "просто", "что", "как", "лиза"}
 
+_EMPTY = {"facts": []}
 
-def _store(): return db_get("user_memory", {})
-
-def _save(s): db_set("user_memory", s)
 
 def _key(chat_id, user_id): return f"{chat_id}:{user_id}"
 
 def get_facts(chat_id, user_id, limit=12):
-    row = _store().get(_key(chat_id, user_id), {})
+    row = db_get_scoped("user_memory", _key(chat_id, user_id), _EMPTY)
     return list(row.get("facts", []))[-max(1, int(limit)):]
 
 def add_fact(chat_id, user_id, fact, source="conversation"):
     fact = re.sub(r"\s+", " ", str(fact or "")).strip()[:MAX_FACT_LEN]
     if len(fact) < 3: return False
     added = False
-    def mutate(s):
+    def mutate(row):
         nonlocal added
-        key = _key(chat_id, user_id); row = s.setdefault(key, {"facts": []})
+        row = dict(row) if row else {"facts": []}
         facts = row.setdefault("facts", [])
         normalized = fact.casefold()
-        if any(x.get("text", "").casefold() == normalized for x in facts): return s
+        if any(x.get("text", "").casefold() == normalized for x in facts): return row
         facts.append({"text": fact, "source": str(source)[:40], "at": time.time(), "importance": 1})
         row["facts"] = facts[-MAX_FACTS:]
         added = True
-        return s
-    db_update_json("user_memory", mutate, {})
+        return row
+    db_update_json_scoped("user_memory", _key(chat_id, user_id), mutate, {"facts": []})
     return added
 
 def clear(chat_id, user_id):
-    def mutate(s):
-        s.pop(_key(chat_id, user_id), None)
-        return s
-    db_update_json("user_memory", mutate, {})
+    db_set_scoped("user_memory", _key(chat_id, user_id), {"facts": []})
 
 def forget_fact(chat_id, user_id, index):
     removed = False
-    def mutate(s):
+    def mutate(row):
         nonlocal removed
-        key = _key(chat_id, user_id); row = s.get(key)
-        if not row: return s
+        row = dict(row) if row else {"facts": []}
         facts = row.get("facts", [])
-        try: facts.pop(int(index)-1)
-        except (ValueError, IndexError): return s
+        try: facts.pop(int(index) - 1)
+        except (ValueError, IndexError): return row
         row["facts"] = facts; removed = True
-        return s
-    db_update_json("user_memory", mutate, {})
+        return row
+    db_update_json_scoped("user_memory", _key(chat_id, user_id), mutate, {"facts": []})
     return removed
 
 def format_facts(chat_id, user_id):

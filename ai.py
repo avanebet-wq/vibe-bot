@@ -7,6 +7,7 @@ from chat_personality import get as get_chat_personality
 from security import allow
 from utils import get_setting
 import logging, threading, requests, time
+from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from config import (
     GROQ_KEY,
@@ -27,6 +28,18 @@ _circuit_until = 0.0
 _CIRCUIT_THRESHOLD = 5
 _CIRCUIT_COOLDOWN = 30.0
 _HTTP_LOCAL = threading.local()
+# Personality/mood/facts/social-graph/dialogue/history lookups below are
+# independent of each other and several hit the database. Running them
+# concurrently turns N sequential round trips into roughly one.
+_CTX_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="liza-ctx")
+
+
+def _safe_ctx(job):
+    try:
+        return job()
+    except Exception:
+        logging.exception("[ai] context job failed")
+        return None
 
 
 def _http_session():
@@ -105,9 +118,18 @@ def _message_content(data):
     return clean_response(content)
 
 
-def _post_huggingface(messages, max_tokens, enable_thinking=True):
+def _post_huggingface(messages, max_tokens, reasoning_effort="low"):
     if not HF_TOKEN:
         return None, "HF_TOKEN is not configured"
+
+    # NOTE: this used to be driven by a boolean `enable_thinking` that was
+    # `attempt_effort in ("low", "medium")` at the call site -- which is
+    # *always true*, since attempt_effort is always one of those two values.
+    # In practice every request was silently sent as "medium" reasoning with
+    # a 45s timeout, no matter what _choose_reasoning_effort() decided. Simple
+    # messages never actually got the fast "low" path. Fixed by passing the
+    # real effort level straight through instead of a boolean.
+    is_low = reasoning_effort == "low"
 
     # Qwen3.8 can spend the whole output budget on hidden reasoning.
     # Give it enough room to think, while keeping the visible answer short.
@@ -115,20 +137,20 @@ def _post_huggingface(messages, max_tokens, enable_thinking=True):
         "model": AI_MODEL,
         "messages": messages,
         "max_tokens": max(512, min(int(max_tokens), 2048)),
-        "temperature": 1.0 if enable_thinking else 0.7,
-        "top_p": 0.95 if enable_thinking else 0.80,
-        "presence_penalty": 0.0 if enable_thinking else 1.5,
+        "temperature": 0.7 if is_low else 1.0,
+        "top_p": 0.80 if is_low else 0.95,
+        "presence_penalty": 1.5 if is_low else 0.0,
         # Hugging Face Inference Providers accepts Qwen3.8 reasoning control
         # as a top-level OpenAI-compatible field. OVHcloud rejects nested
         # extra_body/chat_template_kwargs with HTTP 400.
-        "reasoning_effort": "medium" if enable_thinking else "low",
+        "reasoning_effort": reasoning_effort,
     }
     try:
         resp = _http_session().post(
             f"{HF_BASE_URL.rstrip('/')}/chat/completions",
             json=payload,
             headers={"Authorization": f"Bearer {HF_TOKEN}"},
-            timeout=(5, 30 if not enable_thinking else 45),
+            timeout=(5, 18 if is_low else 28),
         )
     except requests.RequestException as exc:
         return None, str(exc)
@@ -197,15 +219,22 @@ def _post_groq(messages, max_tokens):
 
 
 def _choose_reasoning_effort(user_text, group_context=None):
-    """Choose Qwen thinking level from the request complexity."""
+    """Choose Qwen thinking level from the request complexity.
+
+    Kept deliberately narrow: this used to include very common words like
+    "помоги", "совет", "что лучше", "проблема" -- which fire on a huge share
+    of ordinary casual messages and pushed them onto the slower "medium"
+    path for no real benefit. Only genuinely complex asks (explanations,
+    code, calculations, explicit "in detail") should pay for extra thinking.
+    """
     text = str(user_text or "").strip()
     low = text.lower()
     complex_markers = (
         "почему", "объясни", "объяснить", "как сделать", "как настроить",
-        "сравни", "сравнение", "план", "придумай", "проанализируй",
+        "сравни", "сравнение", "придумай", "проанализируй",
         "разбери", "посчитай", "рассчитай", "код", "python", "sql",
-        "ошибка", "почему не", "помоги", "совет", "что лучше", "разница",
-        "подробно", "докажи", "спланируй", "инструкция", "проблема",
+        "ошибка", "почему не", "разница",
+        "подробно", "докажи", "спланируй", "инструкция",
     )
     if len(text) >= 500 or len(text.split()) >= 80:
         return "medium"
@@ -229,57 +258,81 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
         return None
 
     sys_prompt = SYS_PROMPT_ANGRY if angry else SYS_PROMPT_NORMAL
-    extra = []
-    try:
-        extra.append(build_personality_prompt(personality or (get_chat_personality(chat_id) if chat_id is not None else None)))
-    except Exception:
-        pass
-    if chat_id is not None:
+
+    def _personality_job():
+        return build_personality_prompt(personality or (get_chat_personality(chat_id) if chat_id is not None else None))
+
+    def _mood_job():
+        return build_mood_prompt(chat_id) if chat_id is not None else None
+
+    def _facts_job():
+        if chat_id is None or user_id is None:
+            return None
+        if not get_setting(chat_id, "memory_enabled", True):
+            return None
+        return format_facts(chat_id, user_id) or None
+
+    def _social_job():
+        if chat_id is None or user_id is None:
+            return None
+        social = social_summary(chat_id, user_id)
+        if not social:
+            return None
+        return "Связи только по текущему разговору, используй осторожно: " + str(social)[:1200]
+
+    def _dialogue_job():
+        if chat_id is None or user_id is None:
+            return None
+        dc = _format_dialogue_context(chat_id, limit=8)
+        if not dc:
+            return None
+        dc_text = "\n".join(
+            f"{item.get('role', 'user')}: {item.get('content', '')}"
+            for item in dc if isinstance(item, dict)
+        )
+        return "Структурированный диалог:\n" + dc_text[:4000]
+
+    def _history_job():
+        if chat_id is None:
+            return []
         try:
-            extra.append(build_mood_prompt(chat_id))
+            return persistent_conversation_memory.get(chat_id)[-6:]
         except Exception:
-            pass
-    if chat_id is not None and user_id is not None:
-        try:
-            if get_setting(chat_id, "memory_enabled", True):
-                facts = format_facts(chat_id, user_id)
-                if facts:
-                    extra.append(facts)
-            social = social_summary(chat_id, user_id)
-            if social:
-                extra.append("Связи только по текущему разговору, используй осторожно: " + str(social)[:1200])
-        except Exception:
-            pass
-        try:
-            dc = _format_dialogue_context(chat_id, limit=10)
-            if dc:
-                dc_text = "\n".join(
-                    f"{item.get('role', 'user')}: {item.get('content', '')}"
-                    for item in dc if isinstance(item, dict)
-                )
-                extra.append("Структурированный диалог:\n" + dc_text[:6500])
-        except Exception:
-            logging.exception("[ai] failed to build structured dialogue context")
+            return []
+
+    # These five lookups are independent and several hit the database
+    # (facts, social graph, dialogue context, conversation history). Firing
+    # them concurrently instead of one after another turns several
+    # sequential DB round trips into roughly the time of the slowest one.
+    jobs = {
+        "personality": _personality_job,
+        "mood": _mood_job,
+        "facts": _facts_job,
+        "social": _social_job,
+        "dialogue": _dialogue_job,
+        "history": _history_job,
+    }
+    futures = {name: _CTX_EXECUTOR.submit(_safe_ctx, job) for name, job in jobs.items()}
+    results = {name: f.result() for name, f in futures.items()}
+
+    extra = [results[name] for name in ("personality", "mood", "facts", "social", "dialogue") if results.get(name)]
+
     if group_context:
-        extra.append("Контекст последних сообщений группы:\n" + str(group_context)[:6500])
+        extra.append("Контекст последних сообщений группы:\n" + str(group_context)[:3000])
     if user_context:
         extra.append(
-            "ПЕРСОНАЛЬНЫЙ КОНТЕКСТ СОБЕСЕДНИКА:\n" + str(user_context)[:5000] +
+            "ПЕРСОНАЛЬНЫЙ КОНТЕКСТ СОБЕСЕДНИКА:\n" + str(user_context)[:2500] +
             "\nОбращайся к текущему человеку как к отдельному собеседнику. Подстраивай длину, сленг, эмодзи, пунктуацию и степень неформальности под его манеру, но не копируй его фразы дословно."
         )
     if extra:
         sys_prompt += "\n\n" + "\n".join(extra)
 
     messages = [{"role": "system", "content": sys_prompt}]
-    try:
-        mem = persistent_conversation_memory
-        for item in mem.get(chat_id)[-10:] if chat_id is not None else []:
-            role = item.get("role") if isinstance(item, dict) else "user"
-            content = item.get("content", "") if isinstance(item, dict) else str(item)
-            if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": str(content)[:2600]})
-    except Exception:
-        pass
+    for item in (results.get("history") or []):
+        role = item.get("role") if isinstance(item, dict) else "user"
+        content = item.get("content", "") if isinstance(item, dict) else str(item)
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": str(content)[:1800]})
 
     messages.append({"role": "user", "content": str(user_text or "").strip()[:2200]})
 
@@ -290,12 +343,11 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
     last_error = None
     attempts = (effort, "low") if effort == "medium" else ("low",)
     for attempt_effort in attempts:
-        enable_thinking = attempt_effort in ("low", "medium")
         budget = _reasoning_budget(attempt_effort, max_tokens)
         content, error = _post_huggingface(
             messages,
             budget,
-            enable_thinking=enable_thinking,
+            reasoning_effort=attempt_effort,
         )
         if content:
             _circuit_success()

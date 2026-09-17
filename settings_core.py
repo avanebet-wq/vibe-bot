@@ -1230,13 +1230,8 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id); return _show(chat_id, message_id, "mem_clear_confirm", gid)
 
     if action == "mem_clear":
-        from database import db_update_json
-        prefix = str(gid) + ":"
-        def mutate(data):
-            for key in list(data):
-                if str(key).startswith(prefix): data.pop(key, None)
-            return data
-        db_update_json("user_memory", mutate, {})
+        from database import db_delete_scoped_prefix
+        db_delete_scoped_prefix("user_memory", str(gid) + ":")
         bot.answer_callback_query(call.id, "🧹 Память этого чата очищена.")
         return _show(chat_id, message_id, "mem", gid)
 
