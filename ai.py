@@ -252,7 +252,7 @@ def _reasoning_budget(effort, max_tokens):
     return max(1024, min(requested, 2048))
 
 
-def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None, group_context=None, personality=None, user_context=None):
+def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None, group_context=None, personality=None, user_context=None, is_group=False, user_name=None):
     if not _circuit_allows():
         logging.warning("[ai] circuit breaker open")
         return None
@@ -286,14 +286,28 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
         dc = _format_dialogue_context(chat_id, limit=8)
         if not dc:
             return None
+        # Each item's content is already "Имя: текст" (see dialogue_context.record),
+        # so the artificial "user:" role wrapper only added noise and hid the
+        # actual speaker behind a generic label.
         dc_text = "\n".join(
-            f"{item.get('role', 'user')}: {item.get('content', '')}"
-            for item in dc if isinstance(item, dict)
+            str(item.get("content", "")) for item in dc if isinstance(item, dict) and item.get("content")
         )
-        return "Структурированный диалог:\n" + dc_text[:4000]
+        if not dc_text:
+            return None
+        return (
+            "Структурированный диалог (каждая строка размечена именем говорящего, "
+            "не путай реплики разных людей):\n" + dc_text[:4000]
+        )
 
     def _history_job():
-        if chat_id is None:
+        # In group chats this table stores messages from several different
+        # people (see group_context.record_group_message), so replaying it
+        # as raw alternating user/assistant turns loses who-said-what and is
+        # exactly what made Liza mix up different users' lines. Group chats
+        # get their attribution from group_context/_dialogue_job instead,
+        # which keep an explicit "Имя: текст" per line. Plain 1-on-1 chats
+        # have only one human speaker, so turn-based history stays safe there.
+        if chat_id is None or is_group:
             return []
         try:
             return persistent_conversation_memory.get(chat_id)[-6:]
@@ -317,11 +331,41 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
 
     extra = [results[name] for name in ("personality", "mood", "facts", "social", "dialogue") if results.get(name)]
 
-    if group_context:
-        extra.append("Контекст последних сообщений группы:\n" + str(group_context)[:3000])
-    if user_context:
+    if is_group:
         extra.append(
-            "ПЕРСОНАЛЬНЫЙ КОНТЕКСТ СОБЕСЕДНИКА:\n" + str(user_context)[:2500] +
+            "Это групповой чат: одновременно пишут разные люди. Ниже реплики размечены "
+            "именем говорящего — ориентируйся по нему и не приписывай сказанное одним "
+            "человеком другому."
+        )
+
+    if group_context:
+        # group_context is the raw [{"role", "content"}, ...] rows from the shared
+        # chat-history table: "user" rows already carry "Имя: текст" (see
+        # group_context.record_group_message), "assistant" rows are Liza's own
+        # past replies. Render them as a clean labeled transcript instead of a
+        # raw Python repr, which is both unreadable and harder to attribute.
+        lines = []
+        for item in group_context:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            lines.append(f"Лиза: {content}" if item.get("role") == "assistant" else content)
+        if lines:
+            extra.append(
+                "Контекст последних сообщений группы (каждая строка от своего человека):\n"
+                + "\n".join(lines)[:3000]
+            )
+
+    if user_context or user_name:
+        parts = []
+        if user_name:
+            parts.append(f"Сейчас тебе пишет: {user_name}.")
+        if user_context:
+            parts.append(str(user_context)[:2500])
+        extra.append(
+            "ПЕРСОНАЛЬНЫЙ КОНТЕКСТ СОБЕСЕДНИКА:\n" + "\n".join(parts) +
             "\nОбращайся к текущему человеку как к отдельному собеседнику. Подстраивай длину, сленг, эмодзи, пунктуацию и степень неформальности под его манеру, но не копируй его фразы дословно."
         )
     if extra:
@@ -335,6 +379,24 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
             messages.append({"role": role, "content": str(content)[:1800]})
 
     messages.append({"role": "user", "content": str(user_text or "").strip()[:2200]})
+
+    def _save_turn(reply_text):
+        if chat_id is None:
+            return
+        try:
+            mem = persistent_conversation_memory
+            # In groups the incoming message was already saved with its
+            # speaker's name by group_context.record_group_message before
+            # ask_liza ran. Saving the bare user_text here too would add an
+            # unlabeled duplicate of the same message into the shared table,
+            # which is exactly the kind of unattributed entry that made Liza
+            # mix up who said what. DMs have only one human speaker, so it's
+            # safe (and needed) to save the turn there.
+            if not is_group:
+                mem.add(chat_id, "user", user_text)
+            mem.add(chat_id, "assistant", reply_text)
+        except Exception:
+            pass
 
     # Qwen is primary. Simple chat uses low reasoning for speed; complex
     # requests use medium reasoning. If a provider returns no visible answer,
@@ -351,13 +413,7 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
         )
         if content:
             _circuit_success()
-            if chat_id is not None:
-                try:
-                    mem = persistent_conversation_memory
-                    mem.add(chat_id, "user", user_text)
-                    mem.add(chat_id, "assistant", content)
-                except Exception:
-                    pass
+            _save_turn(content)
             return content
         last_error = error
         _circuit_failure()
@@ -368,13 +424,7 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
     content, error = _post_groq(messages, max_tokens)
     if content:
         _circuit_success()
-        if chat_id is not None:
-            try:
-                mem = persistent_conversation_memory
-                mem.add(chat_id, "user", user_text)
-                mem.add(chat_id, "assistant", content)
-            except Exception:
-                pass
+        _save_turn(content)
         return content
     last_error = error or last_error
 

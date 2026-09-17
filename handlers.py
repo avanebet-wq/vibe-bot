@@ -302,6 +302,18 @@ def _ai_user_context(message):
         return None
 
 
+def _display_name(user):
+    if user is None:
+        return "Пользователь"
+    if getattr(user, "id", None) == BOT_ID:
+        return "Лиза"
+    return getattr(user, "first_name", None) or getattr(user, "username", None) or "Пользователь"
+
+
+def _sender_name(message):
+    return _display_name(getattr(message, "from_user", None))
+
+
 def _handle_manual_karma(message):
     """Handle + / - replies as explicit karma votes for the replied user."""
     if getattr(message.chat, "type", "") not in ("group", "supergroup"):
@@ -825,6 +837,7 @@ def text_handler(message):
         cid = message.chat.id
         text = message.text or ""
         is_group = message.chat.type in ("group", "supergroup")
+        display_name = _sender_name(message)
 
         # IMPORTANT: Telegram typing must start before ANY database/context work.
         # The previous implementation started it only inside _enqueue_ai_reply,
@@ -873,7 +886,8 @@ def text_handler(message):
                 _enqueue_ai_reply(
                     message, active_text, angry=is_angry(cid), chat_id=cid,
                     user_id=getattr(message.from_user, "id", None),
-                    group_context=_liza_ai_context(message), user_context=_ai_user_context(message)
+                    group_context=_liza_ai_context(message), user_context=_ai_user_context(message),
+                    is_group=is_group, user_name=display_name,
                 )
             return
 
@@ -902,8 +916,18 @@ def text_handler(message):
         if is_group:
             track_message(cid, message.message_id, getattr(message.chat, "title", None))
             try:
-                display_name = getattr(message.from_user, "first_name", None) or getattr(message.from_user, "username", None) or "Пользователь"
                 record_group_message(cid, display_name, text)
+            except Exception:
+                pass
+            try:
+                reply_to = getattr(message, "reply_to_message", None)
+                reply_to_user = _display_name(getattr(reply_to, "from_user", None)) if reply_to else None
+                record_dialogue(
+                    cid, display_name, text,
+                    message_id=message.message_id,
+                    reply_to_user=reply_to_user,
+                    reply_to_message_id=getattr(reply_to, "message_id", None) if reply_to else None,
+                )
             except Exception:
                 pass
 
@@ -960,7 +984,7 @@ def text_handler(message):
                 return
             # Обратились по имени, но это не команда — считаем, что это вопрос к AI.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message))
+            _enqueue_ai_reply(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
             return
 
         if is_group and reply_mode == "mention" and not addressed:
@@ -969,13 +993,13 @@ def text_handler(message):
         if not is_group:
             # Личка — общаемся без обращения по имени.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message))
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
             return
 
         # Групповой чат, сообщение не адресовано напрямую.
         if addressed:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message))
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
             return
 
         # Если включена автоактивность — не встреваем во время бурного обсуждения.
@@ -989,7 +1013,7 @@ def text_handler(message):
         chance = get_chatter_chance(cid)
         if random.random() < chance:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), reply_mode="send", processing_notice=False)
+            _enqueue_ai_reply(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), reply_mode="send", processing_notice=False, is_group=is_group, user_name=display_name)
 
     except Exception as e:
         logging.error(f"[text_handler] {e}", exc_info=True)
