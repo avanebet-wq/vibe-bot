@@ -117,8 +117,6 @@ def _render(target, gid, pid=None):
         return ui.post_edit_text(gid, pid) + "\n\n📆 Выберите дни месяца:", ui.monthdays_kb(gid, pid)
     if target == "del":
         return ui.deletion_text(), ui.deletion_kb(gid)
-    if target == "delsil":
-        return ui.silence_text(gid), ui.silence_kb(gid)
     if target == "delsys":
         return ui.sysmsgs_text(), ui.sysmsgs_kb(gid)
     if target == "delmass":
@@ -389,7 +387,7 @@ def _captcha_callback(call, gid, target_uid):
 
 
 # =============================================================================
-# Полная тишина / системные сообщения / массовое удаление
+# Системные сообщения / массовое удаление
 # =============================================================================
 
 _SYS_CONTENT_MAP = {
@@ -403,22 +401,6 @@ _SYS_CONTENT_MAP = {
     "video_chat_ended": "vc_end",
     "video_chat_scheduled": "vc_scheduled",
 }
-
-def enforce_silence(message):
-    gid = message.chat.id
-    if message.chat.type not in ("group", "supergroup"):
-        return False
-    if not store.get_deletion(gid).get("silence", False):
-        return False
-    uid = message.from_user.id if message.from_user else None
-    if uid and is_chat_admin(gid, uid):
-        return False
-    try:
-        bot.delete_message(gid, message.message_id)
-    except Exception:
-        pass
-    return True
-
 
 def enforce_system_message_deletion(message):
     gid = message.chat.id
@@ -961,8 +943,6 @@ def _on_media_message(message):
     try:
         if message.chat.type in ("group", "supergroup"):
             if enforce_captcha(message):
-                return
-            if enforce_silence(message):
                 return
             track_message(message.chat.id, message.message_id)
         if try_handle_pending_input(message):
@@ -1582,16 +1562,6 @@ def _dispatch_callback(call):
     if action == "del":
         bot.answer_callback_query(call.id)
         return _show(chat_id, message_id, "del", gid)
-
-    if action == "delsil":
-        bot.answer_callback_query(call.id)
-        return _show(chat_id, message_id, "delsil", gid)
-
-    if action == "delsiltg":
-        cur = store.get_deletion(gid).get("silence", False)
-        store.set_silence(gid, not cur)
-        bot.answer_callback_query(call.id)
-        return _show(chat_id, message_id, "delsil", gid)
 
     if action == "delsys":
         bot.answer_callback_query(call.id)

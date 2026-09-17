@@ -461,30 +461,9 @@ def deletion_text():
 
 def deletion_kb(gid):
     return _kb([
-        [_btn("🤫 Полная тишина", "delsil", gid)],
         [_btn("💭 Системные сообщения", "delsys", gid)],
         [_btn("🤯 Массовое удаление", "delmass", gid)],
         [_btn("⬅️ Назад", "back", gid, "root")],
-    ])
-
-
-def silence_text(gid):
-    enabled = get_deletion(gid).get("silence", False)
-    status = "Вкл ✅" if enabled else "Выкл ❌"
-    return (
-        "🤫 <b>Полная тишина</b>\n"
-        "Любое сообщение от пользователей (кроме Админов, Модераторов и Свободных) "
-        "будет удалено.\n\n"
-        f"Состояние: {status}"
-    )
-
-
-def silence_kb(gid):
-    enabled = get_deletion(gid).get("silence", False)
-    label = "❌ Выкл" if enabled else "✅ Вкл"
-    return _kb([
-        [_btn(label, "delsiltg", gid)],
-        [_btn("⬅️ Назад", "back", gid, "del")],
     ])
 
 

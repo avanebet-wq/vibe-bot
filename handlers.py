@@ -176,7 +176,7 @@ def _enqueue_ai_reply(message, *args, reply_mode="reply", processing_notice=Fals
     return True
 
 from settings import (
-    try_handle_pending_input, enforce_silence, enforce_captcha,
+    try_handle_pending_input, enforce_captcha,
     track_message, cmd_settings_command, open_settings_in_dm,
     send_dm_start_intro, send_dm_start_group_picker, send_group_start,
 )
@@ -847,16 +847,10 @@ def text_handler(message):
             return
 
         # УЛЬТРА-FAST PATH: известную команду маршрутизируем сразу.
-        # Она не должна ждать проверки полной тишины, ожидания
-        # настроек, учёта сообщения, памяти и прочей аналитики.
+        # Она не должна ждать ожидания настроек, учёта сообщения, памяти и прочей аналитики.
         # Каждая административная команда сама проверяет права там, где это нужно.
         direct_command_text = text.strip()
         if _dispatch(message, direct_command_text):
-            return
-
-        # Обычные сообщения могут быть удалены «Полной тишиной».
-        # Команды уже вышли выше и потому не задерживаются этим guard.
-        if is_group and enforce_silence(message):
             return
 
         # Ожидаемый ввод настроек обрабатываем только если это НЕ команда.

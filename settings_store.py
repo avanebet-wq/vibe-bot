@@ -31,7 +31,6 @@ def _default_settings():
         "captcha": {"enabled": False},
         "posts": {},          # id(str) -> post dict
         "deletion": {
-            "silence": False,
             "system": {key: False for key, _ in SYSTEM_MESSAGE_TYPES},
         },
         "liza": {
@@ -146,13 +145,6 @@ def set_captcha_enabled(gid, enabled):
 
 def get_deletion(gid):
     return get_all_settings(gid)["deletion"]
-
-
-def set_silence(gid, enabled):
-    with _lock:
-        chat = get_all_settings(gid)
-        chat["deletion"]["silence"] = bool(enabled)
-        save_all_settings(gid, chat)
 
 
 def toggle_system_message(gid, key):
