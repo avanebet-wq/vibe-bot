@@ -471,6 +471,59 @@ def _table(title, rows, emoji):
     return lines
 
 
+def reset_user_stats(chat_id, user_id):
+    """Обнуляет статистику пользователя во всех мини-играх (пыхнуть/заварить/выпить) в этом чате."""
+    with db_lock:
+        try:
+            cur1 = conn.execute(
+                "DELETE FROM minigame_events WHERE chat_id=? AND user_id=?",
+                (str(chat_id), str(user_id)),
+            )
+            cur2 = conn.execute(
+                "DELETE FROM drink_game_events WHERE chat_id=? AND user_id=?",
+                (str(chat_id), str(user_id)),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    deleted_minigame = getattr(cur1, "rowcount", 0) or 0
+    deleted_drink = getattr(cur2, "rowcount", 0) or 0
+    return deleted_minigame + deleted_drink
+
+
+def cmd_reset(message, args_text=""):
+    from utils import extract_target, is_chat_admin
+
+    cid = message.chat.id
+    if not is_chat_admin(cid, message.from_user.id):
+        bot.reply_to(message, "⛔ Эта команда только для админов чата.")
+        return
+
+    target_id, target_name, _ = extract_target(message, args_text)
+    if not target_id:
+        bot.reply_to(
+            message,
+            "🤔 Не поняла, кого. Ответь этой командой на сообщение человека "
+            "или укажи @username.\n\nПример: <code>обнулить @username</code>",
+        )
+        return
+
+    try:
+        total = reset_user_stats(cid, target_id)
+    except Exception:
+        LOG.exception("reset minigame stats failed")
+        bot.reply_to(message, "⚠️ Не получилось обнулить статистику, попробуй ещё раз.")
+        return
+
+    from utils import get_mention
+    bot.reply_to(
+        message,
+        f"🧹 Статистика мини-игр (пыхнуть/заварить/выпить) для {get_mention(target_id, target_name)} обнулена.",
+        parse_mode="HTML",
+    )
+
+
 def _overall_rows(smoke, coffee, drink):
     totals = {}
     for rows in (smoke, coffee, drink):

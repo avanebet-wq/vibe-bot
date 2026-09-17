@@ -6,7 +6,7 @@ from mood_state import on_message as update_mood, on_event as update_mood_event
 from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_user_memory
 from social_context import observe as observe_social
 from contest import (is_active as contest_is_active, cmd_start as contest_start, cmd_stop as contest_stop, cmd_add_participant as contest_add_participant)
-from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats
+from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats, cmd_reset as cmd_reset_minigames
 from profile import cmd_profile, touch_user
 from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, give_negative_karma, auto_delta
 from relationships import create_request_command, end_relationship, set_main, remove_main, show_relationship, actions_dm, execute_action
@@ -272,6 +272,7 @@ _SINGLE_COMMANDS = {
     "+чат": cmd_chat_on,
     "стата": lambda m, a: cmd_minigame_stats(m, a),
     "топ": lambda m, a: cmd_minigame_stats(m, a),
+    "обнулить": lambda m, a: cmd_reset_minigames(m, a),
     "калл": lambda m, a: _cmd_call(m, a),
     "+отн": lambda m, a: create_request_command(m, a),
     "-отн": lambda m, a: end_relationship(m, a),
