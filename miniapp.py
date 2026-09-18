@@ -18,47 +18,6 @@ log = logging.getLogger("miniapp")
 
 PORT = 8080
 
-# Типы кнопок, которые понимает редактор Mini App (см. BUTTON_TYPES в miniapp_index.html).
-# Порядок важен: он определяет приоритет при распознавании типа хранимой кнопки.
-_UI_BUTTON_TYPES = ("url", "popup", "alert", "share", "copy", "rules", "user_command", "delete_message")
-_UI_STYLES = ("transparent", "blue", "green", "red")
-
-
-def _stored_button_to_ui(btn):
-    """Преобразовать кнопку из формата хранения (settings_core/build_markup_from_buttons:
-    {"text":.., "url"/"popup"/"alert"/"share"/"copy"/"rules"/"user_command":.., "delete_message": True})
-    в формат, который ждёт редактор Mini App: {type, name, value}.
-
-    Без этого преобразования /api/context отдавал сырые данные хранения, редактор
-    получал btn.type/btn.name/btn.value == undefined и падал при рендере (пустой
-    экран "добавить кнопку" при повторном открытии уже настроенных кнопок).
-    """
-    typ = "url"
-    value = ""
-    for candidate in _UI_BUTTON_TYPES:
-        if candidate == "delete_message":
-            if btn.get("delete_message"):
-                typ = candidate
-                value = ""
-                break
-            continue
-        raw = btn.get(candidate)
-        if raw is not None and raw is not False:
-            typ = candidate
-            # Легаси-формат текстовой команды мог хранить rules/True как булево —
-            # тогда просто нет доп. значения, но тип определён верно.
-            value = raw if isinstance(raw, str) else ""
-            break
-    style = btn.get("style")
-    if style not in _UI_STYLES:
-        style = "transparent"
-    return {
-        "type": typ,
-        "name": btn.get("text") or "",
-        "value": value,
-        "style": style,
-    }
-
 
 class MiniAppHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -171,26 +130,21 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
             if post is None:
                 return self._json(404, {"error": "Публикация не найдена"})
 
-            # Старые сохранённые кнопки могли содержать только custom_emoji_id.
-            # Для них тоже строим стабильный URL нашего preview-прокси.
-            rows = []
-            for row in (post.get("buttons") or []):
-                out_row = []
-                for btn in (row or []):
-                    if not isinstance(btn, dict):
-                        continue
-                    # Приводим формат хранения к формату редактора (type/name/value),
-                    # иначе повторное открытие конструктора получает "пустые" кнопки.
-                    out = _stored_button_to_ui(btn)
+            # Приводим формат хранения к формату редактора через ЕДИНУЮ функцию
+            # (settings_store.stored_rows_to_ui) — ту же самую, которой пользуется
+            # settings_core.py при зашивании состояния прямо в ссылку конструктора.
+            # Раньше здесь была отдельная копия этой логики, и её рассинхронизация
+            # с форматом сохранения приводила к тому, что конструктор при повторном
+            # открытии показывал пустой экран.
+            rows = store.stored_rows_to_ui(post.get("buttons") or [])
+            for row in rows:
+                for btn in row:
                     emoji_id = btn.get("custom_emoji_id")
                     if emoji_id:
-                        out["custom_emoji_id"] = str(emoji_id)
                         # Всегда используем локальный прокси-превью. Старые
                         # Telegram file URLs могли протухнуть или содержать
                         # bot token и поэтому не отображались в Mini App.
-                        out["custom_emoji_preview"] = pe.preview_proxy_url(str(emoji_id))
-                    out_row.append(out)
-                rows.append(out_row)
+                        btn["custom_emoji_preview"] = pe.preview_proxy_url(emoji_id)
             return self._json(200, {"rows": rows})
 
         if path.startswith("/api/buttons/"):
@@ -240,7 +194,7 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                         value = str(btn.get("value") or "")
                         out = {"text": name}
                         style = str(btn.get("style") or "").strip()
-                        if style in ("transparent", "blue", "green", "red"):
+                        if style in store.UI_STYLES:
                             out["style"] = style
                         if typ == "url":
                             value = value.strip()

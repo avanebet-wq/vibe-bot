@@ -399,6 +399,10 @@
   var POST_ID = qs.get("post_id") || decodedStart.post_id;
   var EDIT_MODE = qs.get("mode") === "edit" || !!decodedStart.edit;
   var INIT_DATA = tg ? tg.initData : "";
+  // Текущие кнопки могут быть зашиты прямо в ссылку (см. settings_core.py,
+  // _miniapp_state_param) — тогда не нужен отдельный запрос к /api/context,
+  // конструктор открывается мгновенно с уже готовыми кнопками.
+  var STATE_PARAM = qs.get("state") || "";
 
   function decodeStartParam(sp){
     // Bot side may encode something like "c-1001234567890_p1".
@@ -515,7 +519,10 @@
     }
     var span = document.createElement("span");
     span.className = "label";
-    span.textContent = btn.name || TYPE_BY_ID[btn.type].label;
+    // Защита от неизвестного/отсутствующего типа кнопки: раньше падение именно
+    // здесь оставляло весь конструктор пустым при повторном открытии.
+    var typeInfo = TYPE_BY_ID[btn.type] || TYPE_BY_ID.url;
+    span.textContent = btn.name || typeInfo.label;
     pill.appendChild(span);
     pill.addEventListener("click", function(){ openEditor(rowIndex, btnIndex, false); });
     return pill;
@@ -577,7 +584,8 @@
 
   function renderButtonNamePreview(btn){
     el.buttonNamePreview.innerHTML = "";
-    var previewText = (el.fName.value || btn.name || TYPE_BY_ID[btn.type].label || "Название").trim();
+    var previewTypeInfo = TYPE_BY_ID[btn.type] || TYPE_BY_ID.url;
+    var previewText = (el.fName.value || btn.name || previewTypeInfo.label || "Название").trim();
     if (btn.customEmojiPreview){
       var img = document.createElement("img");
       img.src = btn.customEmojiPreview;
@@ -886,24 +894,42 @@
   /* ------------------------------------------------------------------
    *  LOAD EXISTING CONFIGURATION FOR THIS chat_id + post_id
    * ------------------------------------------------------------------ */
+  // Превратить сырой ряд кнопок (из state= в URL или из /api/context) в
+  // внутреннее состояние редактора. Защищено от любых неожиданных значений
+  // типа кнопки — раньше именно неизвестный/отсутствующий btn.type ронял
+  // весь рендер и конструктор выглядел пустым.
+  function normalizeRows(rawRows){
+    return (rawRows || []).map(function(row){
+      return (row || []).map(function(b){
+        var type = (b && TYPE_BY_ID[b.type]) ? b.type : "url";
+        return {
+          id: nextId(), type: type, name: (b && b.name) || "", value: (b && b.value) || "",
+          style: (b && b.style) || "transparent",
+          customEmojiId: (b && b.custom_emoji_id) || null,
+          customEmojiPreview: (b && b.custom_emoji_preview) || null
+        };
+      });
+    });
+  }
+
   function loadExisting(){
-    // Всегда пытаемся подтянуть уже сохранённые кнопки для этой публикации —
-    // не полагаемся на признак "режима редактирования" из startapp-параметра,
-    // так как он не всегда надёжно доходит при повторном открытии.
+    // Быстрый путь: кнопки уже зашиты прямо в ссылку — рисуем сразу, без сети.
+    if (STATE_PARAM){
+      try {
+        state.rows = normalizeRows(JSON.parse(STATE_PARAM));
+        renderMain();
+        return;
+      } catch (e) {
+        // Битый/обрезанный параметр — просто уходим в запасной путь ниже.
+      }
+    }
+    // Запасной путь (ссылки без state=, например через t.me/bot/app?startapp=,
+    // где Telegram ограничивает длину параметра 64 символами и зашить туда
+    // кнопки нельзя): подтягиваем кнопки отдельным запросом, как раньше.
     if (!CHAT_ID || !POST_ID) { renderMain(); return; }
     authFetch("/api/context?chat_id=" + encodeURIComponent(CHAT_ID) + "&post_id=" + encodeURIComponent(POST_ID))
       .then(function(r){ return r.ok ? r.json() : { rows: [] }; })
-      .then(function(data){
-        state.rows = (data.rows || []).map(function(row){
-          return row.map(function(b){
-            return {
-              id: nextId(), type: b.type, name: b.name, value: b.value,
-              style: b.style, customEmojiId: b.custom_emoji_id || null,
-              customEmojiPreview: b.custom_emoji_preview || null
-            };
-          });
-        });
-      })
+      .then(function(data){ state.rows = normalizeRows(data.rows); })
       .catch(function(){ /* new publication — start empty */ })
       .finally(renderMain);
   }

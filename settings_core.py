@@ -2,10 +2,11 @@
 """Меню настроек Лизы: капча, повторяющиеся публикации, удаление сообщений."""
 import re
 import time
+import json
 import logging
 import threading
 import os
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, quote
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -652,6 +653,45 @@ def build_markup_from_buttons(rows, gid=None, pid=None):
                 line.append(types.InlineKeyboardButton(text, callback_data="cf|noop|0"))
         kb.row(*line)
     return kb
+
+
+# Безопасный предел длины сериализованного состояния кнопок, которое зашивается
+# прямо в ссылку конструктора (см. _miniapp_state_param). У Telegram Bot API нет
+# официально задокументированного лимита именно на длину url= в инлайн-кнопке,
+# поэтому берём разумный запас с большим накидом. Если превышен — просто не
+# добавляем "state=" в ссылку, и конструктор прозрачно откатится на
+# GET /api/context (запасной путь, который продолжает работать как раньше).
+MINIAPP_STATE_MAX_LEN = 1500
+
+
+def _miniapp_state_param(post):
+    """Сериализовать текущие кнопки публикации в компактный JSON для query-параметра
+    "state" ссылки конструктора — так Mini App получает актуальные кнопки сразу при
+    открытии, без отдельного похода на бэкенд (и без риска рассинхронизации формата,
+    которая раньше приводила к пустому экрану при повторном открытии).
+    Возвращает готовую строку "&state=..." либо "", если зашивать не стоит
+    (кнопок нет или сериализация вышла слишком длинной).
+    """
+    ui_rows = store.stored_rows_to_ui(post.get("buttons") or [])
+    if not any(ui_rows):
+        return ""
+    for row in ui_rows:
+        for btn in row:
+            emoji_id = btn.get("custom_emoji_id")
+            if emoji_id:
+                btn["custom_emoji_preview"] = pe.preview_proxy_url(emoji_id)
+    try:
+        state_json = json.dumps(ui_rows, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        log.exception("[settings buttons] Не удалось сериализовать state для Mini App")
+        return ""
+    if len(state_json) > MINIAPP_STATE_MAX_LEN:
+        log.warning(
+            "[settings buttons] state для Mini App превысил безопасную длину (%d), "
+            "пропускаю — конструктор откроется через /api/context", len(state_json),
+        )
+        return ""
+    return "&state=" + quote(state_json, safe="")
 
 
 # =============================================================================
@@ -1612,8 +1652,11 @@ def _dispatch_callback(call):
             # из-за чего конструктор открывался пустым при повторном заходе.
             # "v=" — просто чтобы Telegram не показал закэшированную старую
             # страницу при открытии той же публикации второй раз подряд.
+            # "state=" — текущие кнопки зашиты прямо в ссылку (см. GroupHelpBot),
+            # чтобы конструктор рисовал их сразу, без похода на /api/context.
             miniapp_url = (
                 f"{MINIAPP_PUBLIC_URL}/?chat_id={gid}&post_id={pid}&v={int(time.time())}"
+                f"{_miniapp_state_param(post)}"
             )
         else:
             start_param = f"c{gid}_p{pid}"

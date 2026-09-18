@@ -75,6 +75,74 @@ def _default_post():
     }
 
 
+# ---------------------------------------------------------------------------
+# Преобразование формата хранения кнопок <-> формата конструктора (Mini App).
+#
+# Формат хранения (используется build_markup_from_buttons в settings_core.py
+# для реальной отправки в Telegram): {"text":.., "url"/"popup"/"alert"/
+# "share"/"copy"/"rules"/"user_command":.., "delete_message": True}
+#
+# Формат конструктора (используется miniapp_index.html): {type, name, value, style}
+#
+# Это ЕДИНСТВЕННОЕ место, где происходит это преобразование. И settings_core.py
+# (зашивает текущее состояние прямо в ссылку конструктора), и miniapp.py
+# (запасной эндпоинт /api/context) используют именно эту функцию — так формат
+# конструктора и формат хранения больше не могут разойтись между собой, как
+# уже один раз произошло (конструктор при повторном открытии показывал пустой
+# экран, потому что /api/context отдавал сырой формат хранения).
+# ---------------------------------------------------------------------------
+UI_BUTTON_TYPES = ("url", "popup", "alert", "share", "copy", "rules", "user_command", "delete_message")
+UI_STYLES = ("transparent", "blue", "green", "red")
+
+
+def stored_button_to_ui(btn):
+    """Одна кнопка из формата хранения -> формат конструктора.
+
+    Не добавляет custom_emoji_preview — это URL нашего прокси-эндпоинта,
+    его собирает вызывающий код (premium_emoji.preview_proxy_url), чтобы
+    этот модуль не зависел от premium_emoji.
+    """
+    if not isinstance(btn, dict):
+        return None
+    typ = "url"
+    value = ""
+    for candidate in UI_BUTTON_TYPES:
+        if candidate == "delete_message":
+            if btn.get("delete_message"):
+                typ = candidate
+                value = ""
+                break
+            continue
+        raw = btn.get(candidate)
+        if raw is not None and raw is not False:
+            typ = candidate
+            # Легаси-текстовые команды могли хранить, например, rules=True
+            # (без текста) — тип определяем верно, значение оставляем пустым.
+            value = raw if isinstance(raw, str) else ""
+            break
+    style = btn.get("style")
+    if style not in UI_STYLES:
+        style = "transparent"
+    out = {"type": typ, "name": btn.get("text") or "", "value": value, "style": style}
+    emoji_id = btn.get("custom_emoji_id")
+    if emoji_id:
+        out["custom_emoji_id"] = str(emoji_id)
+    return out
+
+
+def stored_rows_to_ui(rows):
+    """Все ряды кнопок из формата хранения -> формат конструктора."""
+    out_rows = []
+    for row in (rows or []):
+        out_row = []
+        for btn in (row or []):
+            ui_btn = stored_button_to_ui(btn)
+            if ui_btn is not None:
+                out_row.append(ui_btn)
+        out_rows.append(out_row)
+    return out_rows
+
+
 def get_all_settings(gid):
     with _lock:
         store = db_get("group_settings", {})
