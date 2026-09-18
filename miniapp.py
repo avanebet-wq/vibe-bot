@@ -12,6 +12,7 @@ from runtime import BOT_USERNAME
 from reliability import stopped
 import settings_store as store
 import premium_emoji as pe
+from settings_core import _is_valid_button_url
 
 log = logging.getLogger("miniapp")
 
@@ -194,9 +195,11 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                         out = {"text": name}
                         if typ == "url":
                             value = value.strip()
-                            parsed_url = urlparse(value)
-                            if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
-                                raise ValueError(f"Некорректная ссылка: «{value}»")
+                            if not _is_valid_button_url(value):
+                                raise ValueError(
+                                    f"Некорректная ссылка: «{value}». "
+                                    "Нужен настоящий домен, например https://example.com"
+                                )
                             out["url"] = value
                         elif typ in ("popup", "alert", "share", "copy", "rules", "user_command"):
                             out[typ] = value

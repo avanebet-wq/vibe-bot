@@ -564,6 +564,25 @@ def cmd_mass_delete(gid):
 
 _SPECIAL_PREFIXES = ("popup:", "alert:", "share:", "copy:", "rules")
 
+# Домен должен состоять из меток через точку (например example.com) —
+# просто непустой netloc (как "cujxjsbsdj") Telegram не принимает и роняет
+# отправку с "Wrong HTTP URL".
+_DOMAIN_RE = re.compile(
+    r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$"
+)
+
+
+def _is_valid_button_url(value: str) -> bool:
+    """Строгая проверка URL для инлайн-кнопки: http(s) + домен с точкой (TLD)."""
+    if not value:
+        return False
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname or ""
+    return bool(_DOMAIN_RE.match(host))
+
 
 def parse_url_buttons(raw_text):
     rows = []
@@ -593,11 +612,11 @@ def parse_url_buttons(raw_text):
             elif low.startswith("copy:"):
                 btn["copy"] = value.split(":", 1)[1].strip()
             else:
-                parsed = urlparse(value)
-                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                if not _is_valid_button_url(value):
                     return None, (
                         f"⚠️ Некорректная ссылка: «{value}». "
-                        "Ссылка должна начинаться с http:// или https://."
+                        "Ссылка должна начинаться с http:// или https:// "
+                        "и содержать настоящий домен, например https://example.com."
                     )
                 btn["url"] = value
             row.append(btn)
@@ -617,8 +636,7 @@ def build_markup_from_buttons(rows, gid=None, pid=None):
             text = b.get("text", "Кнопка")
             if b.get("url"):
                 value = str(b.get("url") or "").strip()
-                parsed = urlparse(value)
-                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                if not _is_valid_button_url(value):
                     log.warning("[settings buttons] skipped invalid URL: %r", value)
                     continue
                 line.append(types.InlineKeyboardButton(text, url=value))
@@ -702,11 +720,17 @@ def _rows_to_pe_format(rows, gid=None, pid=None):
             text = b.get("text", "Кнопка")
             emoji_id = b.get("custom_emoji_id") or None
             btn = {"text": text, "custom_emoji_id": emoji_id}
-            if b.get("url"):
-                value = str(b.get("url") or "").strip()
-                parsed = urlparse(value)
-                if parsed.scheme in ("http", "https") and parsed.netloc:
-                    btn["url"] = value
+            if b.get("url") and _is_valid_button_url(str(b.get("url") or "").strip()):
+                btn["url"] = str(b.get("url")).strip()
+            elif b.get("url"):
+                # ссылка была сохранена раньше и невалидна (нет TLD и т.п.) —
+                # не пытаемся отправить её в Telegram, превращаем кнопку в noop
+                log.warning("[settings buttons] skipped invalid URL: %r", b.get("url"))
+                if gid is not None and pid is not None:
+                    cb = f"cf|postbtn|{gid}|{pid}|{row_index}:{btn_index}"
+                    btn["callback_data"] = cb[:64]
+                else:
+                    btn["callback_data"] = "cf|noop|0"
             elif b.get("share") is not None:
                 btn["url"] = f"https://t.me/share/url?text={b['share']}"
             elif gid is not None and pid is not None:
