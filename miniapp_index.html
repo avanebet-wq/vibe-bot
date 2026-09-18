@@ -887,10 +887,10 @@
    *  LOAD EXISTING CONFIGURATION FOR THIS chat_id + post_id
    * ------------------------------------------------------------------ */
   function loadExisting(){
-    // In edit mode we always load the saved template. In normal mode a new
-    // constructor starts empty; this keeps the two buttons semantically
-    // separate even though both point to the same Main Mini App.
-    if (!CHAT_ID || !POST_ID || !EDIT_MODE) { renderMain(); return; }
+    // Всегда пытаемся подтянуть уже сохранённые кнопки для этой публикации —
+    // не полагаемся на признак "режима редактирования" из startapp-параметра,
+    // так как он не всегда надёжно доходит при повторном открытии.
+    if (!CHAT_ID || !POST_ID) { renderMain(); return; }
     authFetch("/api/context?chat_id=" + encodeURIComponent(CHAT_ID) + "&post_id=" + encodeURIComponent(POST_ID))
       .then(function(r){ return r.ok ? r.json() : { rows: [] }; })
       .then(function(data){

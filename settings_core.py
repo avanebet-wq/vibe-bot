@@ -750,8 +750,9 @@ def _preview_post(chat_id, gid, pid):
     if not post or (not post.get("text") and not post.get("media")):
         bot.send_message(chat_id, "🤔 Сначала задайте текст или медиа публикации.")
         return
-    _deliver_post(chat_id, post, thread_id=post.get("topic_id"), pid=pid)
-    kb = ui._kb([[ui._btn("⬅️ Назад", "close", gid)]])
+    delivered = _deliver_post(chat_id, post, thread_id=post.get("topic_id"), pid=pid)
+    delivered_id = delivered.message_id if delivered else 0
+    kb = ui._kb([[ui._btn("⬅️ Назад", "pprevback", gid, delivered_id)]])
     msg = bot.send_message(chat_id, "👆 Так выглядит публикация целиком.", reply_markup=kb)
     track_message(chat_id, msg.message_id)
 
@@ -1460,6 +1461,20 @@ def _dispatch_callback(call):
             pass
         return
 
+    if action == "pprevback":
+        del_id = rest[0] if rest else None
+        bot.answer_callback_query(call.id)
+        try:
+            if del_id and str(del_id) not in ("0", "None"):
+                bot.delete_message(chat_id, int(del_id))
+        except Exception:
+            pass
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+        return
+
     if action == "security":
         bot.answer_callback_query(call.id)
         return _show(chat_id, message_id, "security", gid)
@@ -1590,9 +1605,10 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id)
 
         has_value = bool(post.get("buttons"))
-        # Если кнопки уже настроены — конструктор сразу открывается с текущей
-        # настройкой (суффикс _e), иначе — с чистого листа.
-        start_param = f"c{gid}_p{pid}_e" if has_value else f"c{gid}_p{pid}"
+        # Конструктор всегда подтягивает уже сохранённые кнопки этой публикации
+        # сам (см. miniapp_index.html), поэтому суффикс режима редактирования
+        # в ссылке больше не нужен.
+        start_param = f"c{gid}_p{pid}"
         miniapp_url = f"https://t.me/{BOT_USERNAME}/app?startapp={start_param}"
 
         hint = (
@@ -1689,9 +1705,18 @@ def _dispatch_callback(call):
         if not raw_rows:
             return bot.answer_callback_query(call.id, "🤔 URL-кнопки ещё не установлены.", show_alert=True)
         bot.answer_callback_query(call.id, "👀 Отправляю кнопки.")
+        caption = "🔠 Так выглядят установленные URL-кнопки:"
+        if pe.has_emoji_buttons(raw_rows):
+            pe_rows = _rows_to_pe_format(raw_rows, gid=gid, pid=pid)
+            pe_rows.append([{"text": "⬅️ Назад", "callback_data": f"cf|close|{gid}"}])
+            resp = pe.send_message_with_emoji_buttons(chat_id, caption, pe_rows)
+            if resp is not None and resp.get("ok"):
+                track_message(chat_id, resp["result"]["message_id"])
+                return
+            # если raw-запрос не удался — падаем до обычного пути ниже
         markup = build_markup_from_buttons(raw_rows, gid=gid, pid=pid) or types.InlineKeyboardMarkup()
         markup.row(ui._btn("⬅️ Назад", "close", gid))
-        msg = bot.send_message(chat_id, "🔠 Так выглядят установленные URL-кнопки:", reply_markup=markup)
+        msg = bot.send_message(chat_id, caption, reply_markup=markup)
         track_message(chat_id, msg.message_id)
         return
 
