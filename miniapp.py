@@ -18,6 +18,47 @@ log = logging.getLogger("miniapp")
 
 PORT = 8080
 
+# Типы кнопок, которые понимает редактор Mini App (см. BUTTON_TYPES в miniapp_index.html).
+# Порядок важен: он определяет приоритет при распознавании типа хранимой кнопки.
+_UI_BUTTON_TYPES = ("url", "popup", "alert", "share", "copy", "rules", "user_command", "delete_message")
+_UI_STYLES = ("transparent", "blue", "green", "red")
+
+
+def _stored_button_to_ui(btn):
+    """Преобразовать кнопку из формата хранения (settings_core/build_markup_from_buttons:
+    {"text":.., "url"/"popup"/"alert"/"share"/"copy"/"rules"/"user_command":.., "delete_message": True})
+    в формат, который ждёт редактор Mini App: {type, name, value}.
+
+    Без этого преобразования /api/context отдавал сырые данные хранения, редактор
+    получал btn.type/btn.name/btn.value == undefined и падал при рендере (пустой
+    экран "добавить кнопку" при повторном открытии уже настроенных кнопок).
+    """
+    typ = "url"
+    value = ""
+    for candidate in _UI_BUTTON_TYPES:
+        if candidate == "delete_message":
+            if btn.get("delete_message"):
+                typ = candidate
+                value = ""
+                break
+            continue
+        raw = btn.get(candidate)
+        if raw is not None and raw is not False:
+            typ = candidate
+            # Легаси-формат текстовой команды мог хранить rules/True как булево —
+            # тогда просто нет доп. значения, но тип определён верно.
+            value = raw if isinstance(raw, str) else ""
+            break
+    style = btn.get("style")
+    if style not in _UI_STYLES:
+        style = "transparent"
+    return {
+        "type": typ,
+        "name": btn.get("text") or "",
+        "value": value,
+        "style": style,
+    }
+
 
 class MiniAppHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -138,9 +179,12 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                 for btn in (row or []):
                     if not isinstance(btn, dict):
                         continue
-                    out = dict(btn)
-                    emoji_id = out.get("custom_emoji_id")
+                    # Приводим формат хранения к формату редактора (type/name/value),
+                    # иначе повторное открытие конструктора получает "пустые" кнопки.
+                    out = _stored_button_to_ui(btn)
+                    emoji_id = btn.get("custom_emoji_id")
                     if emoji_id:
+                        out["custom_emoji_id"] = str(emoji_id)
                         # Всегда используем локальный прокси-превью. Старые
                         # Telegram file URLs могли протухнуть или содержать
                         # bot token и поэтому не отображались в Mini App.
@@ -195,6 +239,9 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
                         typ = str(btn.get("type") or "url")
                         value = str(btn.get("value") or "")
                         out = {"text": name}
+                        style = str(btn.get("style") or "").strip()
+                        if style in ("transparent", "blue", "green", "red"):
+                            out["style"] = style
                         if typ == "url":
                             value = value.strip()
                             if not _is_valid_button_url(value):
