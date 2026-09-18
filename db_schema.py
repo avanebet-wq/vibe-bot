@@ -38,7 +38,7 @@ def ensure_schema():
             conn.execute("""CREATE TABLE IF NOT EXISTS emoji_preview_cache (
                 emoji_id TEXT PRIMARY KEY,
                 content_type TEXT NOT NULL,
-                payload BLOB NOT NULL,
+                payload BYTEA NOT NULL,
                 cached_at REAL NOT NULL
             )""")
 
