@@ -503,21 +503,16 @@ def media_prompt_kb(gid, pid, has_value):
     return _kb(rows)
 
 
-def buttons_prompt_kb(gid, pid, has_value, miniapp_url=None, edit_url=None):
+def buttons_prompt_kb(gid, pid, has_value, miniapp_url=None):
     rows = []
     if miniapp_url:
         rows.append([types.InlineKeyboardButton(
-            "✏️ Удобное создание кнопок",
+            "⚡Простое создание кнопок",
             url=miniapp_url,
         )])
-    if has_value and edit_url:
-        rows.append([types.InlineKeyboardButton(
-            "✍️ Отредактировать кнопки",
-            url=edit_url,
-        )])
     if has_value:
-        rows.append([_btn("🚫 Удалить кнопки", "pbtndel", gid, pid)])
-    rows.append([_btn("❌ Отмена", "pbtncancel", gid, pid)])
+        rows.append([_btn("🚫Удалить URL-кнопки", "pbtndel", gid, pid)])
+    rows.append([_btn("⬅️Назад", "pbtncancel", gid, pid)])
     return _kb(rows)
 
 

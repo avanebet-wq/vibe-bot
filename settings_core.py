@@ -751,6 +751,9 @@ def _preview_post(chat_id, gid, pid):
         bot.send_message(chat_id, "🤔 Сначала задайте текст или медиа публикации.")
         return
     _deliver_post(chat_id, post, thread_id=post.get("topic_id"), pid=pid)
+    kb = ui._kb([[ui._btn("⬅️ Назад", "close", gid)]])
+    msg = bot.send_message(chat_id, "👆 Так выглядит публикация целиком.", reply_markup=kb)
+    track_message(chat_id, msg.message_id)
 
 
 # =============================================================================
@@ -1586,12 +1589,15 @@ def _dispatch_callback(call):
         post = store.get_post(gid, pid)
         bot.answer_callback_query(call.id)
 
-        start_param = f"c{gid}_p{pid}"
+        has_value = bool(post.get("buttons"))
+        # Если кнопки уже настроены — конструктор сразу открывается с текущей
+        # настройкой (суффикс _e), иначе — с чистого листа.
+        start_param = f"c{gid}_p{pid}_e" if has_value else f"c{gid}_p{pid}"
         miniapp_url = f"https://t.me/{BOT_USERNAME}/app?startapp={start_param}"
 
         hint = (
             "👉🏻 Здесь можно настроить кнопки для этой публикации.\n\n"
-            "Нажмите «✏️ Удобное создание кнопок», чтобы открыть конструктор.\n"
+            "Нажмите «⚡Простое создание кнопок», чтобы открыть конструктор.\n"
             "После сохранения кнопки автоматически будут использоваться при каждой "
             "повторяющейся публикации."
         )
@@ -1599,10 +1605,7 @@ def _dispatch_callback(call):
             chat_id,
             hint,
             parse_mode="HTML",
-            reply_markup=ui.buttons_prompt_kb(
-                gid, pid, bool(post.get("buttons")), miniapp_url=miniapp_url,
-                edit_url=(f"https://t.me/{BOT_USERNAME}/app?startapp=c{gid}_p{pid}_e") if post.get("buttons") else None
-            ),
+            reply_markup=ui.buttons_prompt_kb(gid, pid, has_value, miniapp_url=miniapp_url),
         )
         track_message(chat_id, msg.message_id)
         return
