@@ -744,47 +744,6 @@ def on_help_cmd(message):
 # Premium emoji management
 # ---------------------------------------------------------------------------
 
-@bot.message_handler(commands=["addemoji"])
-def on_addemoji(message):
-    """Добавить premium emoji в библиотеку бота.
-
-    Использование (в любом чате или личке):
-      /addemoji — в ответ на сообщение с премиум-эмодзи  (или то же сообщение содержит эмодзи)
-      Бот извлечёт custom_emoji_id из entities и сохранит в БД.
-    """
-    from utils import is_chat_admin
-    uid = message.from_user.id
-    cid = message.chat.id
-
-    # /addemoji остаётся административной командой, но сама библиотека
-    # теперь всегда глобальная: добавленные создателем паки видны всем
-    # пользователям во всех чатах.
-    if message.chat.type != "private" and not is_chat_admin(cid, uid):
-        return
-
-    # Проверяем само сообщение и реплай. group_id намеренно не передаём:
-    # premium-emoji library больше не разделяется по чатам.
-    target = message.reply_to_message or message
-    saved = pe.process_message_for_emojis(target)
-
-    if not saved:
-        bot.reply_to(
-            message,
-            "🤔 Не нашла premium-эмодзи в этом сообщении.\n\n"
-            "Ответь этой командой на сообщение с <b>премиум-эмодзи</b> "
-            "(те, что отображаются как анимированные стикеры в тексте).",
-            parse_mode="HTML",
-        )
-    else:
-        count = len(saved)
-        bot.reply_to(
-            message,
-            f"✅ Добавила <b>{count}</b> premium-эмодзи в библиотеку.\n"
-            "Теперь их можно выбрать в конструкторе кнопок.",
-            parse_mode="HTML",
-        )
-
-
 @bot.message_handler(commands=["listemojis"])
 def on_listemojis(message):
     """Показать список premium emoji в библиотеке."""
@@ -800,8 +759,7 @@ def on_listemojis(message):
     if not emojis:
         bot.reply_to(
             message,
-            "📭 Библиотека premium-эмодзи пуста.\n"
-            "Используй /addemoji — ответом на сообщение с премиум-эмодзи.",
+            "📭 Библиотека premium-эмодзи пуста.",
         )
         return
 

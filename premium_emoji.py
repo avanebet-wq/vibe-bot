@@ -10,6 +10,13 @@
   - При отправке сообщения с кнопками settings_core.py использует
     прямой HTTP-запрос к Bot API с полем entities в тексте кнопки,
     что позволяет отобразить premium emoji (недокументировано, но работает).
+
+  Кеш превью: байты картинки сохраняются в таблицу emoji_preview_cache
+  и никогда не устаревают — Telegram выдаёт один и тот же стикер навсегда
+  для данного emoji_id, поэтому TTL не нужен.
+
+  Групповые паки: пользователи могут добавлять паки по имени сета, паки
+  хранятся в group_emoji_packs и видны только в своей группе.
 """
 import json
 import logging
@@ -143,8 +150,12 @@ def get_packs() -> list[dict]:
         return result
 
 
-def get_pack_list() -> list[dict]:
-    """Return lightweight pack metadata for the Mini App tab strip."""
+def get_pack_list(chat_id: str | None = None) -> list[dict]:
+    """Return lightweight pack metadata for the Mini App tab strip.
+
+    If chat_id is given, also appends group-local packs for that chat
+    that are not already in the global library (marked with isLocal=True).
+    """
     with db_lock:
         rows = conn.execute(
             """SELECT p.pack_id, p.set_name, p.created_at, p.preview_emoji_id,
@@ -155,7 +166,9 @@ def get_pack_list() -> list[dict]:
                ORDER BY p.created_at ASC, p.pack_id ASC"""
         ).fetchall()
     result = []
+    global_set_names = set()
     for pack_id, set_name, created_at, preview_emoji_id, emoji_count in rows:
+        global_set_names.add(set_name)
         result.append({
             "id": int(pack_id),
             "setName": str(set_name or ""),
@@ -163,15 +176,55 @@ def get_pack_list() -> list[dict]:
             "previewEmojiId": str(preview_emoji_id) if preview_emoji_id else None,
             "previewUrl": preview_proxy_url(str(preview_emoji_id)) if preview_emoji_id else None,
             "emojiCount": int(emoji_count or 0),
+            "isLocal": False,
         })
+
+    # Append group-local packs
+    if chat_id:
+        with db_lock:
+            local_rows = conn.execute(
+                """SELECT g.set_name, g.pack_id, g.added_at
+                   FROM group_emoji_packs g
+                   WHERE g.chat_id=?
+                   ORDER BY g.added_at ASC""",
+                (str(chat_id),),
+            ).fetchall()
+        for set_name, pack_id, added_at in local_rows:
+            if set_name in global_set_names:
+                continue  # already in global list
+            # The pack may or may not exist in premium_emoji_packs yet
+            preview_emoji_id = None
+            emoji_count = 0
+            if pack_id:
+                with db_lock:
+                    pr = conn.execute(
+                        "SELECT preview_emoji_id FROM premium_emoji_packs WHERE pack_id=?",
+                        (pack_id,),
+                    ).fetchone()
+                    if pr:
+                        preview_emoji_id = pr[0]
+                    emoji_count = conn.execute(
+                        "SELECT COUNT(*) FROM premium_emojis WHERE pack_id=?",
+                        (pack_id,),
+                    ).fetchone()[0]
+            result.append({
+                "id": pack_id or -1,
+                "setName": str(set_name or ""),
+                "createdAt": float(added_at or 0),
+                "previewEmojiId": str(preview_emoji_id) if preview_emoji_id else None,
+                "previewUrl": preview_proxy_url(str(preview_emoji_id)) if preview_emoji_id else None,
+                "emojiCount": int(emoji_count or 0),
+                "isLocal": True,
+            })
     return result
 
 
-def get_emojis(group_id: str = "", query: str = "") -> list[dict]:
+def get_emojis(group_id: str = "", query: str = "", chat_id: str | None = None) -> list[dict]:
     """Compatibility flat view; library itself is now global and pack-based.
 
     When query is supplied it matches the ordinary emoji associated with the
     custom emoji. With an empty query, all emoji are returned in pack order.
+    If chat_id is given, group-local packs are included in results.
     """
     del group_id  # packs are deliberately global
     q = _normalize_emoji(query)
@@ -232,14 +285,111 @@ def delete_emoji(emoji_id: str, group_id: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Group-local pack management
+# ---------------------------------------------------------------------------
+
+def add_group_pack(chat_id: str, set_name: str, added_by: str | None = None) -> dict:
+    """Register a pack as visible in a specific group.
+
+    Returns {"ok": True, "already": bool, "pack_id": int|None}.
+    The pack's emojis are fetched from Telegram and stored if not yet in DB.
+    """
+    set_name = str(set_name or "").strip()
+    chat_id = str(chat_id)
+    now = time.time()
+
+    # Check if already registered globally or locally
+    with db_lock:
+        global_row = conn.execute(
+            "SELECT pack_id FROM premium_emoji_packs WHERE set_name=?", (set_name,)
+        ).fetchone()
+        local_row = conn.execute(
+            "SELECT id FROM group_emoji_packs WHERE chat_id=? AND set_name=?",
+            (chat_id, set_name),
+        ).fetchone()
+
+    if local_row and global_row:
+        return {"ok": True, "already": True, "pack_id": int(global_row[0])}
+
+    # Fetch the sticker set from Telegram to get emoji_ids
+    try:
+        data = _tg("getStickerSet", name=set_name)
+    except Exception as exc:
+        log.warning("[premium_emoji] getStickerSet(%s) failed: %s", set_name, exc)
+        return {"ok": False, "error": "Пак не найден в Telegram"}
+
+    stickers = (data.get("result") or {}).get("stickers") or []
+    # Filter custom emoji only
+    custom_stickers = [s for s in stickers if s.get("custom_emoji_id")]
+    if not custom_stickers:
+        return {"ok": False, "error": "В этом паке нет премиум-эмодзи"}
+
+    # Save to global packs/emojis so they can be used by the group
+    preview_emoji_id = None
+    pack_id = None
+    if custom_stickers:
+        first_eid = str(custom_stickers[0]["custom_emoji_id"])
+        pack_id = save_pack(set_name, preview_emoji_id=first_eid)
+        preview_emoji_id = first_eid
+        for s in custom_stickers:
+            eid = str(s.get("custom_emoji_id") or "")
+            if not eid:
+                continue
+            ordinary_emoji = str(s.get("emoji") or "")
+            save_emoji(
+                eid,
+                ordinary_emoji or f"Эмодзи {eid}",
+                preview_proxy_url(eid),
+                pack_id=pack_id,
+                emoji=ordinary_emoji,
+            )
+            # Pre-warm the persistent cache for each emoji
+            _cache_preview_async(eid)
+
+    # Register in group_emoji_packs
+    with db_lock:
+        conn.execute(
+            """INSERT INTO group_emoji_packs(chat_id, set_name, pack_id, added_by, added_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(chat_id, set_name) DO UPDATE SET pack_id=EXCLUDED.pack_id""",
+            (chat_id, set_name, pack_id, str(added_by or ""), now),
+        )
+        conn.commit()
+
+    return {"ok": True, "already": bool(local_row), "pack_id": pack_id}
+
+
+def _cache_preview_async(emoji_id: str) -> None:
+    """Fire-and-forget: fetch and cache preview bytes for emoji_id if not cached."""
+    import threading
+    def _do():
+        try:
+            fetch_preview_bytes(emoji_id)
+        except Exception:
+            pass
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def extract_set_name_from_link(link: str) -> str | None:
+    """Extract sticker set name from t.me/addstickers/<name> or addstickers/<name>."""
+    import re
+    link = (link or "").strip()
+    m = re.search(r"(?:t\.me/addstickers?/|addstickers?/)([A-Za-z0-9_]+)", link, re.I)
+    if m:
+        return m.group(1)
+    # Maybe user just typed the set name directly
+    if re.fullmatch(r"[A-Za-z0-9_]{3,64}", link):
+        return link
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Telegram API helpers
 # ---------------------------------------------------------------------------
 
 _API = f"https://api.telegram.org/bot{TOKEN}"
 _FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 _SESSION = requests.Session()
-_PREVIEW_CACHE: dict[str, tuple[float, str, bytes]] = {}
-_PREVIEW_CACHE_TTL = 600
 
 
 def _tg(method: str, **params) -> dict:
@@ -264,13 +414,24 @@ def fetch_custom_emoji_stickers(emoji_ids: list[str]) -> list[dict]:
 
 
 def fetch_preview_bytes(emoji_id: str) -> tuple[str, bytes] | None:
-    """Get a static thumbnail for the backend preview proxy, with cache."""
-    key = str(emoji_id)
-    now = time.time()
-    cached = _PREVIEW_CACHE.get(key)
-    if cached and cached[0] > now:
-        return cached[1], cached[2]
+    """Get a static thumbnail for the backend preview proxy.
 
+    Order of lookup:
+    1. Persistent DB cache (emoji_preview_cache) — never re-fetches once stored.
+    2. Telegram file API — fetches and then stores permanently in DB.
+    """
+    key = str(emoji_id)
+
+    # 1. Check persistent DB cache first
+    with db_lock:
+        cached = conn.execute(
+            "SELECT content_type, payload FROM emoji_preview_cache WHERE emoji_id=?",
+            (key,),
+        ).fetchone()
+    if cached:
+        return cached[0], bytes(cached[1])
+
+    # 2. Fetch from Telegram
     try:
         stickers = fetch_custom_emoji_stickers([key])
         if not stickers:
@@ -291,7 +452,17 @@ def fetch_preview_bytes(emoji_id: str) -> tuple[str, bytes] | None:
         payload = resp.content
         if not payload or len(payload) > 2 * 1024 * 1024:
             return None
-        _PREVIEW_CACHE[key] = (now + _PREVIEW_CACHE_TTL, content_type, payload)
+
+        # 3. Store permanently in DB cache
+        with db_lock:
+            conn.execute(
+                """INSERT INTO emoji_preview_cache(emoji_id, content_type, payload, cached_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(emoji_id) DO NOTHING""",
+                (key, content_type, payload, time.time()),
+            )
+            conn.commit()
+
         return content_type, payload
     except Exception as exc:
         log.warning("[premium_emoji] fetch_preview_bytes(%s) error: %s", emoji_id, exc)
@@ -344,16 +515,12 @@ def process_message_for_emojis(message, group_id: str = "") -> list[str]:
     stickers = fetch_custom_emoji_stickers(emoji_ids)
     by_id = {str(s.get("custom_emoji_id")): s for s in stickers if s.get("custom_emoji_id")}
     saved: list[str] = []
-    # Process in the exact order in which emojis occur in the source message.
-    # New packs are therefore created according to the first time they appear.
     pack_cache: dict[str, int] = {}
     for eid in emoji_ids:
         sticker = by_id.get(eid)
         if not sticker:
             continue
         set_name = str(sticker.get("set_name") or "").strip()
-        # A custom emoji normally has set_name. If Telegram omits it, keep the
-        # emoji usable by placing it into a stable one-emoji fallback pack.
         if not set_name:
             set_name = f"__standalone_{eid}"
         pack_id = pack_cache.get(set_name)
@@ -369,6 +536,8 @@ def process_message_for_emojis(message, group_id: str = "") -> list[str]:
             pack_id=pack_id,
             emoji=ordinary_emoji,
         )
+        # Pre-warm persistent cache for this emoji
+        _cache_preview_async(eid)
         saved.append(eid)
         log.info(
             "[premium_emoji] saved emoji_id=%s pack=%s set=%s emoji=%s",
@@ -382,16 +551,7 @@ def process_message_for_emojis(message, group_id: str = "") -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _build_button_with_emoji(btn_text: str, emoji_id: str | None, **kwargs) -> dict:
-    """Построить InlineKeyboardButton с официальным custom emoji icon.
-
-    Начиная с Bot API 9.4 у InlineKeyboardButton есть поле
-    ``icon_custom_emoji_id``. Оно как раз предназначено для показа
-    premium-эмодзи непосредственно перед текстом кнопки.
-
-    Для реальной публикации используется официальный ``icon_custom_emoji_id``.
-    Для браузерного предпросмотра используется отдельный proxy endpoint
-    ``/api/stickerImage`` — по смыслу такой же подход, как у GroupHelpBot.
-    """
+    """Построить InlineKeyboardButton с официальным custom emoji icon."""
     btn = {"text": str(btn_text or "Кнопка")}
     if emoji_id:
         btn["icon_custom_emoji_id"] = str(emoji_id)
@@ -407,13 +567,7 @@ def send_message_with_emoji_buttons(
     parse_mode: str = "HTML",
     message_thread_id: int | None = None,
 ) -> dict | None:
-    """Отправить сообщение с кнопками, поддерживающими premium emoji.
-
-    reply_markup_rows — list of rows, каждая row — list of button dicts:
-        {text, emoji_id (optional), url/callback_data/...}
-
-    Возвращает dict ответа Bot API или None при ошибке.
-    """
+    """Отправить сообщение с кнопками, поддерживающими premium emoji."""
     inline_keyboard = []
     for row in reply_markup_rows:
         row_buttons = []

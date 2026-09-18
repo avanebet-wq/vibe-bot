@@ -242,6 +242,20 @@
     font-size:11px; line-height:16px; text-align:center;
   }
   .emoji-empty{ color:var(--hint); font-size:13px; padding:6px 2px; }
+  .emoji-pack-add-btn{
+    flex:0 0 44px; width:44px; height:44px;
+    border:1px dashed var(--outline);
+    border-radius:12px;
+    background:transparent;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer;
+    font-size:22px;
+    color:var(--hint);
+    transition:color .15s, border-color .15s;
+  }
+  .emoji-pack-add-btn:hover{ color:var(--blue); border-color:var(--blue); }
+  .field-error{ color:#e05b58; font-size:12px; margin-top:4px; display:none; }
+  .field-error.show{ display:block; }
 
   .editor-actions{
     display:flex; gap:10px;
@@ -310,6 +324,7 @@
       <div class="field-label" id="fValueLabel">Ссылка</div>
       <input id="fValue" class="control" type="text" placeholder="t.me/username" />
       <div class="field-hint" id="fValueHint"></div>
+      <div class="field-error" id="fValueError"></div>
     </div>
 
     <div class="field">
@@ -441,6 +456,7 @@
     fValueLabel:  document.getElementById("fValueLabel"),
     fValue:       document.getElementById("fValue"),
     fValueHint:   document.getElementById("fValueHint"),
+    fValueError:  document.getElementById("fValueError"),
     fStyle:       document.getElementById("fStyle"),
     emojiSearch:  document.getElementById("emojiSearch"),
     emojiPackTabs:document.getElementById("emojiPackTabs"),
@@ -613,18 +629,49 @@
     backToMain();
   });
 
+  function isValidButtonUrl(value){
+    try {
+      var u = new URL(value.trim());
+      if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+      var host = u.hostname || "";
+      // Must have at least one dot (real TLD)
+      return /^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?)+$/i.test(host);
+    } catch(e){ return false; }
+  }
+
+  function showUrlError(msg){
+    el.fValueError.textContent = msg;
+    el.fValueError.classList.add("show");
+  }
+  function hideUrlError(){
+    el.fValueError.classList.remove("show");
+    el.fValueError.textContent = "";
+  }
+
+  el.fValue.addEventListener("input", function(){
+    if (el.fType.value === "url") hideUrlError();
+  });
+
   el.fSave.addEventListener("click", function(){
     if (!editing) return;
     var name = el.fName.value.trim();
     if (!name){ showToast("Укажите имя кнопки"); return; }
-    if (el.fType.value !== "delete_message" && !el.fValue.value.trim()){
+    var typ = el.fType.value;
+    var val = el.fValue.value.trim();
+    if (typ !== "delete_message" && !val){
       showToast("Заполните поле «" + el.fValueLabel.textContent + "»");
       return;
     }
+    if (typ === "url" && val && !isValidButtonUrl(val)){
+      showUrlError("Непонятная ссылка, используйте другую (например https://t.me/username)");
+      el.fValue.focus();
+      return;
+    }
+    hideUrlError();
     var btn = state.rows[editing.rowIndex][editing.btnIndex];
-    btn.type = el.fType.value;
+    btn.type = typ;
     btn.name = name;
-    btn.value = el.fType.value === "delete_message" ? "" : el.fValue.value.trim();
+    btn.value = typ === "delete_message" ? "" : val;
     btn.style = el.fStyle.value;
     editing.isNew = false;
     backToMain();
@@ -663,10 +710,6 @@
 
   function renderPackTabs(){
     el.emojiPackTabs.innerHTML = "";
-    if (!emojiPacks.length){
-      el.emojiPackTabs.classList.add("hidden");
-      return;
-    }
     el.emojiPackTabs.classList.remove("hidden");
     emojiPacks.forEach(function(pack){
       var tab = document.createElement("div");
@@ -680,6 +723,7 @@
       } else {
         tab.textContent = ((pack.emojis || [])[0] || {}).emoji || "⭐";
       }
+      tab.title = pack.isLocal ? "Пак группы: " + (pack.setName || "") : (pack.setName || "");
       tab.addEventListener("click", function(){
         activePackId = pack.id;
         renderPackTabs();
@@ -688,6 +732,32 @@
       });
       el.emojiPackTabs.appendChild(tab);
     });
+
+    // + button — add a group-local pack by link
+    var addBtn = document.createElement("div");
+    addBtn.className = "emoji-pack-add-btn";
+    addBtn.textContent = "+";
+    addBtn.title = "Добавить пак для этой группы";
+    addBtn.addEventListener("click", function(){
+      var link = prompt("Вставьте ссылку на пак эмодзи (t.me/addstickers/ИМЯ):");
+      if (!link || !link.trim()) return;
+      var chatId = CHAT_ID;
+      if (!chatId){ showToast("Не удалось определить группу"); return; }
+      authFetch("/api/group-pack/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, link: link.trim() })
+      }).then(function(r){ return r.json(); }).then(function(d){
+        if (d.ok){
+          showToast(d.already ? "Этот пак уже добавлен" : "Пак добавлен! Загружаю эмодзи…");
+          emojiPackCache = {};
+          fetchPacks();
+        } else {
+          showToast(d.error || "Не удалось добавить пак");
+        }
+      }).catch(function(){ showToast("Ошибка сети при добавлении пака"); });
+    });
+    el.emojiPackTabs.appendChild(addBtn);
   }
 
   function normalizeSearchEmoji(value){
@@ -762,7 +832,8 @@
       renderPackTabs();
       return Promise.resolve(emojiPacks);
     }
-    return authFetch("/api/emoji-packs")
+    var packsUrl = "/api/emoji-packs" + (CHAT_ID ? "?chat_id=" + encodeURIComponent(CHAT_ID) : "");
+    return authFetch(packsUrl)
       .then(function(r){ return r.ok ? r.json() : []; })
       .then(function(packs){
         emojiPacks = Array.isArray(packs) ? packs : [];
@@ -915,4 +986,4 @@
 </body>
 </html>
 
-<!-- updated 2026-09-18 -->
+<!-- updated 2026-09-18 v2 -->

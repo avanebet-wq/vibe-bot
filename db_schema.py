@@ -2,7 +2,7 @@
 """Schema/migration marker for normalized PostgreSQL tables."""
 from database import conn, db_lock
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 def ensure_schema():
@@ -33,6 +33,27 @@ def ensure_schema():
             )""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_premium_emoji_pack ON premium_emojis(pack_id, added_at, emoji_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_premium_emoji_emoji ON premium_emojis(emoji)")
+
+            # v27: persistent disk cache for emoji preview images (avoids re-fetching from Telegram)
+            conn.execute("""CREATE TABLE IF NOT EXISTS emoji_preview_cache (
+                emoji_id TEXT PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                cached_at REAL NOT NULL
+            )""")
+
+            # v27: group-local emoji pack subscriptions (users can add packs visible only in their group)
+            conn.execute("""CREATE TABLE IF NOT EXISTS group_emoji_packs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                set_name TEXT NOT NULL,
+                pack_id BIGINT,
+                added_by TEXT,
+                added_at REAL NOT NULL,
+                UNIQUE(chat_id, set_name)
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_group_emoji_packs_chat ON group_emoji_packs(chat_id, added_at)")
+
             conn.execute("CREATE TABLE IF NOT EXISTS user_facts (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, fact TEXT NOT NULL, source TEXT, importance INTEGER DEFAULT 1, created_at REAL NOT NULL, PRIMARY KEY(chat_id,user_id,fact))")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_facts_chat_user ON user_facts(chat_id,user_id)")
             conn.execute("CREATE TABLE IF NOT EXISTS app_events (chat_id TEXT, event_type TEXT, actor_id TEXT, target_id TEXT, created_at REAL NOT NULL, payload TEXT)")

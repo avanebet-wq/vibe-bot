@@ -55,7 +55,9 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/emoji-packs":
             # Lightweight tab metadata only; emoji bodies are loaded per selected pack.
-            return self._json(200, pe.get_pack_list())
+            qs = parse_qs(parsed.query)
+            chat_id = (qs.get("chat_id") or [""])[0] or None
+            return self._json(200, pe.get_pack_list(chat_id=chat_id))
 
         if path.startswith("/api/emoji-packs/") and path.endswith("/emojis"):
             try:
@@ -223,6 +225,27 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 log.exception("[MiniApp] Ошибка сохранения кнопок")
                 return self._json(500, {"error": "Внутренняя ошибка сервера"})
+
+        if path == "/api/group-pack/add":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+                chat_id = str(data.get("chat_id") or "").strip()
+                link = str(data.get("link") or "").strip()
+                added_by = str(data.get("user_id") or "").strip() or None
+                if not chat_id or not link:
+                    return self._json(400, {"error": "chat_id и link обязательны"})
+                set_name = pe.extract_set_name_from_link(link)
+                if not set_name:
+                    return self._json(400, {"error": "Не удалось определить пак. Вставьте ссылку вида t.me/addstickers/ИМЯ"})
+                result = pe.add_group_pack(chat_id, set_name, added_by=added_by)
+                if not result.get("ok"):
+                    return self._json(400, {"error": result.get("error", "Не удалось добавить пак")})
+                return self._json(200, {"ok": True, "already": result.get("already", False), "packId": result.get("pack_id")})
+            except Exception:
+                log.exception("[MiniApp] Ошибка добавления группового пака")
+                return self._json(500, {"error": "Внутренняя ошибка"})
 
         if path.startswith("/api/buttons/"):
             parts = path.split("/")
