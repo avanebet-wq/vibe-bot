@@ -2,22 +2,37 @@
 """Schema/migration marker for normalized PostgreSQL tables."""
 from database import conn, db_lock
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 def ensure_schema():
     with db_lock:
         try:
             conn.execute("CREATE TABLE IF NOT EXISTS migration_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            # Premium emoji library v26: packs are global and ordered by first creation.
+            # Old flat premium_emojis data is intentionally discarded once, during
+            # the v25 -> v26 migration; subsequent startups keep the new library.
+            _schema_row = conn.execute("SELECT value FROM migration_meta WHERE key='schema_version'").fetchone()
+            _old_schema = int(_schema_row[0]) if _schema_row and str(_schema_row[0]).isdigit() else 0
+            if _old_schema < 26:
+                conn.execute("DROP TABLE IF EXISTS premium_emojis")
+                conn.execute("DROP TABLE IF EXISTS premium_emoji_packs")
+            conn.execute("""CREATE TABLE IF NOT EXISTS premium_emoji_packs (
+                pack_id BIGSERIAL PRIMARY KEY,
+                set_name TEXT NOT NULL UNIQUE,
+                created_at REAL NOT NULL,
+                preview_emoji_id TEXT
+            )""")
             conn.execute("""CREATE TABLE IF NOT EXISTS premium_emojis (
-                emoji_id TEXT NOT NULL,
-                group_id TEXT NOT NULL DEFAULT '',
+                emoji_id TEXT PRIMARY KEY,
+                pack_id BIGINT NOT NULL,
+                emoji TEXT NOT NULL DEFAULT '',
                 name TEXT NOT NULL DEFAULT '',
                 preview_url TEXT,
-                added_at REAL NOT NULL,
-                PRIMARY KEY (emoji_id, group_id)
+                added_at REAL NOT NULL
             )""")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_premium_emojis_group ON premium_emojis(group_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_premium_emoji_pack ON premium_emojis(pack_id, added_at, emoji_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_premium_emoji_emoji ON premium_emojis(emoji)")
             conn.execute("CREATE TABLE IF NOT EXISTS user_facts (chat_id TEXT NOT NULL, user_id TEXT NOT NULL, fact TEXT NOT NULL, source TEXT, importance INTEGER DEFAULT 1, created_at REAL NOT NULL, PRIMARY KEY(chat_id,user_id,fact))")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_user_facts_chat_user ON user_facts(chat_id,user_id)")
             conn.execute("CREATE TABLE IF NOT EXISTS app_events (chat_id TEXT, event_type TEXT, actor_id TEXT, target_id TEXT, created_at REAL NOT NULL, payload TEXT)")

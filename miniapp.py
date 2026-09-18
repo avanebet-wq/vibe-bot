@@ -52,12 +52,23 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/api/emoji-packs":
+            # Lightweight tab metadata only; emoji bodies are loaded per selected pack.
+            return self._json(200, pe.get_pack_list())
+
+        if path.startswith("/api/emoji-packs/") and path.endswith("/emojis"):
+            try:
+                pack_id = int(path.split("/")[3])
+            except (TypeError, ValueError, IndexError):
+                return self._json(400, {"error": "Некорректный pack_id"})
+            return self._json(200, pe.get_pack_emojis(pack_id))
+
         if path == "/api/emojis":
+            # Search always spans the entire global library. With no query this
+            # remains a compatibility flat endpoint for older Mini App clients.
             qs = parse_qs(parsed.query)
             query = (qs.get("q") or [""])[0]
-            group_id = (qs.get("group_id") or [""])[0]
-            emojis_data = pe.get_emojis(group_id=group_id, query=query)
-            return self._json(200, emojis_data)
+            return self._json(200, pe.get_emojis(query=query))
 
         if path == "/api/stickerImage":
             # Аналог подхода GroupHelpBot: браузер получает картинку через
@@ -82,24 +93,22 @@ class MiniAppHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/api/emojis/rename":
-            # GET /api/emojis/rename?emoji_id=...&name=...&group_id=...
+            # Legacy compatibility endpoint. The new picker does not rename emojis.
             qs = parse_qs(parsed.query)
             emoji_id = (qs.get("emoji_id") or [""])[0]
             name = (qs.get("name") or [""])[0]
-            group_id = (qs.get("group_id") or [""])[0]
             if emoji_id and name:
-                existing = pe.get_emojis(group_id=group_id)
-                preview = next((e["previewUrl"] for e in existing if e["id"] == emoji_id), None)
-                pe.save_emoji(emoji_id, name, preview, group_id=group_id)
+                with pe.db_lock:
+                    pe.conn.execute("UPDATE premium_emojis SET name=? WHERE emoji_id=?", (name, emoji_id))
+                    pe.conn.commit()
                 return self._json(200, {"ok": True})
             return self._json(400, {"error": "emoji_id and name required"})
 
         if path == "/api/emojis/delete":
             qs = parse_qs(parsed.query)
             emoji_id = (qs.get("emoji_id") or [""])[0]
-            group_id = (qs.get("group_id") or [""])[0]
             if emoji_id:
-                pe.delete_emoji(emoji_id, group_id=group_id)
+                pe.delete_emoji(emoji_id)
                 return self._json(200, {"ok": True})
             return self._json(400, {"error": "emoji_id required"})
 

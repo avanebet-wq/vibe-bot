@@ -756,15 +756,16 @@ def on_addemoji(message):
     uid = message.from_user.id
     cid = message.chat.id
 
-    # Проверяем права: в группе — только админ, в личке — любой
+    # /addemoji остаётся административной командой, но сама библиотека
+    # теперь всегда глобальная: добавленные создателем паки видны всем
+    # пользователям во всех чатах.
     if message.chat.type != "private" and not is_chat_admin(cid, uid):
         return
 
-    # Проверяем само сообщение и реплай
+    # Проверяем само сообщение и реплай. group_id намеренно не передаём:
+    # premium-emoji library больше не разделяется по чатам.
     target = message.reply_to_message or message
-    group_id = "" if message.chat.type == "private" else str(cid)
-
-    saved = pe.process_message_for_emojis(target, group_id=group_id)
+    saved = pe.process_message_for_emojis(target)
 
     if not saved:
         bot.reply_to(
@@ -794,8 +795,7 @@ def on_listemojis(message):
     if message.chat.type != "private" and not is_chat_admin(cid, uid):
         return
 
-    group_id = "" if message.chat.type == "private" else str(cid)
-    emojis = pe.get_emojis(group_id=group_id)
+    emojis = pe.get_emojis()
 
     if not emojis:
         bot.reply_to(
@@ -805,9 +805,12 @@ def on_listemojis(message):
         )
         return
 
+    packs = pe.get_packs()
     lines = [f"<b>Premium-эмодзи в библиотеке ({len(emojis)}):</b>"]
-    for i, em in enumerate(emojis, 1):
-        lines.append(f"{i}. <code>{em['id']}</code> — {em['name']}")
+    for i, pack in enumerate(packs, 1):
+        lines.append(f"\n<b>Пак {i}</b> — {len(pack['emojis'])} эмодзи")
+        for em in pack["emojis"]:
+            lines.append(f"<code>{em['id']}</code> — {em['emoji'] or em['name']}")
     bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
 
 

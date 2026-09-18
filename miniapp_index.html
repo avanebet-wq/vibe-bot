@@ -186,10 +186,42 @@
     font-family:inherit;
   }
   .emoji-search::placeholder{ color:#5c5c60; }
+  .emoji-pack-tabs{
+    display:flex; gap:8px;
+    overflow-x:auto;
+    padding:2px 2px 10px;
+    margin-bottom:2px;
+    scrollbar-width:none;
+  }
+  .emoji-pack-tabs::-webkit-scrollbar{ display:none; }
+  .emoji-pack-tab{
+    flex:0 0 44px; width:44px; height:44px;
+    border:1px solid var(--outline);
+    border-radius:12px;
+    background:#1c1c1e;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer;
+    padding:7px;
+    opacity:.72;
+  }
+  .emoji-pack-tab.selected{
+    opacity:1;
+    outline:2px solid var(--blue);
+    outline-offset:0;
+  }
+  .emoji-pack-tab img{ width:30px; height:30px; object-fit:contain; }
   .emoji-grid{
-    display:flex; flex-wrap:wrap; gap:8px;
-    max-height:180px;
-    overflow-y:auto;
+    display:grid;
+    grid-template-rows:repeat(3, 44px);
+    grid-auto-flow:column;
+    grid-auto-columns:44px;
+    gap:8px;
+    overflow-x:auto;
+    overflow-y:hidden;
+    padding:2px;
+    min-height:140px;
+    max-height:148px;
+    scrollbar-width:thin;
   }
   .emoji-cell{
     width:44px; height:44px;
@@ -295,7 +327,8 @@
     <div class="field">
       <div class="field-label">Настроить премиум эмодзи</div>
       <div class="emoji-box">
-        <input id="emojiSearch" class="emoji-search" type="text" placeholder="Поиск (напр. пицца или 🍕)" />
+        <input id="emojiSearch" class="emoji-search" type="text" placeholder="Поиск по эмодзи (например 🍕)" />
+        <div id="emojiPackTabs" class="emoji-pack-tabs"></div>
         <div id="emojiGrid" class="emoji-grid"></div>
       </div>
     </div>
@@ -410,6 +443,7 @@
     fValueHint:   document.getElementById("fValueHint"),
     fStyle:       document.getElementById("fStyle"),
     emojiSearch:  document.getElementById("emojiSearch"),
+    emojiPackTabs:document.getElementById("emojiPackTabs"),
     emojiGrid:    document.getElementById("emojiGrid"),
     fDelete:      document.getElementById("fDelete"),
     fSave:        document.getElementById("fSave"),
@@ -494,9 +528,12 @@
     el.fValue.value = btn.value;
     el.fStyle.value = btn.style;
     syncValueField(btn.type);
-    renderEmojiGrid(btn.customEmojiId, btn.customEmojiPreview);
-    renderButtonNamePreview(btn);
     el.emojiSearch.value = "";
+    activePackId = null;
+    renderButtonNamePreview(btn);
+    fetchPacks().then(function(){
+      renderEmojiGrid(btn.customEmojiId, btn.customEmojiPreview, "");
+    });
 
     el.screenMain.classList.add("hidden");
     el.saveBar.classList.add("hidden");
@@ -595,34 +632,76 @@
 
   /* ------------------------------------------------------------------
    *  PREMIUM EMOJI PICKER
-   *  Real custom emoji can't be searched from the client against
-   *  Telegram directly — there is no public "search custom emoji"
-   *  method in Bot API. The recommended pattern:
-   *    1) Group admins forward/send an emoji to the bot once.
-   *    2) The bot reads message_entities of type "custom_emoji",
-   *       stores {custom_emoji_id, static preview via
-   *       getCustomEmojiStickers}, in a small emoji library per bot.
-   *    3) This picker just queries that library: GET /api/emojis?q=
-   *  In demo/offline mode (no API_BASE) a small placeholder set is
-   *  shown so the UI is fully explorable.
+   *  The library is global and grouped by Telegram custom-emoji sticker set.
+   *  Tabs are shown only as one custom emoji preview per pack. The first
+   *  (oldest) pack is selected by default. Without search, only the selected
+   *  pack is rendered. Search ignores the active pack and searches globally
+   *  by Telegram's ordinary `Sticker.emoji` value.
    * ------------------------------------------------------------------ */
-  var DEMO_EMOJIS = [
-    { id:"demo_5368324170671202286", previewUrl:null, glyph:"👀" },
-    { id:"demo_5368324170671202287", previewUrl:null, glyph:"📰" },
-    { id:"demo_5368324170671202288", previewUrl:null, glyph:"😀" },
-    { id:"demo_5368324170671202289", previewUrl:null, glyph:"✈️" },
-    { id:"demo_5368324170671202290", previewUrl:null, glyph:"🚀" },
-    { id:"demo_5368324170671202291", previewUrl:null, glyph:"🙂" }
+  var DEMO_PACKS = [
+    { id:1, previewUrl:null, emojis:[
+      { id:"demo_1", emoji:"😀", previewUrl:null }, { id:"demo_2", emoji:"🔥", previewUrl:null },
+      { id:"demo_3", emoji:"⭐", previewUrl:null }, { id:"demo_4", emoji:"🍕", previewUrl:null },
+      { id:"demo_5", emoji:"🚀", previewUrl:null }, { id:"demo_6", emoji:"❤️", previewUrl:null }
+    ]},
+    { id:2, previewUrl:null, emojis:[
+      { id:"demo_7", emoji:"😎", previewUrl:null }, { id:"demo_8", emoji:"💎", previewUrl:null },
+      { id:"demo_9", emoji:"🎉", previewUrl:null }, { id:"demo_10", emoji:"🌟", previewUrl:null }
+    ]}
   ];
 
+  var emojiPacks = [];
+  var emojiPackCache = {};
+  var activePackId = null;
   var emojiSearchTimer = null;
+
+  function packPreview(pack){
+    if (pack.previewUrl) return pack.previewUrl;
+    var first = (pack.emojis || [])[0];
+    return first ? first.previewUrl : null;
+  }
+
+  function renderPackTabs(){
+    el.emojiPackTabs.innerHTML = "";
+    if (!emojiPacks.length){
+      el.emojiPackTabs.classList.add("hidden");
+      return;
+    }
+    el.emojiPackTabs.classList.remove("hidden");
+    emojiPacks.forEach(function(pack){
+      var tab = document.createElement("div");
+      tab.className = "emoji-pack-tab" + (String(pack.id) === String(activePackId) ? " selected" : "");
+      var src = packPreview(pack);
+      if (src){
+        var img = document.createElement("img");
+        img.src = src;
+        img.alt = "";
+        tab.appendChild(img);
+      } else {
+        tab.textContent = ((pack.emojis || [])[0] || {}).emoji || "⭐";
+      }
+      tab.addEventListener("click", function(){
+        activePackId = pack.id;
+        renderPackTabs();
+        var btn = state.rows[editing.rowIndex][editing.btnIndex];
+        renderEmojiGrid(btn.customEmojiId, btn.customEmojiPreview, el.emojiSearch.value);
+      });
+      el.emojiPackTabs.appendChild(tab);
+    });
+  }
+
+  function normalizeSearchEmoji(value){
+    return (value || "").replace(/\ufe0f/g, "").trim();
+  }
+
   el.emojiSearch.addEventListener("input", function(){
     clearTimeout(emojiSearchTimer);
     var q = el.emojiSearch.value;
     emojiSearchTimer = setTimeout(function(){
+      if (!editing) return;
       var btn = state.rows[editing.rowIndex][editing.btnIndex];
       renderEmojiGrid(btn.customEmojiId, btn.customEmojiPreview, q);
-    }, 250);
+    }, 150);
   });
 
   function renderEmojiGrid(selectedId, selectedPreview, query){
@@ -634,36 +713,35 @@
     addCell.title = "Без эмодзи";
     addCell.addEventListener("click", function(){
       var btn = state.rows[editing.rowIndex][editing.btnIndex];
-      btn.customEmojiId = null; btn.customEmojiPreview = null;
+      btn.customEmojiId = null;
+      btn.customEmojiPreview = null;
       renderButtonNamePreview(btn);
       renderEmojiGrid(null, null, el.emojiSearch.value);
     });
     el.emojiGrid.appendChild(addCell);
 
-    fetchEmojis(query || "").then(function(list){
-      if (list.length === 0){
+    fetchEmojis(query || "", query ? null : activePackId).then(function(list){
+      if (!list.length){
         var empty = document.createElement("div");
         empty.className = "emoji-empty";
-        empty.textContent = query
-          ? "Ничего не найдено"
-          : "Нет premium-эмодзи. Добавь через /addemoji в чате.";
+        empty.textContent = query ? "Ничего не найдено" : "В этом паке пока нет premium-эмодзи.";
         el.emojiGrid.appendChild(empty);
         return;
       }
       list.forEach(function(item){
         var cell = document.createElement("div");
         cell.className = "emoji-cell" + (item.id === selectedId ? " selected" : "");
-        cell.title = item.name || item.id;
+        cell.title = item.emoji || item.name || item.id;
         if (item.previewUrl){
           var img = document.createElement("img");
           img.src = item.previewUrl;
-          img.alt = item.name || "";
-          img.style.width = "26px";
-          img.style.height = "26px";
+          img.alt = "";
+          img.style.width = "30px";
+          img.style.height = "30px";
           img.style.objectFit = "contain";
           cell.appendChild(img);
         } else {
-          cell.textContent = item.glyph || "⭐";
+          cell.textContent = item.emoji || "⭐";
         }
         cell.addEventListener("click", function(){
           var btn = state.rows[editing.rowIndex][editing.btnIndex];
@@ -677,18 +755,60 @@
     });
   }
 
-  function fetchEmojis(query){
-    if (!CONFIG.API_BASE){
-      var q = (query || "").toLowerCase();
-      var list = !q ? DEMO_EMOJIS : DEMO_EMOJIS.filter(function(e){
-        return (e.glyph || "").toLowerCase().indexOf(q) !== -1;
-      });
-      return Promise.resolve(list);
+  function fetchPacks(){
+    if (!CONFIG.API_BASE) {
+      emojiPacks = DEMO_PACKS;
+      if (activePackId === null && emojiPacks.length) activePackId = emojiPacks[0].id;
+      renderPackTabs();
+      return Promise.resolve(emojiPacks);
     }
-    var url = "/api/emojis?q=" + encodeURIComponent(query || "");
-    if (CHAT_ID) url += "&group_id=" + encodeURIComponent(CHAT_ID);
-    return authFetch(url)
+    return authFetch("/api/emoji-packs")
       .then(function(r){ return r.ok ? r.json() : []; })
+      .then(function(packs){
+        emojiPacks = Array.isArray(packs) ? packs : [];
+        // API already returns oldest-first; the first pack is the default.
+        if (activePackId === null && emojiPacks.length) activePackId = emojiPacks[0].id;
+        // If the active pack disappeared, fall back to the oldest one.
+        if (emojiPacks.length && !emojiPacks.some(function(p){ return String(p.id) === String(activePackId); })) {
+          activePackId = emojiPacks[0].id;
+        }
+        renderPackTabs();
+        return emojiPacks;
+      })
+      .catch(function(){
+        emojiPacks = [];
+        activePackId = null;
+        renderPackTabs();
+        return [];
+      });
+  }
+
+  function fetchEmojis(query, packId){
+    if (!CONFIG.API_BASE){
+      var q = normalizeSearchEmoji(query).toLowerCase();
+      var all = [];
+      (emojiPacks || []).forEach(function(pack){
+        (pack.emojis || []).forEach(function(item){
+          if (!q && String(pack.id) !== String(packId)) return;
+          if (q && normalizeSearchEmoji(item.emoji).toLowerCase() !== q) return;
+          all.push(item);
+        });
+      });
+      return Promise.resolve(all);
+    }
+    if (query){
+      return authFetch("/api/emojis?q=" + encodeURIComponent(query))
+        .then(function(r){ return r.ok ? r.json() : []; })
+        .catch(function(){ return []; });
+    }
+    if (packId === null || packId === undefined) return Promise.resolve([]);
+    if (emojiPackCache[packId]) return Promise.resolve(emojiPackCache[packId]);
+    return authFetch("/api/emoji-packs/" + encodeURIComponent(packId) + "/emojis")
+      .then(function(r){ return r.ok ? r.json() : []; })
+      .then(function(list){
+        emojiPackCache[packId] = Array.isArray(list) ? list : [];
+        return emojiPackCache[packId];
+      })
       .catch(function(){ return []; });
   }
 
