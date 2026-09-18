@@ -115,6 +115,8 @@ def _render(target, gid, pid=None):
         return ui.posts_list_text(gid), ui.posts_list_kb(gid)
     if target == "popen":
         return ui.post_edit_text(gid, pid), ui.post_edit_kb(gid, pid)
+    if target == "pmsg":
+        return ui.post_message_text(gid, pid), ui.post_message_kb(gid, pid)
     if target == "pwd":
         return ui.post_edit_text(gid, pid) + "\n\n🗓️ Выберите дни недели:", ui.weekdays_kb(gid, pid)
     if target == "pmd":
@@ -912,15 +914,15 @@ _DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 _TOPIC_CMD_RE = re.compile(r"^/topic_rec(\d+)$")
 
 
-def _finish_pending(chat_id, uid, gid, pid, note):
+def _finish_pending(chat_id, uid, gid, pid, note, target="popen"):
     store.clear_pending(chat_id, uid)
     msg = bot.send_message(chat_id, note)
     track_message(chat_id, msg.message_id)
-    _send_post_screen_followup(chat_id, gid, pid)
+    _send_post_screen_followup(chat_id, gid, pid, target)
 
 
-def _send_post_screen_followup(chat_id, gid, pid):
-    text, kb = _render("popen", gid, pid)
+def _send_post_screen_followup(chat_id, gid, pid, target="popen"):
+    text, kb = _render(target, gid, pid)
     msg = bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
     track_message(chat_id, msg.message_id)
 
@@ -953,7 +955,7 @@ def try_handle_pending_input(message):
             bot.reply_to(message, "Нужен текст сообщения. Или нажмите «Отмена».")
             return True
         store.update_post(gid, pid, text=message.text)
-        _finish_pending(key_chat, uid, gid, pid, "✅ Сообщение сохранено.")
+        _finish_pending(key_chat, uid, gid, pid, "✅ Сообщение сохранено.", target="pmsg")
         return True
 
     if kind == "media":
@@ -962,7 +964,7 @@ def try_handle_pending_input(message):
             bot.reply_to(message, "Нужно фото, видео, гиф или стикер. Или нажмите «Отмена».")
             return True
         store.update_post(gid, pid, media=media)
-        _finish_pending(key_chat, uid, gid, pid, "✅ Медиа сохранено.")
+        _finish_pending(key_chat, uid, gid, pid, "✅ Медиа сохранено.", target="pmsg")
         return True
 
     if kind == "buttons":
@@ -974,7 +976,7 @@ def try_handle_pending_input(message):
             bot.reply_to(message, f"⚠️ {err}")
             return True
         store.update_post(gid, pid, buttons=rows)
-        _finish_pending(key_chat, uid, gid, pid, "✅ Кнопки сохранены.")
+        _finish_pending(key_chat, uid, gid, pid, "✅ Кнопки сохранены.", target="pmsg")
         return True
 
     if kind == "time":
@@ -1548,6 +1550,11 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id, "🗑️ Публикация удалена.")
         return _show(chat_id, message_id, "pst", gid)
 
+    if action == "pmsg":
+        pid = rest[0]
+        bot.answer_callback_query(call.id)
+        return _show(chat_id, message_id, "pmsg", gid, pid)
+
     if action == "ptxt":
         pid = rest[0]
         post = store.get_post(gid, pid)
@@ -1605,39 +1612,85 @@ def _dispatch_callback(call):
         store.update_post(gid, pid, text=None)
         store.clear_pending(chat_id, call.from_user.id)
         bot.answer_callback_query(call.id, "🚫 Сообщение удалено.")
-        return _show(chat_id, message_id, "popen", gid, pid)
+        return _show(chat_id, message_id, "pmsg", gid, pid)
 
     if action == "ptxtcancel":
         pid = rest[0]
         store.clear_pending(chat_id, call.from_user.id)
         bot.answer_callback_query(call.id)
-        return _show(chat_id, message_id, "popen", gid, pid)
+        return _show(chat_id, message_id, "pmsg", gid, pid)
 
     if action == "pmediadel":
         pid = rest[0]
         store.update_post(gid, pid, media=None)
         store.clear_pending(chat_id, call.from_user.id)
         bot.answer_callback_query(call.id, "🚫 Медиа удалено.")
-        return _show(chat_id, message_id, "popen", gid, pid)
+        return _show(chat_id, message_id, "pmsg", gid, pid)
 
     if action == "pmediacancel":
         pid = rest[0]
         store.clear_pending(chat_id, call.from_user.id)
         bot.answer_callback_query(call.id)
-        return _show(chat_id, message_id, "popen", gid, pid)
+        return _show(chat_id, message_id, "pmsg", gid, pid)
 
     if action == "pbtndel":
         pid = rest[0]
         store.update_post(gid, pid, buttons=None)
         store.clear_pending(chat_id, call.from_user.id)
         bot.answer_callback_query(call.id, "🚫 Кнопки удалены.")
-        return _show(chat_id, message_id, "popen", gid, pid)
+        return _show(chat_id, message_id, "pmsg", gid, pid)
 
     if action == "pbtncancel":
         pid = rest[0]
         store.clear_pending(chat_id, call.from_user.id)
         bot.answer_callback_query(call.id)
-        return _show(chat_id, message_id, "popen", gid, pid)
+        return _show(chat_id, message_id, "pmsg", gid, pid)
+
+    if action == "ptxtprev":
+        pid = rest[0]
+        post = store.get_post(gid, pid)
+        if not post.get("text"):
+            return bot.answer_callback_query(call.id, "🤔 Текст ещё не установлен.", show_alert=True)
+        bot.answer_callback_query(call.id, "👀 Отправляю текст.")
+        kb = ui._kb([[ui._btn("⬅️ Назад", "close", gid)]])
+        msg = bot.send_message(chat_id, post["text"], reply_markup=kb)
+        track_message(chat_id, msg.message_id)
+        return
+
+    if action == "pmediaprev":
+        pid = rest[0]
+        post = store.get_post(gid, pid)
+        media = post.get("media")
+        if not media:
+            return bot.answer_callback_query(call.id, "🤔 Медиа ещё не установлено.", show_alert=True)
+        bot.answer_callback_query(call.id, "👀 Отправляю медиа.")
+        kb = ui._kb([[ui._btn("⬅️ Назад", "close", gid)]])
+        sender = {
+            "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
+            "document": bot.send_document, "voice": bot.send_voice, "audio": bot.send_audio,
+            "sticker": bot.send_sticker,
+        }.get(media["type"])
+        if sender is None:
+            return
+        if media["type"] in ("sticker", "voice"):
+            msg = sender(chat_id, media["file_id"], reply_markup=kb)
+        else:
+            msg = sender(chat_id, media["file_id"], caption=media.get("caption"), reply_markup=kb)
+        track_message(chat_id, msg.message_id)
+        return
+
+    if action == "pbtnprev":
+        pid = rest[0]
+        post = store.get_post(gid, pid)
+        raw_rows = post.get("buttons") or []
+        if not raw_rows:
+            return bot.answer_callback_query(call.id, "🤔 URL-кнопки ещё не установлены.", show_alert=True)
+        bot.answer_callback_query(call.id, "👀 Отправляю кнопки.")
+        markup = build_markup_from_buttons(raw_rows, gid=gid, pid=pid) or types.InlineKeyboardMarkup()
+        markup.row(ui._btn("⬅️ Назад", "close", gid))
+        msg = bot.send_message(chat_id, "🔠 Так выглядят установленные URL-кнопки:", reply_markup=markup)
+        track_message(chat_id, msg.message_id)
+        return
 
     if action == "pprev":
         pid = rest[0]

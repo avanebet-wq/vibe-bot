@@ -449,8 +449,7 @@ def post_edit_kb(gid, pid):
     dellast_txt = "♻️ Удалять последнее ✔️" if post.get("delete_last") else "♻️ Удалять последнее ✖️"
     deltimer_txt = "♻️ Удалять по таймеру ✔️" if post.get("delete_timer_seconds") else "♻️ Удалять по таймеру ✖️"
     rows = [
-        [_btn("✍️ Настроить сообщение", "ptxt", gid, pid), _btn("📸 Медиа", "pmedia", gid, pid)],
-        [_btn("🔠 URL-кнопки", "pbtn", gid, pid)],
+        [_btn("✍️ Настроить сообщение", "pmsg", gid, pid)],
         [_btn("🕓 Время", "ptime", gid, pid), _btn("🔁 Повторение", "prep", gid, pid)],
         [_btn("🗓️ Дни недели", "pwd", gid, pid), _btn("📆 Дни месяца", "pmd", gid, pid)],
         [_btn("⏱️ Установить время", "pauto", gid, pid)],
@@ -458,11 +457,34 @@ def post_edit_kb(gid, pid):
         [_btn(pin_txt, "ppin", gid, pid)],
         [_btn(dellast_txt, "pdellast", gid, pid)],
         [_btn(deltimer_txt, "pdeltimer", gid, pid)],
-        [_btn("👀 Полный предпросмотр", "pprev", gid, pid)],
         [_btn("📂 Выбрать тему", "ptopic", gid, pid)],
         [_btn("⬅️ Назад", "back", gid, "pst")],
     ]
     return _kb(rows)
+
+
+def post_message_text(gid, pid):
+    post = get_post(gid, pid)
+    text_txt = "установлен ✅" if post.get("text") else "не установлен ▫️"
+    media_txt = "установлено ✅" if post.get("media") else "не установлено ▫️"
+    btn_txt = "установлены ✅" if post.get("buttons") else "не установлены ▫️"
+    return (
+        "✍️ <b>Настроить сообщение</b>\n\n"
+        f"📝 Текст: {text_txt}\n"
+        f"📸 Медиа: {media_txt}\n"
+        f"🔠 URL-кнопки: {btn_txt}\n\n"
+        "Выберите, что настроить, или нажмите «Просмотр», чтобы увидеть, что уже установлено:"
+    )
+
+
+def post_message_kb(gid, pid):
+    return _kb([
+        [_btn("📝 Текст", "ptxt", gid, pid), _btn("👀 Просмотр", "ptxtprev", gid, pid)],
+        [_btn("📸 Медиа", "pmedia", gid, pid), _btn("👀 Просмотр", "pmediaprev", gid, pid)],
+        [_btn("🔠 URL-кнопки", "pbtn", gid, pid), _btn("👀 Просмотр", "pbtnprev", gid, pid)],
+        [_btn("👀 Полный предпросмотр", "pprev", gid, pid)],
+        [_btn("⬅️ Назад", "back", gid, "popen", pid)],
+    ])
 
 
 def text_prompt_kb(gid, pid, has_value):
