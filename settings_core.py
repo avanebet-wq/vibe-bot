@@ -14,7 +14,7 @@ from telebot.apihelper import ApiTelegramException
 from telebot.types import ChatPermissions
 
 from runtime import bot, BOT_ID, BOT_USERNAME
-from config import TZ
+from config import TZ, MINIAPP_PUBLIC_URL
 from utils import is_chat_admin, parse_duration, format_seconds, get_mention
 from reliability import stopped
 
@@ -1605,11 +1605,19 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id)
 
         has_value = bool(post.get("buttons"))
-        # Конструктор всегда подтягивает уже сохранённые кнопки этой публикации
-        # сам (см. miniapp_index.html), поэтому суффикс режима редактирования
-        # в ссылке больше не нужен.
-        start_param = f"c{gid}_p{pid}"
-        miniapp_url = f"https://t.me/{BOT_USERNAME}/app?startapp={start_param}"
+        if MINIAPP_PUBLIC_URL:
+            # Прямая ссылка на свой домен: chat_id/post_id идут обычными
+            # query-параметрами и не зависят от передачи startapp Телеграмом —
+            # тот механизм кэшируется и не всегда долетает (особенно на iOS),
+            # из-за чего конструктор открывался пустым при повторном заходе.
+            # "v=" — просто чтобы Telegram не показал закэшированную старую
+            # страницу при открытии той же публикации второй раз подряд.
+            miniapp_url = (
+                f"{MINIAPP_PUBLIC_URL}/?chat_id={gid}&post_id={pid}&v={int(time.time())}"
+            )
+        else:
+            start_param = f"c{gid}_p{pid}"
+            miniapp_url = f"https://t.me/{BOT_USERNAME}/app?startapp={start_param}"
 
         hint = (
             "👉🏻 Здесь можно настроить кнопки для этой публикации.\n\n"
