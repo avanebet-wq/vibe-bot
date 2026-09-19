@@ -180,6 +180,7 @@ from settings import (
     track_message, cmd_settings_command, open_settings_in_dm,
     send_dm_start_intro, send_dm_start_group_picker, send_group_start,
 )
+from contest import cmd_start_contest, cmd_stop_contest
 
 # Многословные команды проверяются первыми (от самых длинных, чтобы не путать с однословными)
 _COMPOUND_COMMANDS = [
@@ -208,6 +209,8 @@ _COMPOUND_COMMANDS = [
     ("не удаляй нарушения", lambda m, a: cmd_set_auto_delete(m, False)),
     ("защищай админов", lambda m, a: cmd_set_protect_admins(m, True)),
     ("не защищай админов", lambda m, a: cmd_set_protect_admins(m, False)),
+    ("старт конкурс", lambda m, a: cmd_start_contest(m)),
+    ("стоп конкурс", lambda m, a: cmd_stop_contest(m)),
 ]
 _COMPOUND_COMMANDS += [
     ("-отн основа", lambda m, a: remove_main(m)),

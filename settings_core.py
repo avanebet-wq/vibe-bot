@@ -24,6 +24,7 @@ import settings_store as store
 import settings_ui as ui
 import premium_emoji as pe
 import rich_text as rt
+from contest import handle_new_members_for_contest, handle_left_member_for_contest
 
 log = logging.getLogger("settings")
 
@@ -325,6 +326,11 @@ def handle_new_members(message):
         # при попытке написать сообщение (см. enforce_captcha ниже).
         if captcha.get("enabled", False) and captcha.get("type", "button") == "button":
             _start_captcha(message, user)
+
+    try:
+        handle_new_members_for_contest(message)
+    except Exception:
+        log.exception("[contest] new members handling failed")
 
 
 def _button_captcha_prompt_kb(gid, uid):
@@ -1228,6 +1234,11 @@ def _on_media_message(message):
     "proximity_alert_triggered", "web_app_data",
 ])
 def _on_service_message(message):
+    if message.content_type == "left_chat_member":
+        try:
+            handle_left_member_for_contest(message)
+        except Exception:
+            log.exception("[contest] left member handling failed")
     try:
         enforce_system_message_deletion(message)
     except Exception as e:
