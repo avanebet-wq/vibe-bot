@@ -26,7 +26,7 @@ from currency import get_balance, add_balance, spend_balance, fmt as fmt_money, 
 
 LOG = logging.getLogger("farm")
 
-WATER_COOLDOWN = 4 * 60 * 60  # 4 часа
+WATER_COOLDOWN = 15 * 60  # 15 минут (4 полива = 1 час до полного созревания)
 GROWTH_STEP = 25
 CB = "farm"
 
@@ -55,12 +55,25 @@ MAX_LEVEL = max(LEVELS)
 BUSH_BASE_COST = 25
 BUSH_COST_STEP = 20
 
-# Доход в Лунах за один куст за один цикл роста (до множителя уровня).
+# Доход в Лунах за один куст за один цикл роста (до множителя уровня и сорта).
 BUSH_BASE_YIELD = 3
 
+# Сорта травки: множитель дохода и цена открытия (в Лунах). Первый сорт открыт
+# по умолчанию и бесплатен. Цена и множитель растут с каждым следующим сортом.
+STRAINS = [
+    {"name": "OG Kush", "mult": 1.00, "cost": 0},
+    {"name": "Gorilla Glue", "mult": 1.15, "cost": 150},
+    {"name": "Cookies Gelato", "mult": 1.30, "cost": 350},
+    {"name": "Royal Queen Seeds", "mult": 1.50, "cost": 650},
+    {"name": "Royal Runtz", "mult": 1.70, "cost": 1100},
+    {"name": "Zkittlez × Gelato", "mult": 1.95, "cost": 1800},
+    {"name": "Rare Harvest", "mult": 2.25, "cost": 2800},
+    {"name": "Wedding Cake", "mult": 2.60, "cost": 4200},
+]
+MAX_STRAIN_INDEX = len(STRAINS) - 1
+STRAIN_EMOJI = "🧬"
+
 WATER_XP_BASE = [(4, 0.50), (6, 0.28), (9, 0.14), (14, 0.06), (20, 0.02)]
-# Небольшой разброс вокруг базового дохода с куста, чтобы не было монотонно.
-HARVEST_MONEY_SPREAD = [(0.7, 0.30), (1.0, 0.45), (1.3, 0.20), (1.6, 0.05)]
 
 
 def ensure_schema():
@@ -87,6 +100,15 @@ def ensure_schema():
                 conn.execute("ALTER TABLE farm_state ADD COLUMN IF NOT EXISTS bushes INTEGER NOT NULL DEFAULT 1")
             except Exception:
                 conn.rollback()
+            # Миграция для баз, созданных до появления сортов.
+            try:
+                conn.execute("ALTER TABLE farm_state ADD COLUMN IF NOT EXISTS strain_index INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                conn.rollback()
+            try:
+                conn.execute("ALTER TABLE farm_state ADD COLUMN IF NOT EXISTS unlocked_strains TEXT NOT NULL DEFAULT '0'")
+            except Exception:
+                conn.rollback()
             conn.commit()
         except Exception:
             conn.rollback()
@@ -102,10 +124,23 @@ def _user_info(user):
     return str(uid), username, display
 
 
+def _parse_unlocked(raw):
+    try:
+        result = {int(x) for x in str(raw or "0").split(",") if x.strip() != ""}
+    except Exception:
+        result = set()
+    result.add(0)
+    return result
+
+
+def _dump_unlocked(unlocked_set):
+    return ",".join(str(i) for i in sorted(unlocked_set))
+
+
 def _row_to_state(row):
     if not row:
         return None
-    level, growth, planted, bushes, last_water, last_message_id = row
+    level, growth, planted, bushes, last_water, last_message_id, strain_index, unlocked_strains = row
     return {
         "level": int(level),
         "growth": int(growth),
@@ -113,6 +148,8 @@ def _row_to_state(row):
         "bushes": max(1, int(bushes or 1)),
         "last_water": float(last_water or 0),
         "last_message_id": last_message_id,
+        "strain_index": max(0, min(MAX_STRAIN_INDEX, int(strain_index or 0))),
+        "unlocked_strains": _parse_unlocked(unlocked_strains),
     }
 
 
@@ -120,7 +157,8 @@ def _get_state(chat_id, user_id):
     with db_lock:
         try:
             row = conn.execute(
-                "SELECT level, growth, planted, bushes, last_water, last_message_id "
+                "SELECT level, growth, planted, bushes, last_water, last_message_id, "
+                "strain_index, unlocked_strains "
                 "FROM farm_state WHERE chat_id=? AND user_id=?",
                 (str(chat_id), str(user_id)),
             ).fetchone()
@@ -197,21 +235,11 @@ def _bush_cost(current_bushes):
     return BUSH_BASE_COST + BUSH_COST_STEP * max(0, current_bushes - 1)
 
 
-def _harvest_income(level, bushes):
+def _harvest_income(level, bushes, strain_index=0):
     mult = LEVELS[level]["income_mult"]
-    spread = _roll(HARVEST_MONEY_SPREAD)
-    raw = BUSH_BASE_YIELD * bushes * mult * spread
+    strain_mult = STRAINS[max(0, min(MAX_STRAIN_INDEX, strain_index))]["mult"]
+    raw = BUSH_BASE_YIELD * bushes * mult * strain_mult
     return max(1, int(round(raw)))
-
-
-def _daily_income(level, bushes):
-    """Средний доход в сутки: один цикл сбора занимает WATER_COOLDOWN * 4 (4 полива до созревания)."""
-    mult = LEVELS[level]["income_mult"]
-    avg_spread = sum(v * w for v, w in HARVEST_MONEY_SPREAD)
-    per_harvest = BUSH_BASE_YIELD * bushes * mult * avg_spread
-    cycle_seconds = WATER_COOLDOWN * (100 // GROWTH_STEP)
-    cycles_per_day = 86400 / cycle_seconds
-    return max(1, int(round(per_harvest * cycles_per_day)))
 
 
 def _mention(user_id, display_name):
@@ -235,7 +263,45 @@ def _keyboard(owner_id, level):
     kb.row(types.InlineKeyboardButton(f"{BUSH_EMOJI} Посадить куст травки", callback_data=_cb_data("bush", owner_id)))
     if level < MAX_LEVEL:
         kb.row(types.InlineKeyboardButton(f"{UPGRADE_EMOJI} Увеличить территорию", callback_data=_cb_data("territory", owner_id)))
+    kb.row(types.InlineKeyboardButton(f"{STRAIN_EMOJI} Купить сорт", callback_data=_cb_data("strains", owner_id)))
     return kb
+
+
+def _strains_keyboard(owner_id, state):
+    kb = types.InlineKeyboardMarkup()
+    unlocked = state["unlocked_strains"]
+    current = state["strain_index"]
+    for idx, strain in enumerate(STRAINS):
+        if idx == current:
+            label = f"✅ {strain['name']} (x{strain['mult']:.2f})"
+        elif idx in unlocked:
+            label = f"🔓 {strain['name']} (x{strain['mult']:.2f}) — выбрать"
+        else:
+            label = f"🔒 {strain['name']} (x{strain['mult']:.2f}) — {fmt_money(strain['cost'])}"
+        kb.row(types.InlineKeyboardButton(label, callback_data=_cb_data(f"strain{idx}", owner_id)))
+    kb.row(types.InlineKeyboardButton("⬅️ Назад к ферме", callback_data=_cb_data("back", owner_id)))
+    return kb
+
+
+def _render_strains(uid, display_name, state, flash=None):
+    unlocked = state["unlocked_strains"]
+    current = state["strain_index"]
+    lines = [
+        f"{STRAIN_EMOJI} {_mention(uid, display_name)}, выбор сорта травки:",
+        "",
+        "Каждый сорт даёт свой множитель к доходу с урожая. Купленные сорта",
+        "остаются открытыми навсегда — переключаться между ними можно бесплатно.",
+        "",
+    ]
+    for idx, strain in enumerate(STRAINS):
+        marker = "✅" if idx == current else ("🔓" if idx in unlocked else "🔒")
+        price = "открыт" if idx in unlocked else fmt_money(strain["cost"])
+        lines.append(f"{marker} <b>{strain['name']}</b> — x{strain['mult']:.2f} ({price})")
+    lines.append("")
+    if flash:
+        lines.append(flash)
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _render(uid, display_name, state, flash=None):
@@ -243,12 +309,14 @@ def _render(uid, display_name, state, flash=None):
     info = LEVELS[level]
     bushes = state["bushes"]
     now = time.time()
-    daily = _daily_income(level, bushes)
+    harvest_amount = _harvest_income(level, bushes, state["strain_index"])
+    strain = STRAINS[state["strain_index"]]
     lines = [
         f"{BUSH_EMOJI} {_mention(uid, display_name)} ваша ферма:",
         "",
         f"{TERRITORY_EMOJI} Территория: <b>{level}</b> ур. ({info['plots']} соток занято под {bushes} куст.)",
-        f"{MOON_EMOJI} Лун в сутки: <b>{daily}</b>",
+        f"{STRAIN_EMOJI} Сорт: <b>{strain['name']}</b> (x{strain['mult']:.2f})",
+        f"{MOON_EMOJI} Доход за урожай: <b>{harvest_amount}</b>",
         "",
     ]
     if not state["planted"]:
@@ -305,10 +373,12 @@ def profile_line(chat_id, user_id):
         return None
     info = LEVELS[state["level"]]
     status = f"{state['growth']}% {SEED_EMOJI}" if state["planted"] else "пусто"
-    daily = _daily_income(state["level"], state["bushes"])
+    harvest_amount = _harvest_income(state["level"], state["bushes"], state["strain_index"])
+    strain = STRAINS[state["strain_index"]]
     return (
         f"{BUSH_EMOJI} Ферма: ур. <b>{state['level']}</b> ({state['bushes']}/{info['plots']} кустов) — {status}\n"
-        f"{MOON_EMOJI} Лун в сутки: <b>{daily}</b>"
+        f"{STRAIN_EMOJI} Сорт: <b>{strain['name']}</b> (x{strain['mult']:.2f})\n"
+        f"{MOON_EMOJI} Доход за урожай: <b>{harvest_amount}</b>"
     )
 
 
@@ -428,7 +498,7 @@ def _handle_plant(call, chat_id, uid, username, display_name):
         bot.answer_callback_query(call.id, "🌱 Уже посажено. Поливай, чтобы вырастить.", show_alert=True)
         return
 
-    income = _harvest_income(state["level"], state["bushes"])
+    income = _harvest_income(state["level"], state["bushes"], state["strain_index"])
     _update(chat_id, uid, planted=1, growth=0)
     add_balance(chat_id, uid, income)
     state["planted"] = True
@@ -500,6 +570,76 @@ def _handle_territory(call, chat_id, uid, username, display_name):
     _refresh_message(call, uid, display_name, state, flash=flash)
 
 
+def _handle_strains(call, chat_id, uid, username, display_name):
+    state = _ensure_row(chat_id, uid, username, display_name)
+    text = _render_strains(uid, display_name, state)
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=_strains_keyboard(str(call.from_user.id), state),
+            parse_mode="HTML",
+        )
+    except Exception:
+        LOG.exception("farm: failed to open strains menu")
+    bot.answer_callback_query(call.id)
+
+
+def _handle_strain_pick(call, chat_id, uid, username, display_name, strain_idx):
+    state = _ensure_row(chat_id, uid, username, display_name)
+    if strain_idx < 0 or strain_idx > MAX_STRAIN_INDEX:
+        bot.answer_callback_query(call.id)
+        return
+
+    unlocked = state["unlocked_strains"]
+    strain = STRAINS[strain_idx]
+
+    if strain_idx in unlocked:
+        _update(chat_id, uid, strain_index=strain_idx)
+        state["strain_index"] = strain_idx
+        bot.answer_callback_query(call.id, f"{STRAIN_EMOJI} Выбран сорт: {strain['name']}")
+        flash = f"{STRAIN_EMOJI} Теперь ты выращиваешь <b>{strain['name']}</b>."
+    else:
+        cost = strain["cost"]
+        balance = get_balance(chat_id, uid)
+        if balance < cost:
+            bot.answer_callback_query(
+                call.id,
+                f"{STRAIN_EMOJI} Не хватает Лун: нужно {cost}, у тебя {balance}.",
+                show_alert=True,
+            )
+            return
+        if not spend_balance(chat_id, uid, cost):
+            bot.answer_callback_query(call.id, "⚠️ Не получилось списать Луны, попробуй ещё раз.", show_alert=True)
+            return
+        unlocked = set(unlocked)
+        unlocked.add(strain_idx)
+        _update(chat_id, uid, unlocked_strains=_dump_unlocked(unlocked), strain_index=strain_idx)
+        state["unlocked_strains"] = unlocked
+        state["strain_index"] = strain_idx
+        bot.answer_callback_query(call.id, f"{STRAIN_EMOJI} Куплен и выбран сорт: {strain['name']}")
+        flash = f"{STRAIN_EMOJI} Куплен новый сорт <b>{strain['name']}</b> (x{strain['mult']:.2f}) и выбран для выращивания."
+
+    text = _render_strains(uid, display_name, state, flash=flash)
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=_strains_keyboard(str(call.from_user.id), state),
+            parse_mode="HTML",
+        )
+    except Exception:
+        LOG.exception("farm: failed to refresh strains menu")
+
+
+def _handle_back(call, chat_id, uid, username, display_name):
+    state = _ensure_row(chat_id, uid, username, display_name)
+    bot.answer_callback_query(call.id)
+    _refresh_message(call, uid, display_name, state)
+
+
 def _dispatch_callback(call):
     parts = call.data.split("|")
     if len(parts) < 3:
@@ -520,6 +660,13 @@ def _dispatch_callback(call):
         _handle_bush(call, chat_id, uid, username, display_name)
     elif action == "territory":
         _handle_territory(call, chat_id, uid, username, display_name)
+    elif action == "strains":
+        _handle_strains(call, chat_id, uid, username, display_name)
+    elif action == "back":
+        _handle_back(call, chat_id, uid, username, display_name)
+    elif action.startswith("strain") and action[len("strain"):].isdigit():
+        strain_idx = int(action[len("strain"):])
+        _handle_strain_pick(call, chat_id, uid, username, display_name, strain_idx)
     else:
         bot.answer_callback_query(call.id)
 
