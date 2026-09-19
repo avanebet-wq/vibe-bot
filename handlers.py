@@ -6,6 +6,7 @@ from mood_state import on_message as update_mood, on_event as update_mood_event
 from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_user_memory
 from social_context import observe as observe_social
 from farm import cmd_farm, cmd_reset as cmd_reset_farm
+from currency import cmd_balance
 from profile import cmd_profile, touch_user, cmd_top
 from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, give_negative_karma, auto_delta
 from relationships import create_request_command, end_relationship, set_main, remove_main, show_relationship, actions_dm, execute_action
@@ -254,6 +255,8 @@ _SINGLE_COMMANDS = {
     "плантация": lambda m, a: cmd_farm(m, a),
     "сад": lambda m, a: cmd_farm(m, a),
     "профиль": lambda m, a: cmd_profile(m),
+    "б": lambda m, a: cmd_balance(m, a),
+    "баланс": lambda m, a: cmd_balance(m, a),
     "-чат": cmd_chat_off,
     "+чат": cmd_chat_on,
     "стата": lambda m, a: cmd_top(m, a),
@@ -606,7 +609,7 @@ def _dispatch(message, cmd_text):
     key = first.lower()
     if key in _SINGLE_COMMANDS:
         try:
-            if key in {"ферма", "плантация", "сад", "стата", "топ"} and not _game_enabled(message):
+            if key in {"ферма", "плантация", "сад", "стата", "топ", "б", "баланс"} and not _game_enabled(message):
                 bot.reply_to(message, "🎮 Мини-игры сейчас отключены администратором.")
                 return True
             _SINGLE_COMMANDS[key](message, rest.strip())

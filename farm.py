@@ -3,8 +3,15 @@
 
 Команды «ферма» / «плантация» / «сад» и /game открывают одно и то же меню.
 Повторный вызов команды удаляет предыдущее сообщение с фермой, чтобы не
-засорять чат — весь прогресс и обратная связь (полученный опыт) живут
-внутри одного редактируемого сообщения.
+засорять чат — весь прогресс и обратная связь живут внутри одного
+редактируемого сообщения.
+
+Экономика:
+- Полив грядки даёт только опыт (XP) — ранг профиля.
+- Сбор урожая даёт немного валюты «Лизки» — доход зависит от уровня
+  территории и числа посаженных кустов (грядок).
+- Прокачка территории и грядок стоит Лизки, а не опыта. Первые уровни
+  дешёвые, чтобы прогресс в начале ощущался быстрым.
 """
 import html
 import logging
@@ -14,7 +21,8 @@ from telebot import types
 
 from database import conn, db_lock
 from runtime import bot
-from profile import get_xp, add_xp, spend_xp
+from profile import get_xp, add_xp
+from currency import get_balance, add_balance, spend_balance, fmt as fmt_money, CURRENCY_NAME
 
 LOG = logging.getLogger("farm")
 
@@ -22,21 +30,29 @@ WATER_COOLDOWN = 4 * 60 * 60  # 4 часа
 GROWTH_STEP = 25
 CB = "farm"
 
-# Уровни прокачки фермы: количество соток, множитель опыта и цена перехода
-# на следующий уровень (в XP, списывается с общего счёта опыта).
+# Уровни территории: сколько кустов травки помещается, множитель дохода
+# и цена перехода на следующий уровень (в Лизках).
 LEVELS = {
-    1: {"plots": 1, "xp_mult": 1.00, "upgrade_cost": 150},
-    2: {"plots": 2, "xp_mult": 1.20, "upgrade_cost": 350},
-    3: {"plots": 3, "xp_mult": 1.45, "upgrade_cost": 650},
-    4: {"plots": 4, "xp_mult": 1.75, "upgrade_cost": 1200},
-    5: {"plots": 6, "xp_mult": 2.10, "upgrade_cost": 2200},
-    6: {"plots": 8, "xp_mult": 2.50, "upgrade_cost": 4000},
-    7: {"plots": 10, "xp_mult": 3.00, "upgrade_cost": 0},
+    1: {"plots": 1, "income_mult": 1.00, "upgrade_cost": 40},
+    2: {"plots": 2, "income_mult": 1.15, "upgrade_cost": 90},
+    3: {"plots": 3, "income_mult": 1.35, "upgrade_cost": 180},
+    4: {"plots": 4, "income_mult": 1.60, "upgrade_cost": 350},
+    5: {"plots": 6, "income_mult": 1.90, "upgrade_cost": 650},
+    6: {"plots": 8, "income_mult": 2.25, "upgrade_cost": 1200},
+    7: {"plots": 10, "income_mult": 2.70, "upgrade_cost": 0},
 }
 MAX_LEVEL = max(LEVELS)
 
+# Цена посадки ещё одного куста травки на грядке (растёт с каждым кустом).
+BUSH_BASE_COST = 25
+BUSH_COST_STEP = 20
+
+# Доход в Лизках за один куст за один цикл роста (до множителя уровня).
+BUSH_BASE_YIELD = 3
+
 WATER_XP_BASE = [(4, 0.50), (6, 0.28), (9, 0.14), (14, 0.06), (20, 0.02)]
-HARVEST_XP_BASE = [(12, 0.50), (18, 0.28), (26, 0.14), (40, 0.06), (60, 0.02)]
+# Небольшой разброс вокруг базового дохода с куста, чтобы не было монотонно.
+HARVEST_MONEY_SPREAD = [(0.7, 0.30), (1.0, 0.45), (1.3, 0.20), (1.6, 0.05)]
 
 
 def ensure_schema():
@@ -51,12 +67,18 @@ def ensure_schema():
                     level INTEGER NOT NULL DEFAULT 1,
                     growth INTEGER NOT NULL DEFAULT 0,
                     planted INTEGER NOT NULL DEFAULT 0,
+                    bushes INTEGER NOT NULL DEFAULT 1,
                     last_water REAL NOT NULL DEFAULT 0,
                     last_message_id BIGINT,
                     updated_at REAL NOT NULL DEFAULT 0,
                     PRIMARY KEY(chat_id, user_id)
                 )"""
             )
+            # Миграция для баз, созданных до появления кустов травки.
+            try:
+                conn.execute("ALTER TABLE farm_state ADD COLUMN IF NOT EXISTS bushes INTEGER NOT NULL DEFAULT 1")
+            except Exception:
+                conn.rollback()
             conn.commit()
         except Exception:
             conn.rollback()
@@ -75,11 +97,12 @@ def _user_info(user):
 def _row_to_state(row):
     if not row:
         return None
-    level, growth, planted, last_water, last_message_id = row
+    level, growth, planted, bushes, last_water, last_message_id = row
     return {
         "level": int(level),
         "growth": int(growth),
         "planted": bool(planted),
+        "bushes": max(1, int(bushes or 1)),
         "last_water": float(last_water or 0),
         "last_message_id": last_message_id,
     }
@@ -89,7 +112,7 @@ def _get_state(chat_id, user_id):
     with db_lock:
         try:
             row = conn.execute(
-                "SELECT level, growth, planted, last_water, last_message_id "
+                "SELECT level, growth, planted, bushes, last_water, last_message_id "
                 "FROM farm_state WHERE chat_id=? AND user_id=?",
                 (str(chat_id), str(user_id)),
             ).fetchone()
@@ -150,12 +173,27 @@ def _fmt_wait(seconds):
     return " ".join(parts)
 
 
-def _roll_xp(table, xp_mult):
+def _roll(table):
     import random
     values = [x[0] for x in table]
     weights = [x[1] for x in table]
-    base = random.choices(values, weights=weights, k=1)[0]
-    return max(1, int(round(base * xp_mult)))
+    return random.choices(values, weights=weights, k=1)[0]
+
+
+def _roll_xp(table):
+    return max(1, int(round(_roll(table))))
+
+
+def _bush_cost(current_bushes):
+    """Цена посадки следующего куста (current_bushes -> current_bushes+1)."""
+    return BUSH_BASE_COST + BUSH_COST_STEP * max(0, current_bushes - 1)
+
+
+def _harvest_income(level, bushes):
+    mult = LEVELS[level]["income_mult"]
+    spread = _roll(HARVEST_MONEY_SPREAD)
+    raw = BUSH_BASE_YIELD * bushes * mult * spread
+    return max(1, int(round(raw)))
 
 
 def _bar(growth):
@@ -167,22 +205,25 @@ def _cb_data(action, owner_id):
     return f"{CB}|{action}|{owner_id}"
 
 
-def _keyboard(owner_id):
+def _keyboard(owner_id, level):
     kb = types.InlineKeyboardMarkup()
     kb.row(types.InlineKeyboardButton("💧 Полить", callback_data=_cb_data("water", owner_id)))
     kb.row(types.InlineKeyboardButton("🌱 Посадить семена", callback_data=_cb_data("plant", owner_id)))
-    kb.row(types.InlineKeyboardButton("📐 Увеличить территорию", callback_data=_cb_data("territory", owner_id)))
+    kb.row(types.InlineKeyboardButton("🌿 Посадить куст травки", callback_data=_cb_data("bush", owner_id)))
+    if level < MAX_LEVEL:
+        kb.row(types.InlineKeyboardButton("📐 Увеличить территорию", callback_data=_cb_data("territory", owner_id)))
     return kb
 
 
-def _render(display_name, state, xp_total, flash=None):
+def _render(display_name, state, xp_total, balance, flash=None):
     level = state["level"]
     info = LEVELS[level]
+    bushes = state["bushes"]
     now = time.time()
     lines = [
         "🌿 <b>Ферма</b>",
         f"👤 {html.escape(display_name)}",
-        f"📈 Уровень: <b>{level}</b> ({info['plots']} соток)",
+        f"📈 Территория: <b>{level}</b> ур. ({info['plots']} соток занято под {bushes} куст.)",
         "",
     ]
     if not state["planted"]:
@@ -202,12 +243,22 @@ def _render(display_name, state, xp_total, flash=None):
     if flash:
         lines.append(flash)
         lines.append("")
+
+    if bushes < info["plots"]:
+        bcost = _bush_cost(bushes)
+        lines.append(f"🌿 Посадить ещё куст травки: <b>{fmt_money(bcost)}</b> ({bushes}/{info['plots']})")
+    else:
+        lines.append(f"🌿 Все сотки заняты кустами ({bushes}/{info['plots']})")
+
     if level < MAX_LEVEL:
         cost = info["upgrade_cost"]
-        lines.append(f"📐 Увеличить территорию: <b>{cost} XP</b>")
+        lines.append(f"📐 Увеличить территорию: <b>{fmt_money(cost)}</b>")
     else:
         lines.append("📐 Территория максимального размера")
+
+    lines.append("")
     lines.append(f"⭐ Опыт: <b>{xp_total} XP</b>")
+    lines.append(f"{fmt_money(balance)}")
     return "\n".join(lines)
 
 
@@ -221,8 +272,9 @@ def _send_farm(message, user):
         except Exception:
             pass
     xp_total = get_xp(chat_id, uid)
-    text = _render(display_name, state, xp_total)
-    msg = bot.send_message(chat_id, text, reply_markup=_keyboard(uid), parse_mode="HTML")
+    balance = get_balance(chat_id, uid)
+    text = _render(display_name, state, xp_total, balance)
+    msg = bot.send_message(chat_id, text, reply_markup=_keyboard(uid, state["level"]), parse_mode="HTML")
     _save_message_id(chat_id, uid, msg.message_id)
 
 
@@ -241,7 +293,7 @@ def profile_line(chat_id, user_id):
         return None
     info = LEVELS[state["level"]]
     status = f"{state['growth']}% 🌱" if state["planted"] else "пусто"
-    return f"🌿 Ферма: ур. <b>{state['level']}</b> ({info['plots']} соток) — {status}"
+    return f"🌿 Ферма: ур. <b>{state['level']}</b> ({state['bushes']}/{info['plots']} кустов) — {status}"
 
 
 def reset_user_farm(chat_id, user_id):
@@ -297,14 +349,14 @@ def _owner_only(call, owner_id):
     return True
 
 
-def _refresh_message(call, display_name, state, xp_total, flash=None):
-    text = _render(display_name, state, xp_total, flash=flash)
+def _refresh_message(call, display_name, state, xp_total, balance, flash=None):
+    text = _render(display_name, state, xp_total, balance, flash=flash)
     try:
         bot.edit_message_text(
             text,
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            reply_markup=_keyboard(str(call.from_user.id)),
+            reply_markup=_keyboard(str(call.from_user.id), state["level"]),
             parse_mode="HTML",
         )
     except Exception:
@@ -312,7 +364,7 @@ def _refresh_message(call, display_name, state, xp_total, flash=None):
         try:
             msg = bot.send_message(
                 call.message.chat.id, text,
-                reply_markup=_keyboard(str(call.from_user.id)), parse_mode="HTML",
+                reply_markup=_keyboard(str(call.from_user.id), state["level"]), parse_mode="HTML",
             )
             _save_message_id(call.message.chat.id, str(call.from_user.id), msg.message_id)
         except Exception:
@@ -333,44 +385,79 @@ def _handle_water(call, chat_id, uid, username, display_name):
         bot.answer_callback_query(call.id, f"🕐 Ещё рано. Осталось: {_fmt_wait(remaining)}", show_alert=True)
         return
 
-    xp_mult = LEVELS[state["level"]]["xp_mult"]
-    xp = _roll_xp(WATER_XP_BASE, xp_mult)
+    xp = _roll_xp(WATER_XP_BASE)
     new_growth = min(100, state["growth"] + GROWTH_STEP)
     _update(chat_id, uid, growth=new_growth, last_water=now)
     xp_total = add_xp(chat_id, uid, xp)
+    balance = get_balance(chat_id, uid)
 
     state["growth"] = new_growth
     state["last_water"] = now
     bot.answer_callback_query(call.id, f"💧 +{xp} XP")
     flash = f"✨ Ты полил(а) грядку и получил(а) <b>+{xp} XP</b>"
-    _refresh_message(call, display_name, state, xp_total, flash=flash)
+    _refresh_message(call, display_name, state, xp_total, balance, flash=flash)
 
 
 def _handle_plant(call, chat_id, uid, username, display_name):
     state = _ensure_row(chat_id, uid, username, display_name)
-    xp_mult = LEVELS[state["level"]]["xp_mult"]
 
     if not state["planted"]:
         _update(chat_id, uid, planted=1, growth=0)
         state["planted"] = True
         state["growth"] = 0
         xp_total = get_xp(chat_id, uid)
+        balance = get_balance(chat_id, uid)
         bot.answer_callback_query(call.id, "🌱 Семена посажены!")
-        _refresh_message(call, display_name, state, xp_total, flash="🌱 Семена посажены. Не забывай поливать!")
+        _refresh_message(call, display_name, state, xp_total, balance, flash="🌱 Семена посажены. Не забывай поливать!")
         return
 
     if state["growth"] < 100:
         bot.answer_callback_query(call.id, "🌱 Уже посажено. Поливай, чтобы вырастить.", show_alert=True)
         return
 
-    xp = _roll_xp(HARVEST_XP_BASE, xp_mult)
+    income = _harvest_income(state["level"], state["bushes"])
     _update(chat_id, uid, planted=1, growth=0)
-    xp_total = add_xp(chat_id, uid, xp)
+    balance = add_balance(chat_id, uid, income)
+    xp_total = get_xp(chat_id, uid)
     state["planted"] = True
     state["growth"] = 0
-    bot.answer_callback_query(call.id, f"🌾 Урожай собран! +{xp} XP")
-    flash = f"🌾 Урожай собран, ты получил(а) <b>+{xp} XP</b>. Новые семена уже в земле!"
-    _refresh_message(call, display_name, state, xp_total, flash=flash)
+    bot.answer_callback_query(call.id, f"🌾 Урожай собран! +{income} {CURRENCY_NAME}")
+    flash = f"🌾 Урожай собран: <b>+{fmt_money(income)}</b>. Новые семена уже в земле!"
+    _refresh_message(call, display_name, state, xp_total, balance, flash=flash)
+
+
+def _handle_bush(call, chat_id, uid, username, display_name):
+    state = _ensure_row(chat_id, uid, username, display_name)
+    level = state["level"]
+    plots = LEVELS[level]["plots"]
+    bushes = state["bushes"]
+
+    if bushes >= plots:
+        bot.answer_callback_query(call.id, "🌿 Все сотки уже заняты кустами. Увеличь территорию.", show_alert=True)
+        return
+
+    cost = _bush_cost(bushes)
+    balance = get_balance(chat_id, uid)
+    if balance < cost:
+        bot.answer_callback_query(
+            call.id,
+            f"🌿 Не хватает Лизок: нужно {cost}, у тебя {balance}.",
+            show_alert=True,
+        )
+        return
+
+    if not spend_balance(chat_id, uid, cost):
+        bot.answer_callback_query(call.id, "🌿 Не получилось списать Лизки, попробуй ещё раз.", show_alert=True)
+        return
+
+    new_bushes = bushes + 1
+    _update(chat_id, uid, bushes=new_bushes)
+    state["bushes"] = new_bushes
+    xp_total = get_xp(chat_id, uid)
+    balance = get_balance(chat_id, uid)
+    bot.answer_callback_query(call.id, f"🌿 Куст посажен! ({new_bushes}/{plots})")
+    flash = f"🌿 Посажен ещё один куст травки ({new_bushes}/{plots}) — доход с урожая вырос."
+    _refresh_message(call, display_name, state, xp_total, balance, flash=flash)
 
 
 def _handle_territory(call, chat_id, uid, username, display_name):
@@ -381,27 +468,28 @@ def _handle_territory(call, chat_id, uid, username, display_name):
         return
 
     cost = LEVELS[level]["upgrade_cost"]
-    xp_total = get_xp(chat_id, uid)
-    if xp_total < cost:
+    balance = get_balance(chat_id, uid)
+    if balance < cost:
         bot.answer_callback_query(
             call.id,
-            f"📐 Не хватает опыта: нужно {cost} XP, у тебя {xp_total} XP.",
+            f"📐 Не хватает Лизок: нужно {cost}, у тебя {balance}.",
             show_alert=True,
         )
         return
 
-    if not spend_xp(chat_id, uid, cost):
-        bot.answer_callback_query(call.id, "📐 Не получилось списать опыт, попробуй ещё раз.", show_alert=True)
+    if not spend_balance(chat_id, uid, cost):
+        bot.answer_callback_query(call.id, "📐 Не получилось списать Лизки, попробуй ещё раз.", show_alert=True)
         return
 
     new_level = level + 1
     _update(chat_id, uid, level=new_level)
     state["level"] = new_level
     xp_total = get_xp(chat_id, uid)
+    balance = get_balance(chat_id, uid)
     plots = LEVELS[new_level]["plots"]
     bot.answer_callback_query(call.id, f"📐 Территория увеличена! Уровень {new_level}.")
     flash = f"📐 Территория увеличена до {plots} соток (уровень {new_level})"
-    _refresh_message(call, display_name, state, xp_total, flash=flash)
+    _refresh_message(call, display_name, state, xp_total, balance, flash=flash)
 
 
 def _dispatch_callback(call):
@@ -420,6 +508,8 @@ def _dispatch_callback(call):
         _handle_water(call, chat_id, uid, username, display_name)
     elif action == "plant":
         _handle_plant(call, chat_id, uid, username, display_name)
+    elif action == "bush":
+        _handle_bush(call, chat_id, uid, username, display_name)
     elif action == "territory":
         _handle_territory(call, chat_id, uid, username, display_name)
     else:
@@ -437,4 +527,4 @@ def _on_farm_callback(call):
         except Exception:
             pass
 
-# created 2026-09-20
+# updated 2026-09-20
