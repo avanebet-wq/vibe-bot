@@ -30,6 +30,13 @@ WATER_COOLDOWN = 4 * 60 * 60  # 4 часа
 GROWTH_STEP = 25
 CB = "farm"
 
+# Premium emoji, используемые вместо обычных смайлов в тексте и на кнопках.
+BUSH_EMOJI = '<tg-emoji emoji-id="5296507730457041690">🌿</tg-emoji>'
+MOON_EMOJI = CURRENCY_ICON
+TERRITORY_EMOJI = '<tg-emoji emoji-id="5294137647244028298">📈</tg-emoji>'
+UPGRADE_EMOJI = '<tg-emoji emoji-id="5294018015224962748">📐</tg-emoji>'
+SEED_EMOJI = '<tg-emoji emoji-id="5294343509321492463">🌱</tg-emoji>'
+
 # Уровни территории: сколько кустов травки помещается, множитель дохода
 # и цена перехода на следующий уровень (в Лунах).
 LEVELS = {
@@ -223,10 +230,10 @@ def _cb_data(action, owner_id):
 def _keyboard(owner_id, level):
     kb = types.InlineKeyboardMarkup()
     kb.row(types.InlineKeyboardButton("💧 Полить", callback_data=_cb_data("water", owner_id)))
-    kb.row(types.InlineKeyboardButton("🌱 Посадить семена", callback_data=_cb_data("plant", owner_id)))
-    kb.row(types.InlineKeyboardButton("🌿 Посадить куст травки", callback_data=_cb_data("bush", owner_id)))
+    kb.row(types.InlineKeyboardButton(f"{SEED_EMOJI} Посадить семена", callback_data=_cb_data("plant", owner_id)))
+    kb.row(types.InlineKeyboardButton(f"{BUSH_EMOJI} Посадить куст травки", callback_data=_cb_data("bush", owner_id)))
     if level < MAX_LEVEL:
-        kb.row(types.InlineKeyboardButton("📐 Увеличить территорию", callback_data=_cb_data("territory", owner_id)))
+        kb.row(types.InlineKeyboardButton(f"{UPGRADE_EMOJI} Увеличить территорию", callback_data=_cb_data("territory", owner_id)))
     return kb
 
 
@@ -237,19 +244,19 @@ def _render(uid, display_name, state, flash=None):
     now = time.time()
     daily = _daily_income(level, bushes)
     lines = [
-        f"🌿 {_mention(uid, display_name)} ваша ферма:",
+        f"{BUSH_EMOJI} {_mention(uid, display_name)} ваша ферма:",
         "",
-        f"📈 Территория: <b>{level}</b> ур. ({info['plots']} соток занято под {bushes} куст.)",
-        f"{CURRENCY_ICON} Лун в сутки: <b>{daily}</b>",
+        f"{TERRITORY_EMOJI} Территория: <b>{level}</b> ур. ({info['plots']} соток занято под {bushes} куст.)",
+        f"{MOON_EMOJI} Лун в сутки: <b>{daily}</b>",
         "",
     ]
     if not state["planted"]:
-        lines.append("🟤 Грядка пустая. Нажми «🌱 Посадить семена», чтобы начать растить.")
+        lines.append(f"🟤 Грядка пустая. Нажми «{SEED_EMOJI} Посадить семена», чтобы начать растить.")
     else:
         growth = state["growth"]
-        lines.append(f"🌱 Рост: {_bar(growth)} <b>{growth}%</b>")
+        lines.append(f"{SEED_EMOJI} Рост: {_bar(growth)} <b>{growth}%</b>")
         if growth >= 100:
-            lines.append("🌾 Урожай созрел! Нажми «🌱 Посадить семена», чтобы собрать и посадить заново.")
+            lines.append(f"🌾 Урожай созрел! Нажми «{SEED_EMOJI} Посадить семена», чтобы собрать и посадить заново.")
         else:
             remaining = WATER_COOLDOWN - (now - state["last_water"]) if state["last_water"] else 0
             if remaining > 0:
@@ -263,15 +270,11 @@ def _render(uid, display_name, state, flash=None):
 
     if bushes < info["plots"]:
         bcost = _bush_cost(bushes)
-        lines.append(f"🌿 Посадить ещё куст травки: <b>{fmt_money(bcost)}</b> ({bushes}/{info['plots']})")
-    else:
-        lines.append(f"🌿 Все сотки заняты кустами ({bushes}/{info['plots']})")
+        lines.append(f"{BUSH_EMOJI} Посадить ещё куст травки: <b>{fmt_money(bcost)}</b> ({bushes}/{info['plots']})")
 
     if level < MAX_LEVEL:
         cost = info["upgrade_cost"]
-        lines.append(f"📐 Увеличить территорию: <b>{fmt_money(cost)}</b>")
-    else:
-        lines.append("📐 Территория максимального размера")
+        lines.append(f"{UPGRADE_EMOJI} Увеличить территорию: <b>{fmt_money(cost)}</b>")
 
     return "\n".join(lines)
 
@@ -304,11 +307,11 @@ def profile_line(chat_id, user_id):
     if not state:
         return None
     info = LEVELS[state["level"]]
-    status = f"{state['growth']}% 🌱" if state["planted"] else "пусто"
+    status = f"{state['growth']}% {SEED_EMOJI}" if state["planted"] else "пусто"
     daily = _daily_income(state["level"], state["bushes"])
     return (
-        f"🌿 Ферма: ур. <b>{state['level']}</b> ({state['bushes']}/{info['plots']} кустов) — {status}\n"
-        f"{CURRENCY_ICON} Лун в сутки: <b>{daily}</b>"
+        f"{BUSH_EMOJI} Ферма: ур. <b>{state['level']}</b> ({state['bushes']}/{info['plots']} кустов) — {status}\n"
+        f"{MOON_EMOJI} Лун в сутки: <b>{daily}</b>"
     )
 
 
@@ -421,7 +424,7 @@ def _handle_plant(call, chat_id, uid, username, display_name):
         state["planted"] = True
         state["growth"] = 0
         bot.answer_callback_query(call.id, "🌱 Семена посажены!")
-        _refresh_message(call, uid, display_name, state, flash="🌱 Семена посажены. Не забывай поливать!")
+        _refresh_message(call, uid, display_name, state, flash=f"{SEED_EMOJI} Семена посажены. Не забывай поливать!")
         return
 
     if state["growth"] < 100:
@@ -466,7 +469,7 @@ def _handle_bush(call, chat_id, uid, username, display_name):
     _update(chat_id, uid, bushes=new_bushes)
     state["bushes"] = new_bushes
     bot.answer_callback_query(call.id, f"🌿 Куст посажен! ({new_bushes}/{plots})")
-    flash = f"🌿 Посажен ещё один куст травки ({new_bushes}/{plots}) — доход с урожая вырос."
+    flash = f"{BUSH_EMOJI} Посажен ещё один куст травки ({new_bushes}/{plots}) — доход с урожая вырос."
     _refresh_message(call, uid, display_name, state, flash=flash)
 
 
@@ -496,7 +499,7 @@ def _handle_territory(call, chat_id, uid, username, display_name):
     state["level"] = new_level
     plots = LEVELS[new_level]["plots"]
     bot.answer_callback_query(call.id, f"📐 Территория увеличена! Уровень {new_level}.")
-    flash = f"📐 Территория увеличена до {plots} соток (уровень {new_level})"
+    flash = f"{UPGRADE_EMOJI} Территория увеличена до {plots} соток (уровень {new_level})"
     _refresh_message(call, uid, display_name, state, flash=flash)
 
 
