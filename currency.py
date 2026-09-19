@@ -13,7 +13,7 @@ from runtime import bot
 LOG = logging.getLogger("currency")
 
 CURRENCY_NAME = "Луны"
-CURRENCY_ICON = "🌙"
+CURRENCY_ICON = '<tg-emoji emoji-id="5294101243101227367">🌙</tg-emoji>'
 
 
 def ensure_schema():

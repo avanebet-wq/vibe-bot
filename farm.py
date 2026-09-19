@@ -22,7 +22,7 @@ from telebot import types
 from database import conn, db_lock
 from runtime import bot
 from profile import get_xp, add_xp
-from currency import get_balance, add_balance, spend_balance, fmt as fmt_money, CURRENCY_NAME
+from currency import get_balance, add_balance, spend_balance, fmt as fmt_money, CURRENCY_NAME, CURRENCY_ICON
 
 LOG = logging.getLogger("farm")
 
@@ -240,7 +240,7 @@ def _render(uid, display_name, state, flash=None):
         f"🌿 {_mention(uid, display_name)} ваша ферма:",
         "",
         f"📈 Территория: <b>{level}</b> ур. ({info['plots']} соток занято под {bushes} куст.)",
-        f"🌙 Лун в сутки: <b>{daily}</b>",
+        f"{CURRENCY_ICON} Лун в сутки: <b>{daily}</b>",
         "",
     ]
     if not state["planted"]:
@@ -308,7 +308,7 @@ def profile_line(chat_id, user_id):
     daily = _daily_income(state["level"], state["bushes"])
     return (
         f"🌿 Ферма: ур. <b>{state['level']}</b> ({state['bushes']}/{info['plots']} кустов) — {status}\n"
-        f"🌙 Лун в сутки: <b>{daily}</b>"
+        f"{CURRENCY_ICON} Лун в сутки: <b>{daily}</b>"
     )
 
 
