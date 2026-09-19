@@ -55,7 +55,8 @@ def _default_post():
     return {
         "enabled": False,
         "text": None,
-        "media": None,        # {"type": "photo"/"video"/..., "file_id": ..., "caption": ...}
+        "text_entities": None,  # entities текста как прислал Telegram (None — старая публикация)
+        "media": None,        # {"type": "photo"/"video"/..., "file_id": ..., "caption": ..., "caption_entities": [...]}
         "buttons": None,      # список рядов [{"text":.., "url"/"popup"/"alert"/"share"/"copy"/"rules":..}]
         "topic_id": None,
         "time": None,         # "HH:MM" — время старта публикаций

@@ -559,6 +559,20 @@ def _build_button_with_emoji(btn_text: str, emoji_id: str | None, **kwargs) -> d
     return btn
 
 
+def _scrub(value) -> str:
+    """Токен бота есть в URL запроса — не даём ему попасть в логи."""
+    text = str(value)
+    return text.replace(TOKEN, "***") if TOKEN else text
+
+
+def _apply_text_format(params: dict, text_key: str, entities, parse_mode: str) -> None:
+    """entities is None -> старое поведение (parse_mode), иначе текст 1 в 1 по entities."""
+    if entities is None:
+        params["parse_mode"] = parse_mode
+    elif entities:
+        params[text_key] = entities
+
+
 def send_message_with_emoji_buttons(
     chat_id: int,
     text: str,
@@ -566,8 +580,13 @@ def send_message_with_emoji_buttons(
     *,
     parse_mode: str = "HTML",
     message_thread_id: int | None = None,
+    entities: list | None = None,
 ) -> dict | None:
-    """Отправить сообщение с кнопками, поддерживающими premium emoji."""
+    """Отправить сообщение с кнопками, поддерживающими premium emoji.
+
+    entities=None — текст размечается через parse_mode (как раньше);
+    entities=[...] — текст уходит без parse_mode с готовыми entities (1 в 1).
+    """
     inline_keyboard = []
     for row in reply_markup_rows:
         row_buttons = []
@@ -585,9 +604,9 @@ def send_message_with_emoji_buttons(
     params: dict = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": parse_mode,
         "reply_markup": {"inline_keyboard": inline_keyboard},
     }
+    _apply_text_format(params, "entities", entities, parse_mode)
     if message_thread_id:
         params["message_thread_id"] = message_thread_id
 
@@ -598,7 +617,7 @@ def send_message_with_emoji_buttons(
             log.error("[premium_emoji] sendMessage failed: %s", data)
         return data
     except Exception as exc:
-        log.error("[premium_emoji] sendMessage exception: %s", exc)
+        log.error("[premium_emoji] sendMessage exception: %s", _scrub(exc))
         return None
 
 
@@ -643,7 +662,7 @@ def send_photo_with_emoji_buttons(
             log.error("[premium_emoji] sendPhoto failed: %s", data)
         return data
     except Exception as exc:
-        log.error("[premium_emoji] sendPhoto exception: %s", exc)
+        log.error("[premium_emoji] sendPhoto exception: %s", _scrub(exc))
         return None
 
 
@@ -656,8 +675,12 @@ def send_media_with_emoji_buttons(
     *,
     parse_mode: str = "HTML",
     message_thread_id: int | None = None,
+    entities: list | None = None,
 ) -> dict | None:
-    """Отправить медиа (video/animation/document/audio) с emoji-кнопками."""
+    """Отправить медиа (video/animation/document/audio) с emoji-кнопками.
+
+    entities — caption_entities подписи (см. send_message_with_emoji_buttons).
+    """
     method_map = {
         "photo": "sendPhoto",
         "video": "sendVideo",
@@ -685,10 +708,11 @@ def send_media_with_emoji_buttons(
     params: dict = {
         "chat_id": chat_id,
         field: file_id,
-        "caption": caption,
-        "parse_mode": parse_mode,
         "reply_markup": {"inline_keyboard": inline_keyboard},
     }
+    if caption:
+        params["caption"] = caption
+        _apply_text_format(params, "caption_entities", entities, parse_mode)
     if message_thread_id:
         params["message_thread_id"] = message_thread_id
 
@@ -699,7 +723,7 @@ def send_media_with_emoji_buttons(
             log.error("[premium_emoji] %s failed: %s", method, data)
         return data
     except Exception as exc:
-        log.error("[premium_emoji] %s exception: %s", method, exc)
+        log.error("[premium_emoji] %s exception: %s", method, _scrub(exc))
         return None
 
 

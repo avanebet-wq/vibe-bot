@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import os
+import html
 from urllib.parse import urlencode, urlparse, quote
 from collections import deque
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from reliability import stopped
 import settings_store as store
 import settings_ui as ui
 import premium_emoji as pe
+import rich_text as rt
 
 log = logging.getLogger("settings")
 
@@ -698,24 +700,86 @@ def _miniapp_state_param(post):
 # Публикации: превью и рассылка
 # =============================================================================
 
+class _SentMessage:
+    """Минимальный объект, совместимый с кодом, которому нужен только message_id."""
+
+    def __init__(self, message_id):
+        self.message_id = message_id
+
+
+_ZWSP = "\u200b"  # невидимый символ: Telegram не принимает пустой текст
+
+
+def _post_body(post):
+    """(текст или подпись, entities) публикации.
+
+    entities is None — публикация сохранена до появления поддержки entities:
+    её текст, как и раньше, разбирается как HTML.
+    """
+    media = post.get("media")
+    if media and media.get("caption"):
+        return media["caption"], media.get("caption_entities")
+    return post.get("text"), post.get("text_entities")
+
+
+_POST_MEDIA_TYPES = (
+    "photo", "video", "animation", "document", "voice", "audio",
+)
+
+
+def _send_body(chat_id, media, body, entities, markup, thread_id=None):
+    """Отправить текст или медиа с подписью. Возвращает объект с message_id.
+
+    entities is not None: текст уходит 1 в 1 с сохранёнными entities
+    (premium emoji, жирный и т.д.) напрямую в Bot API. Если Telegram отклонил
+    именно форматирование, публикация не теряется: уходит простым текстом.
+    entities is None: старый путь через parse_mode=HTML.
+    """
+    if entities is not None:
+        try:
+            markup_dict = rt.markup_to_dict(markup)
+            if media:
+                result = rt.send_media(chat_id, media["type"], media["file_id"], body,
+                                       entities, markup_dict, thread_id)
+            else:
+                result = rt.send_text(chat_id, body or _ZWSP, entities, markup_dict, thread_id)
+            return _SentMessage(result["message_id"])
+        except rt.RichSendError as exc:
+            if not rt.is_format_error(exc):
+                raise
+            log.warning("[posts] Telegram отклонил форматирование, отправляю простым текстом: %s", exc)
+            # дальше — обычный путь; текст экранируем, т.к. у бота parse_mode=HTML
+            body = html.escape(body, quote=False) if body else body
+
+    if media:
+        senders = {
+            "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
+            "document": bot.send_document, "voice": bot.send_voice, "audio": bot.send_audio,
+        }
+        return senders[media["type"]](chat_id, media["file_id"], caption=body,
+                                      reply_markup=markup, message_thread_id=thread_id)
+    return bot.send_message(chat_id, body or _ZWSP, reply_markup=markup, message_thread_id=thread_id)
+
+
 def _deliver_post(chat_id, post, thread_id=None, pid=None):
     raw_rows = post.get("buttons") or []
     media = post.get("media")
+    body, entities = _post_body(post)
 
-    # Если есть premium emoji в кнопках — используем raw HTTP (недокументировано,
-    # но Telegram принимает entities в тексте inline-кнопки).
+    # Если есть premium emoji в кнопках — используем raw HTTP (Bot API 9.4+,
+    # icon_custom_emoji_id), текст при этом тоже уходит с сохранёнными entities.
     if pe.has_emoji_buttons(raw_rows):
         pe_rows = _rows_to_pe_format(raw_rows, gid=chat_id, pid=pid)
-        text = post.get("text") or "​"
-        caption = (media.get("caption") if media else None) or text
+        text = body or _ZWSP
+        text_entities = entities if body else None
         if media and media["type"] not in ("sticker", "voice"):
             resp = pe.send_media_with_emoji_buttons(
-                chat_id, media["type"], media["file_id"], caption,
-                pe_rows, message_thread_id=thread_id,
+                chat_id, media["type"], media["file_id"], text,
+                pe_rows, message_thread_id=thread_id, entities=text_entities,
             )
         elif not media:
             resp = pe.send_message_with_emoji_buttons(
-                chat_id, text, pe_rows, message_thread_id=thread_id,
+                chat_id, text, pe_rows, message_thread_id=thread_id, entities=text_entities,
             )
         else:
             # sticker/voice не поддерживают emoji-кнопки — fallback
@@ -724,31 +788,16 @@ def _deliver_post(chat_id, post, thread_id=None, pid=None):
         if resp is not None and resp.get("ok"):
             msg_id = resp["result"]["message_id"]
             track_message(chat_id, msg_id)
-            # Возвращаем минимальный объект совместимый с кодом выше
-            class _FakeMsg:  # noqa: N801
-                def __init__(self, mid):
-                    self.message_id = mid
-            return _FakeMsg(msg_id)
+            return _SentMessage(msg_id)
         # если raw-запрос не удался — падаем до обычного пути
 
     markup = build_markup_from_buttons(raw_rows, gid=chat_id, pid=pid)
-    if media:
-        caption = media.get("caption") or post.get("text")
-        sender = {
-            "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
-            "document": bot.send_document, "voice": bot.send_voice, "audio": bot.send_audio,
-            "sticker": bot.send_sticker,
-        }.get(media["type"])
-        if sender is None:
-            return None
-        if media["type"] == "sticker":
-            msg = sender(chat_id, media["file_id"], message_thread_id=thread_id)
-        else:
-            msg = sender(chat_id, media["file_id"], caption=caption, reply_markup=markup,
-                         message_thread_id=thread_id)
+    if media and media["type"] == "sticker":
+        msg = bot.send_sticker(chat_id, media["file_id"], message_thread_id=thread_id)
+    elif media and media["type"] not in _POST_MEDIA_TYPES:
+        return None
     else:
-        text = post.get("text") or "​"
-        msg = bot.send_message(chat_id, text, reply_markup=markup, message_thread_id=thread_id)
+        msg = _send_body(chat_id, media, body, entities, markup, thread_id)
     track_message(chat_id, msg.message_id)
     return msg
 
@@ -998,7 +1047,8 @@ def try_handle_pending_input(message):
         if not message.text:
             bot.reply_to(message, "Нужен текст сообщения. Или нажмите «Отмена».")
             return True
-        store.update_post(gid, pid, text=message.text)
+        store.update_post(gid, pid, text=message.text,
+                          text_entities=rt.extract_entities(message))
         _finish_pending(key_chat, uid, gid, pid, "✅ Сообщение сохранено.", target="pmsg")
         return True
 
@@ -1081,18 +1131,26 @@ def try_handle_pending_input(message):
 
 
 def _extract_media(message):
+    caption = message.caption
+    # entities подписи сохраняем как есть — иначе premium emoji/жирный в подписи пропадут
+    caption_entities = rt.extract_entities(message, caption=True) if caption else []
     if message.photo:
-        return {"type": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption}
+        return {"type": "photo", "file_id": message.photo[-1].file_id,
+                "caption": caption, "caption_entities": caption_entities}
     if message.video:
-        return {"type": "video", "file_id": message.video.file_id, "caption": message.caption}
+        return {"type": "video", "file_id": message.video.file_id,
+                "caption": caption, "caption_entities": caption_entities}
     if message.animation:
-        return {"type": "animation", "file_id": message.animation.file_id, "caption": message.caption}
+        return {"type": "animation", "file_id": message.animation.file_id,
+                "caption": caption, "caption_entities": caption_entities}
     if message.document:
-        return {"type": "document", "file_id": message.document.file_id, "caption": message.caption}
+        return {"type": "document", "file_id": message.document.file_id,
+                "caption": caption, "caption_entities": caption_entities}
     if message.voice:
         return {"type": "voice", "file_id": message.voice.file_id, "caption": None}
     if message.audio:
-        return {"type": "audio", "file_id": message.audio.file_id, "caption": message.caption}
+        return {"type": "audio", "file_id": message.audio.file_id,
+                "caption": caption, "caption_entities": caption_entities}
     if message.sticker:
         return {"type": "sticker", "file_id": message.sticker.file_id, "caption": None}
     return None
@@ -1679,7 +1737,7 @@ def _dispatch_callback(call):
 
     if action == "ptxtdel":
         pid = rest[0]
-        store.update_post(gid, pid, text=None)
+        store.update_post(gid, pid, text=None, text_entities=None)
         store.clear_pending(chat_id, call.from_user.id)
         bot.answer_callback_query(call.id, "🚫 Сообщение удалено.")
         return _show(chat_id, message_id, "pmsg", gid, pid)
@@ -1723,7 +1781,7 @@ def _dispatch_callback(call):
             return bot.answer_callback_query(call.id, "🤔 Текст ещё не установлен.", show_alert=True)
         bot.answer_callback_query(call.id, "👀 Отправляю текст.")
         kb = ui._kb([[ui._btn("⬅️ Назад", "close", gid)]])
-        msg = bot.send_message(chat_id, post["text"], reply_markup=kb)
+        msg = _send_body(chat_id, None, post["text"], post.get("text_entities"), kb)
         track_message(chat_id, msg.message_id)
         return
 
@@ -1745,7 +1803,8 @@ def _dispatch_callback(call):
         if media["type"] in ("sticker", "voice"):
             msg = sender(chat_id, media["file_id"], reply_markup=kb)
         else:
-            msg = sender(chat_id, media["file_id"], caption=media.get("caption"), reply_markup=kb)
+            msg = _send_body(chat_id, media, media.get("caption"),
+                             media.get("caption_entities"), kb)
         track_message(chat_id, msg.message_id)
         return
 
