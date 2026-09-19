@@ -12,8 +12,8 @@ from runtime import bot
 
 LOG = logging.getLogger("currency")
 
-CURRENCY_NAME = "Лизки"
-CURRENCY_ICON = "🍬"
+CURRENCY_NAME = "Луны"
+CURRENCY_ICON = "🌙"
 
 
 def ensure_schema():
@@ -107,7 +107,6 @@ def cmd_balance(message, args=""):
         LOG.exception("cmd_balance failed")
         bot.reply_to(message, "⚠️ Не удалось получить баланс, попробуй ещё раз.")
         return
-    name = html.escape((message.from_user.first_name or "").strip() or "Ты")
-    bot.reply_to(message, f"👤 {name}\n{CURRENCY_ICON} Баланс: <b>{bal} {CURRENCY_NAME}</b>", parse_mode="HTML")
+    bot.reply_to(message, f"{CURRENCY_ICON} Лун: <b>{bal}</b>", parse_mode="HTML")
 
 # created 2026-09-20
