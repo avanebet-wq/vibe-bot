@@ -47,6 +47,13 @@ CONTEST_STALE_SECONDS = 7 * 24 * 3600
 
 _NAMESPACE = "contest"
 
+# Premium-эмодзи кубка для оформления конкурса. Работает только при
+# parse_mode="HTML" (уже используется во всех сообщениях ниже) и только для
+# ботов Telegram Premium/через обычный Bot API это отображается как тег
+# tg-emoji с эмодзи-фолбэком 🏆 внутри — если premium-эмодзи недоступен
+# получателю, покажется именно этот фолбэк.
+TROPHY_EMOJI = '<tg-emoji emoji-id="5226431245918942763">🏆</tg-emoji>'
+
 
 def _empty_state():
     return {
@@ -97,7 +104,7 @@ def _board_text(state, chat_title=None):
     scores = state.get("scores", {}) or {}
     names = state.get("names", {}) or {}
     title = chat_title or state.get("chat_title") or "чат"
-    lines = [f"🏆 <b>Конкурс на приглашения — {html.escape(str(title))}</b>", ""]
+    lines = [f"{TROPHY_EMOJI} <b>Конкурс на приглашения — {html.escape(str(title))}</b>", ""]
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1], names.get(kv[0], "")))
     ranked = [(uid, pts) for uid, pts in ranked if pts > 0]
     if not ranked:
@@ -161,7 +168,7 @@ def cmd_start_contest(message):
     """"старт конкурс" — включает конкурс и публикует лидерборд."""
     cid = message.chat.id
     if getattr(message.chat, "type", "") not in ("group", "supergroup"):
-        bot.reply_to(message, "🏆 Конкурс можно запустить только в групповом чате.")
+        bot.reply_to(message, f"{TROPHY_EMOJI} Конкурс можно запустить только в групповом чате.", parse_mode="HTML")
         return
     uid = message.from_user.id if message.from_user else None
     if uid is not None and not is_chat_admin(cid, uid):
@@ -187,11 +194,12 @@ def cmd_start_contest(message):
     _render_board(cid, state, chat_title=chat_title)
 
     if already_active:
-        bot.reply_to(message, "🏆 Конкурс уже был запущен — таблица лидеров выше, продолжаем считать.")
+        bot.reply_to(message, f"{TROPHY_EMOJI} Конкурс уже был запущен — таблица лидеров выше, продолжаем считать.", parse_mode="HTML")
     else:
         bot.reply_to(
             message,
-            "🏆 Конкурс запущен! Приглашайте новых участников в чат — таблица лидеров будет обновляться сама.",
+            f"{TROPHY_EMOJI} Конкурс запущен! Приглашайте новых участников в чат — таблица лидеров будет обновляться сама.",
+            parse_mode="HTML",
         )
 
 
@@ -205,7 +213,7 @@ def cmd_stop_contest(message):
 
     state = _get_state(cid)
     if not state.get("active"):
-        bot.reply_to(message, "🏆 Конкурс сейчас не запущен.")
+        bot.reply_to(message, f"{TROPHY_EMOJI} Конкурс сейчас не запущен.", parse_mode="HTML")
         return
 
     def mutate(st):
