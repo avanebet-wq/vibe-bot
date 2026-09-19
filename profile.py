@@ -2,7 +2,6 @@
 import html, time, threading
 from database import conn, db_lock
 from runtime import bot
-from minigames import get_xp
 from karma import get_karma
 
 _PRESENCE_LOCK = threading.RLock()
@@ -31,6 +30,98 @@ def ensure_profile_schema():
         except Exception:
             conn.rollback()
             raise
+
+def get_xp(chat_id, user_id):
+    with db_lock:
+        try:
+            row = conn.execute(
+                "SELECT xp FROM profile_xp WHERE chat_id=? AND user_id=?",
+                (str(chat_id), str(user_id)),
+            ).fetchone()
+        except Exception:
+            conn.rollback()
+            raise
+    return int(row[0]) if row else 0
+
+def add_xp(chat_id, user_id, amount):
+    """Начисляет (amount>0) или списывает (amount<0) опыт. Возвращает итоговое значение XP."""
+    amount = int(amount)
+    with db_lock:
+        try:
+            if amount:
+                conn.execute(
+                    "INSERT INTO profile_xp(chat_id,user_id,xp) VALUES(?,?,?) "
+                    "ON CONFLICT(chat_id,user_id) DO UPDATE SET xp=profile_xp.xp+excluded.xp",
+                    (str(chat_id), str(user_id), amount),
+                )
+            row = conn.execute(
+                "SELECT xp FROM profile_xp WHERE chat_id=? AND user_id=?",
+                (str(chat_id), str(user_id)),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return int(row[0]) if row else 0
+
+def spend_xp(chat_id, user_id, amount):
+    """Списывает XP, если его достаточно. Возвращает True при успехе, иначе False (баланс не трогается)."""
+    amount = int(amount)
+    if amount <= 0:
+        return True
+    with db_lock:
+        try:
+            row = conn.execute(
+                "SELECT xp FROM profile_xp WHERE chat_id=? AND user_id=?",
+                (str(chat_id), str(user_id)),
+            ).fetchone()
+            current = int(row[0]) if row else 0
+            if current < amount:
+                conn.rollback()
+                return False
+            conn.execute(
+                "UPDATE profile_xp SET xp = xp - ? WHERE chat_id=? AND user_id=?",
+                (amount, str(chat_id), str(user_id)),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return True
+
+def _top_xp_rows(chat_id, limit=10):
+    with db_lock:
+        try:
+            return conn.execute(
+                "SELECT user_id, xp FROM profile_xp WHERE chat_id=? AND xp>0 "
+                "ORDER BY xp DESC LIMIT ?",
+                (str(chat_id), limit),
+            ).fetchall()
+        except Exception:
+            conn.rollback()
+            raise
+
+def cmd_top(message, args=""):
+    """Топ участников чата по общему опыту (XP)."""
+    from utils import get_mention
+    try:
+        rows = _top_xp_rows(message.chat.id, 10)
+        lines = ["🏆 <b>ТОП ПО ОПЫТУ</b>", ""]
+        if not rows:
+            lines.append("— пока нет данных")
+        else:
+            from database import db_get
+            store = db_get("stats", {}) or {}
+            chat_store = store.get(str(message.chat.id), {}) or {}
+            names = dict(chat_store.get("names", {}) or {})
+            for idx, (uid, xp) in enumerate(rows, 1):
+                name = names.get(str(uid)) or names.get(uid) or str(uid)
+                lines.append(f"{idx}. {get_mention(uid, name)} — <b>{int(xp)} XP</b>")
+        bot.reply_to(message, "\n".join(lines), parse_mode="HTML")
+    except Exception:
+        import logging
+        logging.exception("cmd_top failed")
+        bot.reply_to(message, "⚠️ Не удалось показать топ. Попробуй ещё раз через пару секунд.")
 
 def touch_user(message):
     global _LAST_PRESENCE_CLEAN
@@ -81,30 +172,12 @@ def fmt_duration(seconds):
     if m: parts.append(f'{m} мин')
     return ' '.join(parts) if parts else 'меньше минуты'
 
-def _count(chat_id,user_id,kind):
-    with db_lock:
-        try:
-            return int(conn.execute('SELECT COUNT(*) FROM minigame_events WHERE chat_id=? AND user_id=? AND kind=?',(str(chat_id),str(user_id),kind)).fetchone()[0])
-        except Exception:
-            conn.rollback()
-            raise
-
-def _drink_stats(chat_id,user_id):
-    with db_lock:
-        try:
-            row=conn.execute('SELECT COUNT(*), COALESCE(SUM(volume_liters),0) FROM drink_game_events WHERE chat_id=? AND user_id=?',(str(chat_id),str(user_id))).fetchone()
-        except Exception:
-            conn.rollback()
-            raise
-    return int(row[0]),float(row[1] or 0)
-
 def cmd_profile(message):
     touch_user(message)
     u=message.from_user; cid=str(message.chat.id); uid=str(u.id)
     first=(u.first_name or '').strip(); last=(u.last_name or '').strip(); nick=' '.join(x for x in (first,last) if x) or '—'
     tag='@'+u.username if u.username else '—'
     xp=get_xp(cid,uid); rank,remaining=rank_for(xp)
-    cups=_count(cid,uid,'coffee'); cigs=_count(cid,uid,'smoke'); drinks,liters=_drink_stats(cid,uid)
     with db_lock:
         try:
             row=conn.execute('SELECT first_seen FROM chat_user_presence WHERE chat_id=? AND user_id=?',(cid,uid)).fetchone()
@@ -116,7 +189,14 @@ def cmd_profile(message):
            f'🏆 Ранг: <b>{html.escape(rank[1])}</b>',f'⭐ Опыт: <b>{xp} XP</b>']
     if remaining is None: lines.append('👑 Максимальный ранг достигнут')
     else: lines.append(f'📈 До следующего ранга: <b>{remaining} XP</b>')
-    lines += ['', '🎮 <b>Статистика мини-игр</b>', f'🚬 Сиг скурено: <b>{cigs}</b>', f'☕ Чашек выпито: <b>{cups}</b>', f'🥤 Revo выпито: <b>{drinks}</b>', f'💧 Литров Revo: <b>{liters:.1f} л</b>', '', f'⏱ В чате: <b>{html.escape(fmt_duration(time.time()-since))}</b>', f'⚖️ Карма: <b>{get_karma(cid, uid):+d}</b>']
+    try:
+        from farm import profile_line as _farm_profile_line
+        farm_line = _farm_profile_line(cid, uid)
+    except Exception:
+        farm_line = None
+    if farm_line:
+        lines += ['', farm_line]
+    lines += ['', f'⏱ В чате: <b>{html.escape(fmt_duration(time.time()-since))}</b>', f'⚖️ Карма: <b>{get_karma(cid, uid):+d}</b>']
     bot.reply_to(message,'\n'.join(lines),parse_mode='HTML')
 
-# updated 2026-09-18
+# updated 2026-09-20

@@ -5,8 +5,8 @@ from events import emit as emit_event
 from mood_state import on_message as update_mood, on_event as update_mood_event
 from user_memory import infer_safe_fact, add_fact, get_facts, clear as clear_user_memory
 from social_context import observe as observe_social
-from minigames import cmd_smoke, cmd_coffee, cmd_drink, cmd_stats as cmd_minigame_stats, cmd_reset as cmd_reset_minigames
-from profile import cmd_profile, touch_user
+from farm import cmd_farm, cmd_reset as cmd_reset_farm
+from profile import cmd_profile, touch_user, cmd_top
 from karma import observe_message, get_user_context, get_karma, change_karma, give_karma, give_negative_karma, auto_delta
 from relationships import create_request_command, end_relationship, set_main, remove_main, show_relationship, actions_dm, execute_action
 from reliability import mark_ok, mark_error
@@ -250,15 +250,15 @@ _SINGLE_COMMANDS = {
     "модлог": lambda m, a: cmd_modlog(m),
     "цель": lambda m, a: _cmd_goal(m, a),
     "цели": lambda m, a: _cmd_goals(m),
-    "пыхнуть": lambda m, a: cmd_smoke(m),
-    "заварить": lambda m, a: cmd_coffee(m),
-    "выпить": lambda m, a: cmd_drink(m),
+    "ферма": lambda m, a: cmd_farm(m, a),
+    "плантация": lambda m, a: cmd_farm(m, a),
+    "сад": lambda m, a: cmd_farm(m, a),
     "профиль": lambda m, a: cmd_profile(m),
     "-чат": cmd_chat_off,
     "+чат": cmd_chat_on,
-    "стата": lambda m, a: cmd_minigame_stats(m, a),
-    "топ": lambda m, a: cmd_minigame_stats(m, a),
-    "обнулить": lambda m, a: cmd_reset_minigames(m, a),
+    "стата": lambda m, a: cmd_top(m, a),
+    "топ": lambda m, a: cmd_top(m, a),
+    "обнулить": lambda m, a: cmd_reset_farm(m, a),
     "калл": lambda m, a: _cmd_call(m, a),
     "+отн": lambda m, a: create_request_command(m, a),
     "-отн": lambda m, a: end_relationship(m, a),
@@ -449,12 +449,12 @@ def _run_call(message, reason):
         names = dict(chat.get("names", {}) or {})
         user_ids = set(str(uid) for uid in names.keys() if str(uid).lstrip("-").isdigit())
 
-        # Дополняем список игроками мини-игр, которых могло не быть в
-        # недавней статистике сообщений. Их имя уже хранится в событиях.
+        # Дополняем список игроками фермы, которых могло не быть в
+        # недавней статистике сообщений. Их имя уже хранится в состоянии игры.
         try:
             with db_lock:
                 rows = conn.execute(
-                    "SELECT DISTINCT user_id, display_name FROM minigame_events WHERE chat_id=?",
+                    "SELECT DISTINCT user_id, display_name FROM farm_state WHERE chat_id=?",
                     (cid,),
                 ).fetchall()
             for uid, display_name in rows:
@@ -464,7 +464,7 @@ def _run_call(message, reason):
                     if display_name:
                         names[uid] = str(display_name)
         except Exception:
-            logging.exception("[call] failed to read minigame users")
+            logging.exception("[call] failed to read farm users")
 
         # Берём также ранее замеченных участников. Для них имя при необходимости
         # подтянем через get_chat_member ниже.
@@ -606,7 +606,7 @@ def _dispatch(message, cmd_text):
     key = first.lower()
     if key in _SINGLE_COMMANDS:
         try:
-            if key in {"пыхнуть", "заварить", "выпить", "стата", "топ"} and not _game_enabled(message):
+            if key in {"ферма", "плантация", "сад", "стата", "топ"} and not _game_enabled(message):
                 bot.reply_to(message, "🎮 Мини-игры сейчас отключены администратором.")
                 return True
             _SINGLE_COMMANDS[key](message, rest.strip())
@@ -724,6 +724,14 @@ def on_start(message):
 @bot.message_handler(commands=["help"])
 def on_help_cmd(message):
     cmd_help(message)
+
+
+@bot.message_handler(commands=["game"])
+def on_game_cmd(message):
+    if not _game_enabled(message):
+        bot.reply_to(message, "🎮 Мини-игры сейчас отключены администратором.")
+        return
+    cmd_farm(message)
 
 
 # ---------------------------------------------------------------------------
