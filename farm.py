@@ -30,12 +30,13 @@ WATER_COOLDOWN = 4 * 60 * 60  # 4 часа
 GROWTH_STEP = 25
 CB = "farm"
 
-# Premium emoji, используемые вместо обычных смайлов в тексте и на кнопках.
-BUSH_EMOJI = '<tg-emoji emoji-id="5296507730457041690">🌿</tg-emoji>'
-MOON_EMOJI = CURRENCY_ICON
-TERRITORY_EMOJI = '<tg-emoji emoji-id="5294137647244028298">📈</tg-emoji>'
-UPGRADE_EMOJI = '<tg-emoji emoji-id="5294018015224962748">📐</tg-emoji>'
-SEED_EMOJI = '<tg-emoji emoji-id="5294343509321492463">🌱</tg-emoji>'
+# Обычные эмодзи (premium custom emoji боту недоступны без покупки
+# username на Fragment — Telegram показывает такие теги простым текстом).
+BUSH_EMOJI = "🌿"
+MOON_EMOJI = "🌙"
+TERRITORY_EMOJI = "📈"
+UPGRADE_EMOJI = "📐"
+SEED_EMOJI = "🌱"
 
 # Уровни территории: сколько кустов травки помещается, множитель дохода
 # и цена перехода на следующий уровень (в Лунах).
@@ -271,10 +272,6 @@ def _render(uid, display_name, state, flash=None):
     if bushes < info["plots"]:
         bcost = _bush_cost(bushes)
         lines.append(f"{BUSH_EMOJI} Посадить ещё куст травки: <b>{fmt_money(bcost)}</b> ({bushes}/{info['plots']})")
-
-    if level < MAX_LEVEL:
-        cost = info["upgrade_cost"]
-        lines.append(f"{UPGRADE_EMOJI} Увеличить территорию: <b>{fmt_money(cost)}</b>")
 
     return "\n".join(lines)
 
