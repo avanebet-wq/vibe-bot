@@ -11,7 +11,6 @@ from karma import observe_message, get_user_context, get_karma, change_karma, gi
 from relationships import create_request_command, end_relationship, set_main, remove_main, show_relationship, actions_dm, execute_action
 from reliability import mark_ok, mark_error
 from goals import add as goal_add, list_open as goal_list, complete as goal_complete, remove as goal_remove
-from chat_personality import get as get_chat_personality, set_value as set_chat_personality
 from mood_state import decay as decay_mood
 import premium_emoji as pe
 # -*- coding: utf-8 -*-
@@ -28,9 +27,9 @@ from runtime import bot, WAKE_RE, BOT_ID
 from config import STORY_AUTOTELL_CHANCE, BAD_WORDS
 from utils import get_setting, set_setting, remember_user
 from mood import (
-    get_chatter_chance, is_autoactivity, is_polite, is_angry, is_asleep,
+    get_chatter_chance, is_autoactivity, is_polite, is_asleep,
     cmd_less_spam, cmd_more_active, cmd_autoactivity_on, cmd_autoactivity_off,
-    cmd_sleep, cmd_wakeup, cmd_polite_on, cmd_polite_off, cmd_angry_on, cmd_calm_down,
+    cmd_sleep, cmd_wakeup, cmd_polite_on, cmd_polite_off,
 )
 from moderation import (
     cmd_ban, cmd_unban, cmd_banlist, cmd_mute, cmd_unmute, cmd_mutelist,
@@ -243,8 +242,6 @@ _SINGLE_COMMANDS = {
     "отключись": lambda m, a: cmd_sleep(m),
     "включись": lambda m, a: cmd_wakeup(m),
     "матерись": lambda m, a: cmd_polite_off(m),
-    "разозлись": lambda m, a: cmd_angry_on(m),
-    "успокойся": lambda m, a: cmd_calm_down(m),
     "помощь": lambda m, a: cmd_help(m),
     "память": lambda m, a: _cmd_memory(m),
     "команды": lambda m, a: cmd_help(m),
@@ -253,7 +250,6 @@ _SINGLE_COMMANDS = {
     "модлог": lambda m, a: cmd_modlog(m),
     "цель": lambda m, a: _cmd_goal(m, a),
     "цели": lambda m, a: _cmd_goals(m),
-    "характер": lambda m, a: _cmd_personality(m, a),
     "пыхнуть": lambda m, a: cmd_smoke(m),
     "заварить": lambda m, a: cmd_coffee(m),
     "выпить": lambda m, a: cmd_drink(m),
@@ -419,19 +415,6 @@ def _cmd_goal_done(message,args):
 def _cmd_goal_delete(message,args):
     ok=goal_remove(message.chat.id,args.strip().split()[0] if args.strip() else "")
     bot.reply_to(message,"🗑️ Цель удалена." if ok else "⚠️ Не нашла такую цель.")
-
-def _cmd_personality(message,args):
-    cid=message.chat.id; raw=(args or '').strip()
-    if not raw:
-        p=get_chat_personality(cid); bot.reply_to(message,"🎭 <b>Характер:</b>\n"+"\n".join(f"{k}: {v}/100" for k,v in p.items())); return
-    parts=raw.split()
-    aliases={'юмор':'humor','сарказм':'sarcasm','доброта':'friendliness','грубость':'rudeness','серьёзность':'seriousness','серьезность':'seriousness','разговорчивость':'verbosity'}
-    key=aliases.get(parts[0].lower(),parts[0].lower())
-    try: value=int(parts[1])
-    except Exception: return bot.reply_to(message,"⚠️ Формат: <code>характер юмор 80</code>")
-    if set_chat_personality(cid,key,value): bot.reply_to(message,f"✅ {key}: {max(0,min(100,value))}/100")
-    else: bot.reply_to(message,"⚠️ Неизвестный параметр характера.")
-
 
 def _cmd_call(message, args):
     """Созыв участников чата: имя-ссылка + разные эмодзи, затем финал."""
@@ -894,7 +877,7 @@ def text_handler(message):
                 return
             # Обратились по имени, но это не команда — считаем, что это вопрос к AI.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, cmd_text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
+            _enqueue_ai_reply(message, cmd_text, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
             return
 
         if is_group and reply_mode == "mention" and not addressed:
@@ -903,13 +886,13 @@ def text_handler(message):
         if not is_group:
             # Личка — общаемся без обращения по имени.
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
+            _enqueue_ai_reply(message, text, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
             return
 
         # Групповой чат, сообщение не адресовано напрямую.
         if addressed:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
+            _enqueue_ai_reply(message, text, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), user_context=_ai_user_context(message), is_group=is_group, user_name=display_name)
             return
 
         # Если включена автоактивность — не встреваем во время бурного обсуждения.
@@ -923,7 +906,7 @@ def text_handler(message):
         chance = get_chatter_chance(cid)
         if random.random() < chance:
             record_liza_request(cid, getattr(message.from_user, "id", None))
-            _enqueue_ai_reply(message, text, angry=is_angry(cid), max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), reply_mode="send", processing_notice=False, is_group=is_group, user_name=display_name)
+            _enqueue_ai_reply(message, text, max_tokens=80, chat_id=cid, user_id=getattr(message.from_user, "id", None), group_context=_liza_ai_context(message), reply_mode="send", processing_notice=False, is_group=is_group, user_name=display_name)
 
     except Exception as e:
         logging.error(f"[text_handler] {e}", exc_info=True)

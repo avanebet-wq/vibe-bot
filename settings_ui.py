@@ -60,7 +60,7 @@ def liza_settings_text(chat_title):
 def liza_settings_kb(gid):
     return _kb([
         [_btn("👅 Ответы и активность", "liza", gid)],
-        [_btn("🧠 Память", "mem", gid), _btn("🎭 Характер", "pers", gid)],
+        [_btn("🧠 Память", "mem", gid)],
         [_btn("🛡️ Модерация", "mod", gid)],
         [_btn("🎮 Развлечения", "fun", gid)],
         [_btn("⚙️ Функции чата", "chat", gid)],
@@ -214,7 +214,6 @@ def chat_text(gid):
     l=get_liza(gid)
     return ("⚙️ <b>ФУНКЦИИ ЧАТА</b>\n\n"
             f"🎩 Вежливый стиль: <b>{_on(l.get('polite'))}</b>\n"
-            f"😠 Злой режим: <b>{_on(l.get('angry'))}</b>\n"
             f"📖 Автоистории: <b>{_on(l.get('stories'))}</b>\n"
             f"🧹 Удаление нарушений: <b>{_on(get_setting(gid,'auto_delete',False))}</b>\n"
             f"🛡 Защита админов: <b>{_on(get_setting(gid,'protect_admins',True))}</b>")
@@ -223,9 +222,7 @@ def chat_kb(gid):
     l=get_liza(gid)
     return _kb([
         [_btn(("🟢 " if l.get("polite") else "⚪ ")+"Вежливый стиль", "liza_toggle", gid, "polite")],
-        [_btn(("🟢 " if l.get("angry") else "⚪ ")+"Злой режим", "liza_toggle", gid, "angry")],
         [_btn("🛡️ Открыть модерацию", "mod", gid)],
-        [_btn("🎭 Открыть характер", "pers", gid)],
         [_btn("⬅️ Назад", "back", gid, "root")],
     ])
 
@@ -250,26 +247,6 @@ def mod_kb(gid):
         [_btn("⬅️ Назад", "back", gid, "root")],
     ])
 
-_PERS_LABELS = {
-    "humor": "Юмор", "sarcasm": "Сарказм", "friendliness": "Доброта",
-    "rudeness": "Грубость", "seriousness": "Серьёзность", "verbosity": "Разговорчивость",
-}
-
-def personality_text(gid):
-    from chat_personality import get
-    p=get(gid)
-    return ("🎭 <b>Характер Лизы</b>\n\n" + "\n".join(f"• {_PERS_LABELS.get(k,k)}: <b>{v}</b>/100" for k,v in p.items()) +
-            "\n\nКаждая кнопка меняет параметр на 5 пунктов. Диапазон: 0–100.")
-
-def personality_kb(gid):
-    from chat_personality import get
-    p=get(gid); rows=[]
-    for key, value in p.items():
-        label=_PERS_LABELS.get(key,key)
-        rows.append([_btn("−5", "pers_adj", gid, key, -5), _btn(f"{label}: {value}", "noop", gid), _btn("+5", "pers_adj", gid, key, 5)])
-    rows.append([_btn("⬅️ Назад", "back", gid, "root")])
-    return _kb(rows)
-
 def status_text(gid):
     l=get_liza(gid)
     mode={"everyone":"всем","mention":"только при обращении","silent":"полная тишина"}.get(l.get("reply_mode"),"—")
@@ -281,8 +258,7 @@ def status_text(gid):
             f"🧠 Память: <b>{_on(get_setting(gid,'memory_enabled',True))}</b>\n"
             f"🎮 Мини-игры: <b>{_on(l.get('minigames'))}</b>\n"
             f"📖 Автоистории: <b>{_on(l.get('stories'))}</b>\n"
-            f"🎩 Вежливость: <b>{_on(l.get('polite'))}</b>\n"
-            f"😠 Злость: <b>{_on(l.get('angry'))}</b>")
+            f"🎩 Вежливость: <b>{_on(l.get('polite'))}</b>")
 
 def status_kb(gid):
     return _kb([[_btn("🔄 Обновить", "status", gid)],[_btn("⬅️ Назад", "back", gid, "root")]])

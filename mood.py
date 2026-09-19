@@ -22,10 +22,6 @@ def is_polite(cid):
     return bool(get_setting(cid, "polite_filter", False))
 
 
-def is_angry(cid):
-    return bool(get_setting(cid, "angry_mode", False))
-
-
 def sleep_until(cid):
     return get_setting(cid, "sleep_until", 0) or 0
 
@@ -86,13 +82,4 @@ def cmd_polite_off(message):
     bot.reply_to(message, "😏 Ладно, фильтр выключен, буду говорить как обычно.")
 
 
-def cmd_angry_on(message):
-    set_setting(message.chat.id, "angry_mode", True)
-    bot.reply_to(message, "😠 Всё, я в бешенстве. Осторожнее со мной.")
-
-
-def cmd_calm_down(message):
-    set_setting(message.chat.id, "angry_mode", False)
-    bot.reply_to(message, "😌 Ладно, выдохнула. Успокоилась.")
-
-# updated 2026-09-18
+# updated 2026-09-19

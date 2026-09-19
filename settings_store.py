@@ -46,7 +46,6 @@ def _default_settings():
             "memory": True,
             "minigames": True,
             "polite": False,
-            "angry": False,
         },
     }
 

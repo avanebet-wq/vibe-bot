@@ -1,9 +1,7 @@
-from personality import build_personality_prompt
 from dialogue_context import format_for_ai as _format_dialogue_context
 from mood_state import build_prompt as build_mood_prompt
 from user_memory import format_facts
 from social_context import summary as social_summary
-from chat_personality import get as get_chat_personality
 from security import allow
 from utils import get_setting
 import logging, re, threading, requests, time
@@ -16,7 +14,6 @@ from config import (
     HF_BASE_URL,
     AI_MODEL,
     SYS_PROMPT_NORMAL,
-    SYS_PROMPT_ANGRY,
 )
 
 _key_list = [k.strip() for k in GROQ_KEY.split(",") if k.strip()]
@@ -39,7 +36,7 @@ _SELF_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Personality/mood/facts/social-graph/dialogue/history lookups below are
+# Mood/facts/social-graph/dialogue/history lookups below are
 # independent of each other and several hit the database. Running them
 # concurrently turns N sequential round trips into roughly one.
 _CTX_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="liza-ctx")
@@ -269,15 +266,12 @@ def _reasoning_budget(effort, max_tokens):
     return max(1024, min(requested, 2048))
 
 
-def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None, group_context=None, personality=None, user_context=None, is_group=False, user_name=None):
+def ask_liza(user_text, max_tokens=200, chat_id=None, user_id=None, group_context=None, user_context=None, is_group=False, user_name=None):
     if not _circuit_allows():
         logging.warning("[ai] circuit breaker open")
         return None
 
-    sys_prompt = SYS_PROMPT_ANGRY if angry else SYS_PROMPT_NORMAL
-
-    def _personality_job():
-        return build_personality_prompt(personality or (get_chat_personality(chat_id) if chat_id is not None else None))
+    sys_prompt = SYS_PROMPT_NORMAL
 
     def _mood_job():
         return build_mood_prompt(chat_id) if chat_id is not None else None
@@ -331,12 +325,11 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
         except Exception:
             return []
 
-    # These five lookups are independent and several hit the database
-    # (facts, social graph, dialogue context, conversation history). Firing
+    # These lookups are independent and several hit the database
+    # (mood, facts, social graph, dialogue context, conversation history). Firing
     # them concurrently instead of one after another turns several
     # sequential DB round trips into roughly the time of the slowest one.
     jobs = {
-        "personality": _personality_job,
         "mood": _mood_job,
         "facts": _facts_job,
         "social": _social_job,
@@ -346,7 +339,7 @@ def ask_liza(user_text, angry=False, max_tokens=200, chat_id=None, user_id=None,
     futures = {name: _CTX_EXECUTOR.submit(_safe_ctx, job) for name, job in jobs.items()}
     results = {name: f.result() for name, f in futures.items()}
 
-    extra = [results[name] for name in ("personality", "mood", "facts", "social", "dialogue") if results.get(name)]
+    extra = [results[name] for name in ("mood", "facts", "social", "dialogue") if results.get(name)]
 
     if is_group:
         extra.append(

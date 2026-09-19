@@ -97,8 +97,6 @@ def _render(target, gid, pid=None):
         return ui.chat_text(gid), ui.chat_kb(gid)
     if target == "mod":
         return ui.mod_text(gid), ui.mod_kb(gid)
-    if target == "pers":
-        return ui.personality_text(gid), ui.personality_kb(gid)
     if target == "status":
         return ui.status_text(gid), ui.status_kb(gid)
     if target == "reset":
@@ -1421,7 +1419,7 @@ def _dispatch_callback(call):
 
     if action == "liza_toggle":
         key = rest[0] if rest else ""
-        if key not in {"autoactivity", "stories", "memory", "minigames", "polite", "angry"}:
+        if key not in {"autoactivity", "stories", "memory", "minigames", "polite"}:
             return bot.answer_callback_query(call.id, "⚠️ Неизвестная настройка.", show_alert=True)
         l = store.get_liza(gid)
         new = not bool(l.get(key, False))
@@ -1431,7 +1429,6 @@ def _dispatch_callback(call):
             if key == "autoactivity": set_setting(gid, "autoactivity", new)
             elif key == "stories": set_setting(gid, "stories_enabled", new)
             elif key == "polite": set_setting(gid, "polite_filter", new)
-            elif key == "angry": set_setting(gid, "angry_mode", new)
             elif key == "memory": set_setting(gid, "memory_enabled", new)
         except Exception: pass
         bot.answer_callback_query(call.id, "✅ Настройка обновлена.")
@@ -1515,28 +1512,6 @@ def _dispatch_callback(call):
         except Exception: pass
         return bot.answer_callback_query(call.id)
 
-    if action == "pers":
-        bot.answer_callback_query(call.id); return _show(chat_id, message_id, "pers", gid)
-
-    if action == "pers_adj":
-        key = rest[0] if rest else ""
-        try: delta = int(rest[1])
-        except Exception: delta = 0
-        from chat_personality import get, set_value
-        current = get(gid).get(key)
-        if current is None:
-            return bot.answer_callback_query(call.id, "⚠️ Неизвестный параметр.", show_alert=True)
-        set_value(gid, key, max(0, min(100, current + delta)))
-        bot.answer_callback_query(call.id, f"✅ {max(0, min(100, current + delta))}/100")
-        return _show(chat_id, message_id, "pers", gid)
-
-    if action == "perscmd":
-        try:
-            from handlers import _cmd_personality
-            _cmd_personality(call.message, "")
-        except Exception: pass
-        return bot.answer_callback_query(call.id)
-
     if action == "status":
         bot.answer_callback_query(call.id); return _show(chat_id, message_id, "status", gid)
 
@@ -1547,10 +1522,10 @@ def _dispatch_callback(call):
         bot.answer_callback_query(call.id); return _show(chat_id, message_id, "reset_confirm", gid)
 
     if action == "reset_do":
-        store.update_liza(gid, reply_mode="everyone", autoactivity=False, chatter_chance=0.05, stories=True, memory=True, minigames=True, polite=False, angry=False)
+        store.update_liza(gid, reply_mode="everyone", autoactivity=False, chatter_chance=0.05, stories=True, memory=True, minigames=True, polite=False)
         try:
             from utils import set_setting
-            defaults={"autoactivity":False,"chatter_chance":0.05,"stories_enabled":True,"memory_enabled":True,"polite_filter":False,"angry_mode":False,"sleep_until":0}
+            defaults={"autoactivity":False,"chatter_chance":0.05,"stories_enabled":True,"memory_enabled":True,"polite_filter":False,"sleep_until":0}
             for k,v in defaults.items(): set_setting(gid,k,v)
         except Exception: pass
         bot.answer_callback_query(call.id, "✅ Настройки Лизы сброшены.")
