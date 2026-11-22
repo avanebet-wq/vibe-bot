@@ -52,3 +52,8 @@ Android-приложение, которое **одной кнопкой** ст�
 
 GitHub Actions собирает APK при каждом push (`.github/workflows/build-apk.yml`).
 Локально: `ANDROID_HOME=/путь/к/sdk ./gradlew assembleRelease` → `app/build/outputs/apk/release/`.
+
+## Сторонние материалы
+
+- Шрифт **Inter** (SIL Open Font License 1.1) — близкая замена SF Pro, поддерживает кириллицу.
+- Шейдер преломления стекла `res/raw/liquidglass_effect.agsl` взят из проекта [AndroidLiquidGlassView](https://github.com/QmDeve/AndroidLiquidGlassView) (лицензия MIT, © QmDeve). Работает на Android 13+, на старых версиях рисуется плоское стекло без преломления.

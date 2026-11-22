@@ -321,17 +321,16 @@
         android:layout_height="match_parent"
         android:visibility="gone">
 
-        <LinearLayout
+        <FrameLayout
             android:id="@+id/chat_column"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical">
+            android:layout_height="match_parent">
 
         <ScrollView
             android:id="@+id/chat_scroll"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
+            android:layout_height="match_parent"
+            android:background="@color/bg"
             android:fillViewport="true">
 
             <LinearLayout
@@ -350,6 +349,7 @@
             android:id="@+id/composer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
             android:orientation="vertical"
             android:paddingBottom="8dp"
             android:paddingLeft="10dp"
@@ -393,13 +393,12 @@
                 android:gravity="bottom"
                 android:orientation="horizontal">
 
-                <ImageView
+                <app.claudepocket.GlassCircle
                     android:id="@+id/chat_left"
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:background="@drawable/bg_circle"
+                    android:layout_width="54dp"
+                    android:layout_height="54dp"
                     android:contentDescription="Прикрепить"
-                    android:padding="12dp"
+                    android:padding="15dp"
                     android:src="@drawable/ic_clip"
                     android:tint="@color/text" />
 
@@ -424,7 +423,7 @@
                         android:minHeight="46dp"
                         android:paddingBottom="10dp"
                         android:paddingLeft="20dp"
-                        android:paddingRight="46dp"
+                        android:paddingRight="100dp"
                         android:paddingTop="10dp"
                         android:textColor="@color/text"
                         android:textColorHint="@color/muted"
@@ -434,8 +433,9 @@
                         android:id="@+id/chat_field_icon"
                         android:layout_width="40dp"
                         android:layout_height="40dp"
-                        android:layout_gravity="center_vertical|end"
-                        android:layout_marginRight="8dp"
+                        android:layout_gravity="bottom|end"
+                        android:layout_marginBottom="9dp"
+                        android:layout_marginRight="52dp"
                         android:contentDescription="Модель и мышление"
                         android:padding="9dp"
                         android:src="@drawable/ic_cpu"
@@ -449,7 +449,7 @@
                         android:minHeight="54dp"
                         android:orientation="horizontal"
                         android:paddingLeft="20dp"
-                        android:paddingRight="16dp"
+                        android:paddingRight="56dp"
                         android:visibility="gone">
 
                         <app.claudepocket.DotsSpinner
@@ -465,20 +465,23 @@
                             android:textColor="@color/text"
                             android:textSize="16sp" />
                     </LinearLayout>
+                    <ImageView
+                        android:id="@+id/chat_send"
+                        android:layout_width="38dp"
+                        android:layout_height="38dp"
+                        android:layout_gravity="bottom|end"
+                        android:layout_marginBottom="8dp"
+                        android:layout_marginRight="8dp"
+                        android:background="@drawable/bg_circle_accent"
+                        android:contentDescription="Отправить"
+                        android:padding="9dp"
+                        android:src="@drawable/ic_send"
+                        android:tint="@color/on_accent" />
                 </app.claudepocket.GlowFrame>
 
-                <ImageView
-                    android:id="@+id/chat_send"
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:background="@drawable/bg_circle_accent"
-                    android:contentDescription="Отправить"
-                    android:padding="12dp"
-                    android:src="@drawable/ic_send"
-                    android:tint="@color/on_accent" />
             </LinearLayout>
         </LinearLayout>
-        </LinearLayout>
+        </FrameLayout>
 
         <!-- круглая «стеклянная» кнопка справа вверху: открывает меню с пунктом «Профиль» -->
         <app.claudepocket.GlassButton

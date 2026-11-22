@@ -52,6 +52,7 @@ class ChatController(
     private val tick = object : Runnable {
         override fun run() {
             updateStatusText()
+            GlassHub.refresh()
             ticker.postDelayed(this, 500)
         }
     }
@@ -73,6 +74,19 @@ class ChatController(
             if (oldH > 0 && newH < oldH) {
                 val child = scroll.getChildAt(0)
                 if (child != null && child.bottom - (scroll.scrollY + oldH) < dp(120)) scrollToEnd()
+            }
+        }
+        // стекло должно перерисовываться, когда под ним что-то движется
+        scroll.setOnScrollChangeListener { _, _, _, _, _ -> GlassHub.refresh() }
+        // чат идёт под поле ввода: нижний отступ равен высоте панели ввода
+        val composer = root.findViewById<View>(R.id.composer)
+        composer.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val h = bottom - top
+            if (h != oldBottom - oldTop) {
+                val stick = nearBottom()
+                list.setPadding(list.paddingLeft, list.paddingTop, list.paddingRight, h + dp(10))
+                if (stick) scrollToEnd()
+                GlassHub.refresh()
             }
         }
         root.findViewById<View>(R.id.glass_btn).setOnClickListener { onMenu(it) }
@@ -111,11 +125,13 @@ class ChatController(
 
     /** Подключает контроллер к движку и отрисовывает уже накопленную переписку. */
     fun attach() {
+        GlassHub.source = scroll
         ChatEngine.listener = this
         render()
     }
 
     fun detach() {
+        if (GlassHub.source === scroll) GlassHub.source = null
         if (ChatEngine.listener === this) ChatEngine.listener = null
         ticker.removeCallbacks(tick)
         field.glowing = false
@@ -233,6 +249,7 @@ class ChatController(
         val stick = nearBottom()
         bind(m, v)
         if (stick) scrollToEnd()
+        GlassHub.refresh()
     }
 
     override fun busyChanged(busy: Boolean) {
@@ -327,7 +344,6 @@ class ChatController(
             setColor(if (user) accent else panel)
             // у пузыря один острый нижний угол — «хвостик» в сторону автора
             cornerRadii = floatArrayOf(r, r, r, r, if (user) tail else r, if (user) tail else r, if (user) r else tail, if (user) r else tail)
-            if (!user) setStroke(dp(1), lineColor)
         }
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         lp.setMargins(if (user) dp(48) else 0, dp(4), if (user) 0 else dp(28), dp(4))
@@ -343,7 +359,7 @@ class ChatController(
         c.background = GradientDrawable().apply {
             setColor(panel)
             cornerRadius = dp(18).toFloat()
-            setStroke(dp(1), if (accentBorder) ColorUtils.setAlphaComponent(accent, 140) else lineColor)
+            if (accentBorder) setStroke(dp(1), ColorUtils.setAlphaComponent(accent, 140))
         }
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         lp.setMargins(0, dp(4), 0, dp(4))

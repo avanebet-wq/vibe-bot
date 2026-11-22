@@ -165,9 +165,9 @@ class BubblesView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
 /** Поле-таблетка. Когда Claude работает, обводка светится, а по ней бежит блик (как при диктовке в Telegram). */
 class GlowFrame @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = null) : FrameLayout(ctx, attrs) {
     private val dp = resources.displayMetrics.density
-    private val fillP = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glass = GlassSurface(this)
     private val lineP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp }
-    private val haloP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f * dp }
+    private val haloP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val runP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.8f * dp }
     private val rect = RectF()
     private val m = Matrix()
@@ -181,13 +181,19 @@ class GlowFrame @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
         set(v) {
             field = v
             running = v && isAttachedToWindow
-            haloP.maskFilter = if (v) BlurMaskFilter(9f * dp, BlurMaskFilter.Blur.NORMAL) else null
             invalidate()
         }
 
     init {
         setWillNotDraw(false)
-        setLayerType(LAYER_TYPE_SOFTWARE, null) // нужно для размытия ореола
+        elevation = 6f * dp
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(v: View, o: android.graphics.Outline) {
+                val p = (4f * dp).toInt()
+                o.setRoundRect(p, p, v.width - p, v.height - p, (v.height - 2 * p) / 2f)
+                o.alpha = 0.3f
+            }
+        }
     }
 
     override fun onDraw(c: Canvas) {
@@ -195,11 +201,14 @@ class GlowFrame @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
         rect.set(pad, pad, width - pad, height - pad)
         val rad = rect.height() / 2f
         val accent = context.getColor(R.color.accent)
-        fillP.color = context.getColor(R.color.panel)
-        c.drawRoundRect(rect, rad, rad, fillP)
+        glass.draw(c, rect, rad)
         if (glowing) {
-            haloP.color = ColorUtils.setAlphaComponent(accent, 110)
-            c.drawRoundRect(rect, rad, rad, haloP)
+            // мягкий ореол из нескольких штрихов (без размытия, чтобы не терять аппаратную отрисовку стекла)
+            for ((wd, al) in listOf(10f to 22, 6.5f to 40, 3.5f to 70)) {
+                haloP.strokeWidth = wd * dp
+                haloP.color = ColorUtils.setAlphaComponent(accent, al)
+                c.drawRoundRect(rect, rad, rad, haloP)
+            }
             lineP.color = ColorUtils.setAlphaComponent(accent, 120)
             c.drawRoundRect(rect, rad, rad, lineP)
             val anim = animationsOn()
@@ -213,78 +222,48 @@ class GlowFrame @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
             runP.shader = sweep
             c.drawRoundRect(rect, rad, rad, runP)
             if (running && anim) postInvalidateOnAnimation()
-        } else {
-            lineP.color = context.getColor(R.color.line)
-            c.drawRoundRect(rect, rad, rad, lineP)
         }
     }
 
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); running = glowing; if (running) invalidate() }
-    override fun onDetachedFromWindow() { running = false; super.onDetachedFromWindow() }
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); GlassHub.add(this); running = glowing; if (running) invalidate() }
+    override fun onDetachedFromWindow() { GlassHub.remove(this); running = false; super.onDetachedFromWindow() }
 }
 
-/** Круглая кнопка в стиле «жидкого стекла»: прозрачная заливка, блик сверху, светлый переливающийся ободок. */
+/** Круглая кнопка в стиле «жидкого стекла» с иконкой профиля (справа вверху). */
 class GlassButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = null) : View(ctx, attrs) {
     private val dp = resources.displayMetrics.density
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val shade = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val shine = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val glint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.4f * dp }
-    private val glintRect = RectF()
+    private val glass = GlassSurface(this)
+    private val rect = RectF()
     private val icon = Icons.get(ctx, R.drawable.ic_user, ctx.getColor(R.color.text))
 
     init {
         isClickable = true
         isFocusable = true
-        elevation = 7f * dp
+        elevation = 6f * dp
         outlineProvider = object : android.view.ViewOutlineProvider() {
             override fun getOutline(v: View, o: android.graphics.Outline) {
                 o.setOval(0, 0, v.width, v.height)
-                o.alpha = 0.35f
+                o.alpha = 0.3f
             }
         }
     }
 
     override fun drawableStateChanged() {
         super.drawableStateChanged()
-        invalidate()
+        val s = if (isPressed) 0.93f else 1f
+        animate().scaleX(s).scaleY(s).setDuration(140).start()
     }
 
+    override fun onAttachedToWindow() { super.onAttachedToWindow(); GlassHub.add(this) }
+    override fun onDetachedFromWindow() { GlassHub.remove(this); super.onDetachedFromWindow() }
+
     override fun onDraw(c: Canvas) {
-        val w = width.toFloat()
-        val h = height.toFloat()
-        val cx = w / 2f
-        val cy = h / 2f
-        val r = min(w, h) / 2f - 1.5f * dp
-        val night = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-            android.content.res.Configuration.UI_MODE_NIGHT_YES
-        val accent = context.getColor(R.color.accent)
-        val pressed = isPressed
-        val s = if (pressed) 0.94f else 1f
-        c.save()
-        c.scale(s, s, cx, cy)
-
-        // стекло: полупрозрачная заливка
-        fill.color = if (night) Color.argb(if (pressed) 52 else 36, 255, 255, 255) else Color.argb(if (pressed) 150 else 120, 255, 255, 255)
-        c.drawCircle(cx, cy, r, fill)
-        // глубина: цвет обоев чуть просвечивает снизу справа
-        shade.shader = RadialGradient(cx + r * 0.35f, cy + r * 0.45f, r * 1.15f, intArrayOf(ColorUtils.setAlphaComponent(accent, 90), Color.TRANSPARENT), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, r, shade)
-        // блик света сверху слева
-        shine.shader = RadialGradient(cx - r * 0.35f, cy - r * 0.5f, r * 1.0f, intArrayOf(Color.argb(if (night) 120 else 210, 255, 255, 255), Color.argb(24, 255, 255, 255), Color.TRANSPARENT), floatArrayOf(0f, 0.55f, 0.95f), Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, r, shine)
-        // ободок: яркий сверху слева и снизу справа, как преломление на краю стекла
-        rim.shader = android.graphics.LinearGradient(0f, 0f, w, h, intArrayOf(Color.argb(235, 255, 255, 255), Color.argb(40, 255, 255, 255), Color.argb(14, 255, 255, 255), Color.argb(170, 255, 255, 255)), floatArrayOf(0f, 0.42f, 0.62f, 1f), Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, r, rim)
-        // узкий глянцевый блик под верхним краем
-        glintRect.set(cx - r * 0.56f, cy - r * 0.9f, cx + r * 0.56f, cy - r * 0.42f)
-        glint.shader = android.graphics.LinearGradient(0f, glintRect.top, 0f, glintRect.bottom, Color.argb(if (night) 80 else 150, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
-        c.drawOval(glintRect, glint)
-
+        rect.set(dp, dp, width - dp, height - dp)
+        glass.draw(c, rect, rect.height() / 2f)
+        val cx = width / 2f
+        val cy = height / 2f
         val half = 11f * dp
         icon.setBounds((cx - half).toInt(), (cy - half).toInt(), (cx + half).toInt(), (cy + half).toInt())
         icon.draw(c)
-        c.restore()
     }
 }
