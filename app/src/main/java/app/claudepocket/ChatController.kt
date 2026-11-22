@@ -34,6 +34,7 @@ class ChatController(
     private val status: TextView = root.findViewById(R.id.chat_status)
     private val statusRow: View = root.findViewById(R.id.chat_status_row)
     private val activityText: TextView = root.findViewById(R.id.chat_activity)
+    private val stopBtn: TextView = root.findViewById(R.id.chat_stop)
     private val ticker = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
@@ -66,6 +67,12 @@ class ChatController(
             setStroke(dp(1), keyColor)
         }
         pillModel.background = rounded(keyColor, dp(22))
+        stopBtn.background = rounded(keyColor, dp(17))
+        stopBtn.setOnClickListener {
+            stopBtn.text = "Останавливаю…"
+            stopBtn.isEnabled = false
+            ChatEngine.stop()
+        }
         plus.background = GradientDrawable().apply {
             setColor(keyColor)
             shape = GradientDrawable.OVAL
@@ -125,6 +132,8 @@ class ChatController(
         ticker.removeCallbacks(tick)
         statusRow.visibility = if (on) View.VISIBLE else View.GONE
         if (on) {
+            stopBtn.text = "■  Остановить"
+            stopBtn.isEnabled = true
             updateStatusText()
             ticker.postDelayed(tick, 500)
         }

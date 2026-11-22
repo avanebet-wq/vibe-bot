@@ -105,11 +105,26 @@ object ChatEngine {
         write(line)
     }
 
+    @Volatile private var stopRequested = false
+
     fun stop() {
+        stopRequested = true
+        // запрос разрешения без ответа после остановки уже не нужен
+        messages.filterIsInstance<Msg.Permission>().filter { it.decision == PENDING }.forEach {
+            it.decision = DENIED
+            changed(it)
+        }
         shellProc?.let {
             it.destroy()
             return
         }
+        // если Claude не откликнулся на прерывание за 5 секунд — завершаем его принудительно (разговор сохранится)
+        main.postDelayed({
+            if (busy && stopRequested) {
+                shutdown()
+                add(Msg.Info("■ Остановлено"))
+            }
+        }, 5000)
         write(
             JSONObject()
                 .put("type", "control_request")
@@ -216,6 +231,7 @@ object ChatEngine {
             val code = try { p.waitFor() } catch (_: Exception) { -1 }
             main.post {
                 m.output = synchronized(buf) { clip(buf) }
+                if (stopRequested) m.output += (if (m.output.isEmpty()) "" else "\n") + "[остановлено]"
                 m.exit = code
                 m.state = if (code == 0) OK else FAILED
                 if (shellProc === p) shellProc = null
@@ -392,7 +408,10 @@ object ChatEngine {
                 o.optString("session_id").takeIf { it.isNotEmpty() }?.let { paths.sessionId = it }
                 current = null
                 pending = null
-                if (o.optBoolean("is_error")) {
+                if (o.optBoolean("is_error") && stopRequested) {
+                    // Claude отвечает на прерывание «ошибкой» — для пользователя это обычная остановка
+                    add(Msg.Info("■ Остановлено"))
+                } else if (o.optBoolean("is_error")) {
                     val text = o.optString("result").ifBlank { "Не удалось выполнить запрос" }
                     val all = text + (o.optJSONArray("errors")?.toString() ?: "")
                     // сбрасываем разговор ТОЛЬКО если Claude прямо сказал, что такого разговора нет
@@ -486,6 +505,7 @@ object ChatEngine {
         if (b) {
             busySince = android.os.SystemClock.elapsedRealtime()
             phase = ""
+            stopRequested = false
         }
         listener?.busyChanged(b)
     }
