@@ -363,7 +363,7 @@
                 android:layout_marginBottom="8dp"
                 android:layout_marginLeft="52dp"
                 android:ellipsize="end"
-                android:maxLines="1"
+                android:maxLines="2"
                 android:paddingBottom="7dp"
                 android:paddingLeft="13dp"
                 android:paddingRight="13dp"

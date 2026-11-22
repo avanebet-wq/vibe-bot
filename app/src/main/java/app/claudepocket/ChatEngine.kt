@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.OutputStream
 import java.util.concurrent.Executors
 
@@ -62,6 +63,53 @@ object ChatEngine {
 
     /** Стадия ответа: thinking, writing, prep:<инструмент>, after_tool или пусто. */
     @Volatile var phase = ""
+
+    /** Одна строка о том, что реально выполняется сейчас внутри Ubuntu (обновляется раз в секунду). */
+    @Volatile var liveLine = ""
+
+    private val probe: Thread by lazy {
+        Thread({
+            while (true) {
+                try { Thread.sleep(1000) } catch (_: InterruptedException) { }
+                liveLine = if (busy) (probeLine(shellProc) ?: probeLine(proc)) ?: "" else ""
+            }
+        }, "live-probe").apply { isDaemon = true }
+    }
+
+    private fun pidOf(p: Process?): Int? =
+        p?.let { Regex("pid=(\\d+)").find(it.toString())?.groupValues?.get(1)?.toIntOrNull() }
+
+    /** Самый «глубокий» дочерний процесс proot: это и есть то, что сейчас работает (ffmpeg, npm, python…). */
+    private fun probeLine(p: Process?): String? {
+        val root = pidOf(p) ?: return null
+        val kids = HashMap<Int, MutableList<Int>>()
+        File("/proc").listFiles()?.forEach { f ->
+            val pid = f.name.toIntOrNull() ?: return@forEach
+            try {
+                val st = File(f, "stat").readText()
+                val ppid = st.substring(st.lastIndexOf(')') + 2).split(' ')[1].toInt()
+                kids.getOrPut(ppid) { ArrayList() }.add(pid)
+            } catch (_: Exception) { }
+        }
+        var best: Int? = null
+        var bestDepth = -1
+        fun walk(pid: Int, depth: Int) {
+            val ch = kids[pid]
+            if (ch == null) {
+                if (depth > bestDepth || (depth == bestDepth && pid > (best ?: 0))) { best = pid; bestDepth = depth }
+            } else ch.forEach { walk(it, depth + 1) }
+        }
+        if (bestDepth < 0 && kids[root] != null) walk(root, 0)
+        val args = best?.let {
+            try { File("/proc/$it/cmdline").readText().split('\u0000').filter { a -> a.isNotEmpty() } } catch (_: Exception) { null }
+        } ?: return null
+        if (args.isEmpty() || args[0].contains("proot")) return null
+        var a = args
+        // обёртка bash -c "..." — показываем саму команду
+        if (a.size >= 3 && a[0].substringAfterLast('/') in setOf("bash", "sh") && a[1].endsWith("c")) a = listOf(a[2])
+        val line = (listOf(a[0].substringAfterLast('/')) + a.drop(1)).joinToString(" ").replace('\n', ' ')
+        return if (line.length > 70) line.take(70) + "…" else line
+    }
 
     private val main = Handler(Looper.getMainLooper())
     private val writer = Executors.newSingleThreadExecutor()
@@ -504,6 +552,7 @@ object ChatEngine {
         if (busy == b) return
         busy = b
         if (b) {
+            if (!probe.isAlive) probe.start()
             busySince = android.os.SystemClock.elapsedRealtime()
             phase = ""
             stopRequested = false

@@ -144,7 +144,20 @@ class ChatController(
             else -> "Думает"
         }
         status.text = "$what… $time"
-        activityText.text = currentActivity()
+        val base = currentActivity()
+        val running = ChatEngine.messages.lastOrNull().let {
+            (it is ChatEngine.Msg.Shell && it.state == ChatEngine.RUNNING) ||
+                ChatEngine.messages.filterIsInstance<ChatEngine.Msg.Tool>().lastOrNull { t -> t.state == ChatEngine.RUNNING }?.name == "Bash"
+        }
+        val live = if (running) ChatEngine.liveLine else ""
+        if (live.isEmpty()) activityText.text = base
+        else {
+            val sp = android.text.SpannableString("$base\n$live")
+            val st = base.length + 1
+            sp.setSpan(android.text.style.RelativeSizeSpan(.88f), st, sp.length, 0)
+            sp.setSpan(android.text.style.ForegroundColorSpan(muted), st, sp.length, 0)
+            activityText.text = sp
+        }
     }
 
     /** Подсказка над полем: что Claude делает прямо сейчас. */
