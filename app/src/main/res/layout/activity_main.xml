@@ -228,6 +228,17 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/chat_model"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:paddingLeft="14dp"
+                android:paddingRight="14dp"
+                android:textColor="@color/accent"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
                 android:id="@+id/chat_menu"
                 android:layout_width="52dp"
                 android:layout_height="match_parent"

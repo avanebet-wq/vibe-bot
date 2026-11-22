@@ -13,8 +13,8 @@ android {
         // targetSdk 28 on purpose (same as Termux): apps targeting 29+ are not allowed to
         // execute files from their own data directory, which a Linux userland needs.
         targetSdk = 28
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
         ndk { abiFilters += "arm64-v8a" }
     }
 

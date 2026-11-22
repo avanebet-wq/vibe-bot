@@ -60,6 +60,13 @@ class Paths(ctx: Context) {
             prefs.edit().putString("perm_mode", value).apply()
         }
 
+    /** Псевдоним модели для `claude --model` (пусто — по умолчанию). */
+    var model: String
+        get() = prefs.getString("model", "") ?: ""
+        set(value) {
+            prefs.edit().putString("model", value).commit()
+        }
+
     /** Идентификатор последнего разговора, чтобы продолжить его после перезапуска. */
     var sessionId: String?
         get() = prefs.getString("session_id", null)

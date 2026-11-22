@@ -21,6 +21,7 @@ class ChatController(
     private val act: Activity,
     private val root: View,
     private val onMenu: (View) -> Unit,
+    private val onModel: (View) -> Unit,
 ) : ChatEngine.Listener {
 
     private val scroll: ScrollView = root.findViewById(R.id.chat_scroll)
@@ -38,6 +39,7 @@ class ChatController(
 
     init {
         root.findViewById<View>(R.id.chat_menu).setOnClickListener { onMenu(it) }
+        root.findViewById<View>(R.id.chat_model).setOnClickListener { onModel(it) }
         send.background = rounded(accent, dp(12))
         send.setOnClickListener {
             if (ChatEngine.busy) {
@@ -51,6 +53,10 @@ class ChatController(
             }
         }
         refreshSend()
+    }
+
+    fun setModelLabel(label: String) {
+        root.findViewById<TextView>(R.id.chat_model).text = "$label ▾"
     }
 
     /** Подключает контроллер к движку и отрисовывает уже накопленную переписку. */

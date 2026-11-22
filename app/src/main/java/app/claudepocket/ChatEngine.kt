@@ -226,6 +226,7 @@ object ChatEngine {
                 "--include-partial-messages --permission-mode ${paths.permissionMode} --permission-prompt-tool stdio",
         )
         if (resumeId != null) args.append(" --resume ").append(resumeId)
+        if (paths.model.matches(Regex("[a-z0-9.\\-]+"))) args.append(" --model ").append(paths.model)
         val hasSd = ctx.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         val pb = ProcessBuilder(Proot.argv(paths, listOf("/bin/bash", "-lc", "mkdir -p ~/work; cd ~/work; exec $args"), hasSd))

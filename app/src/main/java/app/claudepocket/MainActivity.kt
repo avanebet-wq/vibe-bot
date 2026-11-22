@@ -67,7 +67,7 @@ class MainActivity : Activity() {
         loginPanel = findViewById(R.id.login_panel)
         chatPanel = findViewById(R.id.chat_panel)
         onboarding = Onboarding(this, findViewById(R.id.onb_panel)) { route() }
-        chat = ChatController(this, chatPanel) { showChatMenu(it) }
+        chat = ChatController(this, chatPanel, { showChatMenu(it) }, { chooseModel() })
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
         btnLoginCopy = findViewById(R.id.btn_login_copy)
@@ -261,6 +261,7 @@ class MainActivity : Activity() {
         chatPanel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Claude готов к работе")
         ChatEngine.init(this)
+        chat.setModelLabel(modelLabel(paths.model))
         chat.attach()
     }
 
@@ -375,6 +376,38 @@ class MainActivity : Activity() {
             true
         }
         m.show()
+    }
+
+    private val models = listOf(
+        Triple("", "По умолчанию", "модель по умолчанию для твоего аккаунта"),
+        Triple("sonnet", "Sonnet", "сбалансированная: быстро и умно"),
+        Triple("opus", "Opus", "для сложных задач"),
+        Triple("haiku", "Haiku", "самая быстрая"),
+        Triple("fable", "Fable", "новейшая, может потребовать кредиты"),
+    )
+
+    private fun modelLabel(alias: String) = models.firstOrNull { it.first == alias }?.second ?: alias
+
+    private fun chooseModel() {
+        if (ChatEngine.busy) {
+            toast("Дождись конца ответа или останови его")
+            return
+        }
+        val items = models.map { "${it.second} — ${it.third}" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Модель")
+            .setSingleChoiceItems(items, models.indexOfFirst { it.first == paths.model }.coerceAtLeast(0)) { d, which ->
+                val alias = models[which].first
+                if (alias != paths.model) {
+                    paths.model = alias
+                    ChatEngine.shutdown() // следующее сообщение запустит Claude с новой моделью, разговор сохранится
+                    chat.setModelLabel(modelLabel(alias))
+                    toast("Модель: ${models[which].second}")
+                }
+                d.dismiss()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun choosePermissionMode() {
