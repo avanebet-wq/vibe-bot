@@ -326,12 +326,14 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent">
 
-        <ScrollView
+        <app.claudepocket.FadeScrollView
             android:id="@+id/chat_scroll"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:background="@color/bg"
-            android:fillViewport="true">
+            android:fadingEdgeLength="44dp"
+            android:fillViewport="true"
+            android:requiresFadingEdge="vertical">
 
             <LinearLayout
                 android:id="@+id/chat_list"
@@ -342,7 +344,7 @@
                 android:paddingLeft="12dp"
                 android:paddingRight="12dp"
                 android:paddingTop="64dp" />
-        </ScrollView>
+        </app.claudepocket.FadeScrollView>
 
         <!-- поле ввода как в ролике: круг слева, таблетка, круглая кнопка отправки -->
         <LinearLayout

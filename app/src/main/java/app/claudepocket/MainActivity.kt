@@ -73,6 +73,7 @@ class MainActivity : Activity() {
         val real = (dm.xdpi + dm.ydpi) / 2f
         val cfg = android.content.res.Configuration(base.resources.configuration)
         cfg.fontScale = 1f
+        if (android.os.Build.VERSION.SDK_INT >= 31) cfg.fontWeightAdjustment = 0 // «Жирный текст» в системе не утяжеляет наш шрифт
         val base0 = if (real in 200f..700f) real else cfg.densityDpi.toFloat()
         cfg.densityDpi = (base0 * COMPACT).toInt() // компактнее: всё (текст, кнопки, отступы) масштаб интерфейса
         super.attachBaseContext(base.createConfigurationContext(cfg))

@@ -86,7 +86,7 @@ class GlassSurface(private val host: View) {
     /** Заливка, блик, внутреннее свечение и ободок, как у стекла iOS. */
     private fun finish(c: Canvas, rect: RectF, rad: Float, refracted: Boolean) {
         val n = night()
-        fill.color = if (n) Color.argb(if (refracted) 98 else 150, 70, 70, 78) else Color.argb(if (refracted) 92 else 156, 255, 255, 255)
+        fill.color = if (n) Color.argb(if (refracted) 128 else 160, 66, 66, 74) else Color.argb(if (refracted) 120 else 160, 255, 255, 255)
         c.drawRoundRect(rect, rad, rad, fill)
 
         sheen.shader = RadialGradient(
@@ -156,15 +156,15 @@ class GlassSurface(private val host: View) {
             shader.setFloatUniform("offset", -rect.left, -rect.top)
             shader.setFloatUniform("cornerRadii", rad, rad, rad, rad)
             shader.setFloatUniform("refractionHeight", rh)
-            shader.setFloatUniform("refractionAmount", -rh * 2.4f)
+            shader.setFloatUniform("refractionAmount", -rh * 1.7f)
             shader.setFloatUniform("depthEffect", 0.25f)
-            shader.setFloatUniform("chromaticAberration", 0.12f)
+            shader.setFloatUniform("chromaticAberration", 0.05f)
             shader.setFloatUniform("contrast", 0f)
             shader.setFloatUniform("whitePoint", 0f)
             shader.setFloatUniform("chromaMultiplier", 1.35f)
             shader.setFloatUniform("tintColor", 1f, 1f, 1f)
             shader.setFloatUniform("tintAlpha", 0f)
-            val sigma = 6f * dp
+            val sigma = 8f * dp
             val blur = RenderEffect.createBlurEffect(sigma, sigma, Shader.TileMode.CLAMP)
             val refract = RenderEffect.createRuntimeShaderEffect(shader, "content")
             node.setRenderEffect(RenderEffect.createChainEffect(refract, blur))

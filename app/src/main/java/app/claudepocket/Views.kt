@@ -267,3 +267,8 @@ class GlassButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
         icon.draw(c)
     }
 }
+
+/** Прокрутка чата: мягко гаснет только у верхнего края (внизу под стеклом должен быть виден текст). */
+class FadeScrollView @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = null) : android.widget.ScrollView(ctx, attrs) {
+    override fun getBottomFadingEdgeStrength(): Float = 0f
+}
