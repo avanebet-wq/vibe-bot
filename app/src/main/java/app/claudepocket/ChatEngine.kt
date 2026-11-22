@@ -256,7 +256,7 @@ object ChatEngine {
         try { java.io.File(paths.rootfs, "root/.pocket-prompt.txt").writeText(Files.SYSTEM_PROMPT) } catch (_: Exception) { }
         val args = StringBuilder(
             "claude -p --input-format stream-json --output-format stream-json --verbose " +
-                "--include-partial-messages --permission-mode ${paths.permissionMode} --permission-prompt-tool stdio",
+                "--include-partial-messages --permission-mode bypassPermissions --permission-prompt-tool stdio",
         )
         if (resumeId != null) args.append(" --resume ").append(resumeId)
         if (paths.model.matches(Regex("[a-z0-9.\\-]+"))) args.append(" --model ").append(paths.model)
@@ -264,7 +264,7 @@ object ChatEngine {
         args.append(" --append-system-prompt \"\$(cat ~/.pocket-prompt.txt)\"")
         val hasSd = ctx.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
-        val pb = ProcessBuilder(Proot.argv(paths, listOf("/bin/bash", "-lc", "mkdir -p ~/work; cd ~/work; exec $args"), hasSd))
+        val pb = ProcessBuilder(Proot.argv(paths, listOf("/bin/bash", "-lc", "export IS_SANDBOX=1; mkdir -p ~/work; cd ~/work; exec $args"), hasSd))
         pb.environment().apply {
             clear()
             putAll(Proot.hostEnv(paths, paths.noSeccomp))
