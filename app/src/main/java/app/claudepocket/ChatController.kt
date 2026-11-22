@@ -33,6 +33,7 @@ class ChatController(
     private val list: LinearLayout = root.findViewById(R.id.chat_list)
     private val status: TextView = root.findViewById(R.id.chat_status)
     private val statusRow: View = root.findViewById(R.id.chat_status_row)
+    private val activityText: TextView = root.findViewById(R.id.chat_activity)
     private val ticker = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
@@ -139,6 +140,49 @@ class ChatController(
             else -> "Думает"
         }
         status.text = "$what… $time"
+        activityText.text = currentActivity()
+    }
+
+    /** Серая строка: что Claude делает прямо сейчас. */
+    private fun currentActivity(): String {
+        val msgs = ChatEngine.messages
+        val last = msgs.lastOrNull()
+        if (last is ChatEngine.Msg.Shell && last.state == ChatEngine.RUNNING) return "Команда: " + short(last.cmd, 60)
+        val perm = msgs.filterIsInstance<ChatEngine.Msg.Permission>().lastOrNull { it.decision == ChatEngine.PENDING }
+        if (perm != null) return "Нужно твоё разрешение: " + live(perm.tool, perm.input).lowercase()
+        val running = msgs.filterIsInstance<ChatEngine.Msg.Tool>().lastOrNull { it.state == ChatEngine.RUNNING }
+        if (running != null) return live(running.name, running.input)
+        val ph = ChatEngine.phase
+        return when {
+            ph == "thinking" -> "Размышляет над задачей"
+            ph == "writing" -> "Пишет ответ"
+            ph.startsWith("prep:") -> "Готовит действие: " + live(ph.removePrefix("prep:"), JSONObject()).lowercase()
+            ph == "after_tool" -> "Разбирает результат"
+            else -> "Читает запрос"
+        }
+    }
+
+    private fun short(s: String, n: Int) = s.replace('\n', ' ').let { if (it.length > n) it.take(n) + "…" else it }
+
+    /** Что делает инструмент, коротко и в настоящем времени. */
+    private fun live(name: String, input: JSONObject): String {
+        fun file(k: String) = short(input.optString(k).substringAfterLast('/'), 40)
+        fun arg(k: String) = short(input.optString(k), 50)
+        fun with(base: String, d: String) = if (d.isEmpty()) base else "$base $d"
+        return when (name) {
+            "Bash" -> with("Выполняет команду:", arg("command")).trimEnd(':', ' ')
+            "Write" -> with("Создаёт файл", file("file_path"))
+            "Edit", "MultiEdit" -> with("Правит файл", file("file_path"))
+            "NotebookEdit" -> with("Правит блокнот", file("notebook_path"))
+            "Read" -> with("Читает файл", file("file_path"))
+            "Glob" -> with("Ищет файлы:", arg("pattern")).trimEnd(':', ' ')
+            "Grep" -> with("Ищет в файлах:", arg("pattern")).trimEnd(':', ' ')
+            "WebFetch" -> with("Открывает страницу", arg("url"))
+            "WebSearch" -> with("Ищет в интернете:", arg("query")).trimEnd(':', ' ')
+            "Task", "Agent" -> with("Запускает помощника:", arg("description")).trimEnd(':', ' ')
+            "TodoWrite" -> "Обновляет план"
+            else -> name
+        }
     }
 
     private fun render() {

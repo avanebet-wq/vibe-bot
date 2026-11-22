@@ -60,6 +60,9 @@ object ChatEngine {
     var busySince = 0L
         private set
 
+    /** Стадия ответа: thinking, writing, prep:<инструмент>, after_tool или пусто. */
+    @Volatile var phase = ""
+
     private val main = Handler(Looper.getMainLooper())
     private val writer = Executors.newSingleThreadExecutor()
     private var proc: Process? = null
@@ -300,6 +303,14 @@ object ChatEngine {
             }
             "stream_event" -> {
                 val e = o.optJSONObject("event") ?: return
+                if (e.optString("type") == "content_block_start") {
+                    val cb = e.optJSONObject("content_block")
+                    when (cb?.optString("type")) {
+                        "thinking" -> phase = "thinking"
+                        "text" -> phase = "writing"
+                        "tool_use" -> phase = "prep:" + cb.optString("name")
+                    }
+                }
                 if (e.optString("type") == "content_block_delta") {
                     val d = e.optJSONObject("delta") ?: return
                     if (d.optString("type") == "text_delta") appendText(d.optString("text"))
@@ -332,6 +343,7 @@ object ChatEngine {
                     if (Files.resolveGuest(ctx, path) != null) add(Msg.File(path))
                     else add(Msg.Info("Claude хотел отправить файл, но его нет или он недоступен: $path", true))
                 }
+                phase = ""
                 for (i in 0 until content.length()) {
                     val b = content.getJSONObject(i)
                     if (b.optString("type") == "tool_use") {
@@ -344,6 +356,7 @@ object ChatEngine {
                 for (i in 0 until content.length()) {
                     val b = content.optJSONObject(i) ?: continue
                     if (b.optString("type") == "tool_result") {
+                        phase = "after_tool"
                         val id = b.optString("tool_use_id")
                         messages.filterIsInstance<Msg.Tool>().firstOrNull { it.id == id }?.let {
                             it.state = if (b.optBoolean("is_error")) FAILED else OK
@@ -470,7 +483,10 @@ object ChatEngine {
     private fun setBusy(b: Boolean) {
         if (busy == b) return
         busy = b
-        if (b) busySince = android.os.SystemClock.elapsedRealtime()
+        if (b) {
+            busySince = android.os.SystemClock.elapsedRealtime()
+            phase = ""
+        }
         listener?.busyChanged(b)
     }
 }
