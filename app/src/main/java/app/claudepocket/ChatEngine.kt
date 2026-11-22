@@ -28,6 +28,9 @@ object ChatEngine {
         ) : Msg()
         class Info(val text: String, val error: Boolean = false) : Msg()
 
+        /** Файл, который Claude отправил пользователю (путь внутри Linux). */
+        class File(val guestPath: String) : Msg()
+
         /** Команда, запущенная напрямую (сообщение, начинающееся с «!»), без участия Claude. */
         class Shell(val cmd: String, var output: String = "", var state: Int = RUNNING, var exit: Int = 0) : Msg()
     }
@@ -44,6 +47,7 @@ object ChatEngine {
         fun changed(m: Msg)
         fun busyChanged(busy: Boolean)
         fun cleared()
+        fun removed(m: Msg)
         fun modelsChanged()
     }
 
@@ -59,7 +63,7 @@ object ChatEngine {
     private var current: Msg.Assistant? = null
     private var gotOutput = false
     private var resumed = false
-    private var pending: String? = null
+    private var pending: String? = null // готовая строка сообщения (для повтора)
     private val tail = ArrayDeque<String>()
 
     // ------------------------------------------------------------------ public API
@@ -78,18 +82,20 @@ object ChatEngine {
 
     fun isAlive(): Boolean = proc?.isAlive == true
 
-    fun send(ctx: Context, text: String) {
+    fun send(ctx: Context, text: String, attachments: List<Files.Attachment> = emptyList()) {
         if (busy) return
-        if (text.startsWith("!") && text.length > 1) {
+        if (attachments.isEmpty() && text.startsWith("!") && text.length > 1) {
             runShell(ctx.applicationContext, text.substring(1).trim())
             return
         }
-        add(Msg.User(text))
+        val shown = if (attachments.isEmpty()) text else text + attachments.joinToString("") { "\n📎 " + it.name }
+        add(Msg.User(shown))
         setBusy(true)
         val paths = Paths(ctx.applicationContext)
         if (!isAlive()) start(ctx.applicationContext, paths)
-        pending = text
-        write(userLine(text))
+        val line = userLine(text, attachments)
+        pending = line
+        write(line)
     }
 
     fun stop() {
@@ -222,6 +228,8 @@ object ChatEngine {
         resumed = resumeId != null
         gotOutput = false
         tail.clear()
+        // подсказка Claude про приложение и отправку файлов (читается из файла, чтобы не экранировать кавычки)
+        try { java.io.File(paths.rootfs, "root/.pocket-prompt.txt").writeText(Files.SYSTEM_PROMPT) } catch (_: Exception) { }
         val args = StringBuilder(
             "claude -p --input-format stream-json --output-format stream-json --verbose " +
                 "--include-partial-messages --permission-mode ${paths.permissionMode} --permission-prompt-tool stdio",
@@ -229,6 +237,7 @@ object ChatEngine {
         if (resumeId != null) args.append(" --resume ").append(resumeId)
         if (paths.model.matches(Regex("[a-z0-9.\\-]+"))) args.append(" --model ").append(paths.model)
         if (paths.effort.matches(Regex("[a-z]+"))) args.append(" --effort ").append(paths.effort)
+        args.append(" --append-system-prompt \"\$(cat ~/.pocket-prompt.txt)\"")
         val hasSd = ctx.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         val pb = ProcessBuilder(Proot.argv(paths, listOf("/bin/bash", "-lc", "mkdir -p ~/work; cd ~/work; exec $args"), hasSd))
@@ -299,16 +308,26 @@ object ChatEngine {
                     val b = content.getJSONObject(i)
                     if (b.optString("type") == "text") texts.append(b.optString("text"))
                 }
-                if (texts.isNotEmpty()) {
+                val raw = texts.toString()
+                val clean = Files.strip(raw)
+                if (clean.isNotEmpty()) {
                     val c = current
                     if (c != null) {
-                        c.text = texts.toString()
+                        c.text = clean
                         changed(c)
                     } else {
-                        add(Msg.Assistant(texts.toString()))
+                        add(Msg.Assistant(clean))
                     }
+                } else if (current != null) {
+                    // в сообщении была только метка отправки файла: пустой пузырь убираем
+                    listener?.removed(current!!)
+                    messages.remove(current!!)
                 }
                 current = null
+                Files.markers(raw).forEach { path ->
+                    if (Files.resolveGuest(ctx, path) != null) add(Msg.File(path))
+                    else add(Msg.Info("Claude хотел отправить файл, но его нет или он недоступен: $path", true))
+                }
                 for (i in 0 until content.length()) {
                     val b = content.getJSONObject(i)
                     if (b.optString("type") == "tool_use") {
@@ -381,7 +400,7 @@ object ChatEngine {
         stdin = null
         old?.destroy()
         start(ctx, paths)
-        write(userLine(retry))
+        write(retry)
         return true
     }
 
@@ -399,9 +418,27 @@ object ChatEngine {
 
     // ------------------------------------------------------------------ helpers
 
-    private fun userLine(text: String): String =
-        JSONObject().put("type", "user")
-            .put("message", JSONObject().put("role", "user").put("content", text)).toString()
+    private fun userLine(text: String, attachments: List<Files.Attachment> = emptyList()): String {
+        if (attachments.isEmpty()) {
+            return JSONObject().put("type", "user")
+                .put("message", JSONObject().put("role", "user").put("content", text)).toString()
+        }
+        val content = JSONArray()
+        attachments.filter { it.isImage }.forEach { a ->
+            Files.imageBlockData(a.host)?.let { data ->
+                content.put(
+                    JSONObject().put("type", "image").put(
+                        "source",
+                        JSONObject().put("type", "base64").put("media_type", "image/jpeg").put("data", data),
+                    ),
+                )
+            }
+        }
+        val note = "Прикреплены файлы (лежат в /root/work/uploads/): " + attachments.joinToString(", ") { it.name }
+        content.put(JSONObject().put("type", "text").put("text", text.ifBlank { "Посмотри прикреплённые файлы." } + "\n\n" + note))
+        return JSONObject().put("type", "user")
+            .put("message", JSONObject().put("role", "user").put("content", content)).toString()
+    }
 
     private fun write(line: String) {
         val out = stdin ?: return

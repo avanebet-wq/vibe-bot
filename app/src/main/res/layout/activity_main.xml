@@ -275,6 +275,21 @@
                 android:orientation="vertical"
                 android:padding="14dp">
 
+                <HorizontalScrollView
+                    android:id="@+id/attach_scroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="6dp"
+                    android:scrollbars="none"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/attach_row"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal" />
+                </HorizontalScrollView>
+
                 <EditText
                     android:id="@+id/chat_input"
                     android:layout_width="match_parent"
@@ -295,6 +310,16 @@
                     android:layout_marginTop="8dp"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/chat_plus"
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:layout_marginRight="8dp"
+                        android:gravity="center"
+                        android:text="+"
+                        android:textColor="@color/text"
+                        android:textSize="26sp" />
 
                     <TextView
                         android:id="@+id/chat_model_pill"

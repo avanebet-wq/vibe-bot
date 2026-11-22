@@ -67,7 +67,7 @@ class MainActivity : Activity() {
         loginPanel = findViewById(R.id.login_panel)
         chatPanel = findViewById(R.id.chat_panel)
         onboarding = Onboarding(this, findViewById(R.id.onb_panel)) { route() }
-        chat = ChatController(this, chatPanel, { showChatMenu(it) }, { chooseModel() }, { chooseEffort() })
+        chat = ChatController(this, chatPanel, { showChatMenu(it) }, { chooseModel() }, { chooseEffort() }, { showPlusMenu(it) }, { f, action -> fileAction(f, action) })
         chat.onModelsChanged = { refreshPills() }
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
@@ -379,6 +379,109 @@ class MainActivity : Activity() {
         m.show()
     }
 
+    // ---------------------------------------------------------------- вложения и файлы от Claude
+
+    private var pendingSave: java.io.File? = null
+
+    private fun showPlusMenu(anchor: View) {
+        val m = PopupMenu(this, anchor)
+        m.menu.add(0, 1, 0, "🖼  Фото")
+        m.menu.add(0, 2, 1, "📎  Файл")
+        m.setOnMenuItemClickListener {
+            when (it.itemId) {
+                1 -> pick("image/*", REQ_PICK_PHOTO)
+                2 -> pick("*/*", REQ_PICK_FILE)
+            }
+            true
+        }
+        m.show()
+    }
+
+    private fun pick(mime: String, code: Int) {
+        val intent = Intent(if (code == REQ_PICK_PHOTO) Intent.ACTION_GET_CONTENT else Intent.ACTION_OPEN_DOCUMENT)
+            .setType(mime)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        try {
+            startActivityForResult(intent, code)
+        } catch (e: Exception) {
+            toast("Не нашёл, чем выбрать файл")
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || data == null) return
+        when (requestCode) {
+            REQ_PICK_PHOTO, REQ_PICK_FILE -> {
+                val uris = ArrayList<Uri>()
+                data.clipData?.let { cd -> for (i in 0 until cd.itemCount) uris.add(cd.getItemAt(i).uri) }
+                data.data?.let { if (uris.isEmpty()) uris.add(it) }
+                toast(if (uris.size > 1) "Добавляю файлы…" else "Добавляю файл…")
+                Thread {
+                    uris.forEach { u ->
+                        val a = Files.importUri(applicationContext, u)
+                        main.post { if (a != null) chat.addAttachment(a) else toast("Не удалось прочитать файл") }
+                    }
+                }.start()
+            }
+            REQ_SAVE -> {
+                val src = pendingSave ?: return
+                val dst = data.data ?: return
+                Thread {
+                    val ok = try {
+                        contentResolver.openOutputStream(dst)?.use { out -> src.inputStream().use { it.copyTo(out) } }
+                        true
+                    } catch (_: Exception) {
+                        false
+                    }
+                    main.post { toast(if (ok) "Сохранено" else "Не удалось сохранить") }
+                }.start()
+            }
+        }
+    }
+
+    private fun fileAction(m: ChatEngine.Msg.File, action: String) {
+        val f = Files.resolveGuest(this, m.guestPath)
+        if (f == null) {
+            toast("Файл недоступен")
+            return
+        }
+        val mime = Files.mimeOf(f.name)
+        when (action) {
+            "save" -> {
+                pendingSave = f
+                try {
+                    startActivityForResult(
+                        Intent(Intent.ACTION_CREATE_DOCUMENT).setType(mime).addCategory(Intent.CATEGORY_OPENABLE)
+                            .putExtra(Intent.EXTRA_TITLE, f.name),
+                        REQ_SAVE,
+                    )
+                } catch (_: Exception) {
+                    toast("Не удалось открыть выбор места сохранения")
+                }
+            }
+            else -> {
+                val uri = try {
+                    androidx.core.content.FileProvider.getUriForFile(this, "app.claudepocket.files", f)
+                } catch (_: Exception) {
+                    toast("Не удалось подготовить файл")
+                    return
+                }
+                val intent = if (action == "open") {
+                    Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+                } else {
+                    Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri)
+                }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                try {
+                    startActivity(if (action == "open") intent else Intent.createChooser(intent, f.name))
+                } catch (_: Exception) {
+                    toast(if (action == "open") "Нет приложения для открытия этого файла" else "Не удалось отправить")
+                }
+            }
+        }
+    }
+
     private fun refreshPills() {
         val m = ModelCatalog.find(this, paths.model)
         val canEffort = m != null && m.efforts.isNotEmpty()
@@ -506,6 +609,9 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_STORAGE = 1
+        private const val REQ_PICK_PHOTO = 21
+        private const val REQ_PICK_FILE = 22
+        private const val REQ_SAVE = 23
         private const val CLAUDE_APP = "com.anthropic.claude"
         private val CODE_RE = Regex("^[A-Za-z0-9_\\-]{10,}#[A-Za-z0-9_\\-]{10,}$")
         private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")

@@ -23,6 +23,8 @@ class ChatController(
     private val onMenu: (View) -> Unit,
     private val onModel: () -> Unit,
     private val onEffort: () -> Unit,
+    private val onPlus: (View) -> Unit,
+    private val onFile: (ChatEngine.Msg.File, String) -> Unit,
 ) : ChatEngine.Listener {
 
     private val scroll: ScrollView = root.findViewById(R.id.chat_scroll)
@@ -31,6 +33,10 @@ class ChatController(
     private val input: EditText = root.findViewById(R.id.chat_input)
     private val send: Button = root.findViewById(R.id.chat_send)
     private val views = HashMap<ChatEngine.Msg, View>()
+    private val plus: TextView = root.findViewById(R.id.chat_plus)
+    private val attachScroll: View = root.findViewById(R.id.attach_scroll)
+    private val attachRow: LinearLayout = root.findViewById(R.id.attach_row)
+    private val pendingAttachments = ArrayList<Files.Attachment>()
     private val pillModel: TextView = root.findViewById(R.id.chat_model_pill)
     private val pillEffort: TextView = root.findViewById(R.id.chat_effort_pill)
 
@@ -49,6 +55,11 @@ class ChatController(
             setStroke(dp(1), keyColor)
         }
         pillModel.background = rounded(keyColor, dp(22))
+        plus.background = GradientDrawable().apply {
+            setColor(keyColor)
+            shape = GradientDrawable.OVAL
+        }
+        plus.setOnClickListener { onPlus(it) }
         pillEffort.background = rounded(keyColor, dp(22))
         pillModel.setOnClickListener { onModel() }
         pillEffort.setOnClickListener { onEffort() }
@@ -61,9 +72,12 @@ class ChatController(
                 ChatEngine.stop()
             } else {
                 val text = input.text.toString().trim()
-                if (text.isNotEmpty()) {
+                if (text.isNotEmpty() || pendingAttachments.isNotEmpty()) {
+                    val files = ArrayList(pendingAttachments)
+                    pendingAttachments.clear()
+                    renderChips()
                     input.setText("")
-                    ChatEngine.send(act, text)
+                    ChatEngine.send(act, text, files)
                 }
             }
         }
@@ -120,6 +134,38 @@ class ChatController(
         render()
     }
 
+    override fun removed(m: ChatEngine.Msg) {
+        views.remove(m)?.let { list.removeView(it) }
+    }
+
+    /** Добавляет выбранный файл в полоску вложений над полем ввода. */
+    fun addAttachment(a: Files.Attachment) {
+        pendingAttachments.add(a)
+        renderChips()
+    }
+
+    private fun renderChips() {
+        attachRow.removeAllViews()
+        attachScroll.visibility = if (pendingAttachments.isEmpty()) View.GONE else View.VISIBLE
+        pendingAttachments.forEach { a ->
+            val chip = TextView(act)
+            chip.text = (if (a.isImage) "🖼 " else "📎 ") + a.name.take(26) + "  ✕"
+            chip.setTextColor(textColor)
+            chip.textSize = 13f
+            chip.maxLines = 1
+            chip.setPadding(dp(12), dp(8), dp(12), dp(8))
+            chip.background = rounded(keyColor, dp(16))
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.rightMargin = dp(6)
+            chip.layoutParams = lp
+            chip.setOnClickListener {
+                pendingAttachments.remove(a)
+                renderChips()
+            }
+            attachRow.addView(chip)
+        }
+    }
+
     override fun modelsChanged() {
         onModelsChanged?.invoke()
     }
@@ -150,6 +196,7 @@ class ChatController(
         is ChatEngine.Msg.Permission -> card(accentBorder = true)
         is ChatEngine.Msg.Info -> card()
         is ChatEngine.Msg.Shell -> card()
+        is ChatEngine.Msg.File -> card(accentBorder = true)
     }
 
     private fun bubble(user: Boolean): View {
@@ -186,16 +233,52 @@ class ChatController(
     private fun bind(m: ChatEngine.Msg, v: View) {
         when (m) {
             is ChatEngine.Msg.User -> (v as TextView).text = m.text
-            is ChatEngine.Msg.Assistant -> (v as TextView).text = Markdown.render(m.text, 0x33808080)
+            is ChatEngine.Msg.Assistant -> (v as TextView).text = Markdown.render(Files.strip(m.text), 0x33808080)
             is ChatEngine.Msg.Tool -> bindTool(m, v as LinearLayout)
             is ChatEngine.Msg.Permission -> bindPermission(m, v as LinearLayout)
             is ChatEngine.Msg.Shell -> bindShell(m, v as LinearLayout)
+            is ChatEngine.Msg.File -> bindFile(m, v as LinearLayout)
             is ChatEngine.Msg.Info -> {
                 val c = v as LinearLayout
                 c.removeAllViews()
                 c.addView(label(m.text, if (m.error) Color.parseColor("#FF6B6B") else muted, 14f))
             }
         }
+    }
+
+    private fun bindFile(m: ChatEngine.Msg.File, c: LinearLayout) {
+        c.removeAllViews()
+        val f = Files.resolveGuest(act, m.guestPath)
+        if (f == null) {
+            c.addView(label("Файл больше недоступен: " + m.guestPath.substringAfterLast('/'), muted, 14f))
+            return
+        }
+        val mime = Files.mimeOf(f.name)
+        if (mime.startsWith("image/")) {
+            try {
+                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                val bmp = android.graphics.BitmapFactory.decodeFile(f.path, opts)
+                if (bmp != null) {
+                    val iv = android.widget.ImageView(act)
+                    iv.setImageBitmap(bmp)
+                    iv.adjustViewBounds = true
+                    iv.maxHeight = dp(260)
+                    iv.scaleType = android.widget.ImageView.ScaleType.FIT_START
+                    iv.setPadding(0, 0, 0, dp(8))
+                    c.addView(iv)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        c.addView(label("📎 " + f.name, textColor, 15f, bold = true))
+        c.addView(label(Files.humanSize(f.length()) + " · " + mime, muted, 12f))
+        val row = LinearLayout(act)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.setPadding(0, dp(8), 0, 0)
+        row.addView(actionButton("Открыть", accent) { onFile(m, "open") })
+        row.addView(actionButton("Сохранить", keyColor) { onFile(m, "save") })
+        row.addView(actionButton("Отправить", keyColor) { onFile(m, "share") })
+        c.addView(row)
     }
 
     private fun bindShell(m: ChatEngine.Msg.Shell, c: LinearLayout) {

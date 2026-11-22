@@ -24,6 +24,7 @@ object ChatStore {
                 when (o.optString("t")) {
                     "u" -> out.add(ChatEngine.Msg.User(o.optString("text")))
                     "a" -> out.add(ChatEngine.Msg.Assistant(o.optString("text")))
+                    "f" -> out.add(ChatEngine.Msg.File(o.optString("path")))
                     "sh" -> out.add(
                         ChatEngine.Msg.Shell(
                             o.optString("cmd"), o.optString("output"),
@@ -75,6 +76,7 @@ object ChatStore {
                         is ChatEngine.Msg.User -> JSONObject().put("t", "u").put("text", m.text)
                         is ChatEngine.Msg.Assistant -> JSONObject().put("t", "a").put("text", m.text)
                         is ChatEngine.Msg.Info -> JSONObject().put("t", "i").put("text", m.text).put("err", m.error)
+                        is ChatEngine.Msg.File -> JSONObject().put("t", "f").put("path", m.guestPath)
                         is ChatEngine.Msg.Shell -> JSONObject().put("t", "sh").put("cmd", m.cmd)
                             .put("output", m.output.takeLast(5000)).put("state", m.state).put("exit", m.exit)
                         is ChatEngine.Msg.Tool -> JSONObject().put("t", "tool").put("id", m.id).put("name", m.name)
