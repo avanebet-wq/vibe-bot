@@ -78,6 +78,10 @@ class ChatController(
             }
         }
         scroll.background = aurora
+        val bgc = act.getColor(R.color.bg)
+        root.findViewById<View>(R.id.top_fade).background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(bgc, ColorUtils.setAlphaComponent(bgc, 0)),
+        )
         // стекло должно перерисовываться, когда под ним что-то движется
         scroll.setOnScrollChangeListener { _, _, y, _, _ -> aurora.scrollY = y; aurora.invalidateSelf(); GlassHub.refresh() }
         // чат идёт под поле ввода: нижний отступ равен высоте панели ввода

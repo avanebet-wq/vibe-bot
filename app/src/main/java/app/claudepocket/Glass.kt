@@ -71,7 +71,7 @@ object GlassHub {
     }
 
     fun startTilt(ctx: Context) {
-        if (sm != null || !animationsEnabled()) return
+        if (sm != null) return
         val m = ctx.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
         val s = m.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
         m.registerListener(tilt, s, SensorManager.SENSOR_DELAY_UI)
@@ -120,20 +120,33 @@ class GlassSurface(private val host: View) {
         }
     }
 
-    private fun animate(to: Float, ms: Long, grow: Float, springy: Boolean) {
-        anim?.cancel()
-        if (!GlassHub.animationsEnabled()) { press = to; host.scaleX = 1f + grow * to; host.scaleY = host.scaleX; host.invalidate(); return }
-        anim = ValueAnimator.ofFloat(press, to).apply {
-            duration = ms
-            interpolator = if (springy) OvershootInterpolator(2.2f) else OvershootInterpolator(1.4f)
-            addUpdateListener {
-                press = it.animatedValue as Float
-                host.scaleX = 1f + grow * press
-                host.scaleY = host.scaleX
-                host.invalidate()
-            }
-            start()
+    private var from = 0f
+    private var target = 0f
+    private var startAt = 0L
+    private var dur = 1L
+    private var spring: android.view.animation.Interpolator = OvershootInterpolator(2f)
+    private var growBy = 0f
+    private val step = object : Runnable {
+        override fun run() {
+            val t = ((SystemClock.uptimeMillis() - startAt).toFloat() / dur).coerceIn(0f, 1f)
+            press = from + (target - from) * spring.getInterpolation(t)
+            host.scaleX = 1f + growBy * press
+            host.scaleY = host.scaleX
+            host.invalidate()
+            if (t < 1f) host.postOnAnimation(this)
         }
+    }
+
+    /** Своя покадровая анимация: не зависит от системной настройки «Анимация» (её часто выключают). */
+    private fun animate(to: Float, ms: Long, grow: Float, springy: Boolean) {
+        host.removeCallbacks(step)
+        from = press
+        target = to
+        startAt = SystemClock.uptimeMillis()
+        dur = ms
+        growBy = grow
+        spring = if (springy) OvershootInterpolator(2.2f) else OvershootInterpolator(1.4f)
+        host.postOnAnimation(step)
     }
 
     private fun night() =
@@ -323,7 +336,7 @@ class AuroraDrawable(private val ctx: Context) : Drawable() {
     }
 
     fun start() {
-        if (running || !GlassHub.animationsEnabled()) return
+        if (running) return
         running = true
         handler.post(loop)
     }
@@ -336,7 +349,7 @@ class AuroraDrawable(private val ctx: Context) : Drawable() {
         val accent = ctx.getColor(R.color.accent)
         Color.colorToHSV(accent, hsv)
         val night = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        val a = if (night) 74 else 64
+        val a = if (night) 120 else 96
         val shifts = floatArrayOf(0f, 48f, -52f)
         for (i in 0..2) {
             val hh = floatArrayOf((hsv[0] + shifts[i] + 360f) % 360f, max(hsv[1], 0.55f), if (night) 0.85f else 0.95f)

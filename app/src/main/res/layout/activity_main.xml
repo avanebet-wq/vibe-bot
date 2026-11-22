@@ -331,10 +331,8 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:background="@color/bg"
-            android:fadingEdgeLength="44dp"
             android:fillViewport="true"
-            android:overScrollMode="never"
-            android:requiresFadingEdge="vertical">
+            android:overScrollMode="never">
 
             <LinearLayout
                 android:id="@+id/chat_list"
@@ -346,6 +344,13 @@
                 android:paddingRight="12dp"
                 android:paddingTop="64dp" />
         </app.claudepocket.FadeScrollView>
+
+        <!-- мягкий верх чата: лежит поверх прокрутки, поэтому стекло видит текст без затухания -->
+        <View
+            android:id="@+id/top_fade"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_gravity="top" />
 
         <!-- поле ввода как в ролике: круг слева, таблетка, круглая кнопка отправки -->
         <LinearLayout
