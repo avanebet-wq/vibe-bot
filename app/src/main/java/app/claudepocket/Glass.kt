@@ -310,6 +310,9 @@ class AuroraDrawable(private val ctx: Context) : Drawable() {
     private var running = false
     private val t0 = SystemClock.uptimeMillis()
 
+    /** Насколько прокручен чат: фон сдвигается вместе с текстом (с запаздыванием), и стекло видит движение. */
+    var scrollY = 0
+
     private val loop = object : Runnable {
         override fun run() {
             if (!running) return
@@ -350,8 +353,10 @@ class AuroraDrawable(private val ctx: Context) : Drawable() {
         for (i in 0..2) {
             val sh = shaders[i] ?: continue
             val k = i + 1
-            val x = w * (0.5 + 0.42 * kotlin.math.sin(t * 0.11 * k + i * 2.1)).toFloat()
-            val y = h * (0.5 + 0.44 * kotlin.math.cos(t * 0.09 * k + i * 1.3)).toFloat()
+            val x = w * (0.5 + 0.42 * kotlin.math.sin(t * 0.26 * k + i * 2.1)).toFloat()
+            val span = h * 1.5f
+            val y0 = h * (0.5 + 0.3 * kotlin.math.cos(t * 0.2 * k + i * 1.3)).toFloat() - scrollY * (0.25f + 0.1f * i)
+            val y = ((y0 % span) + span) % span - h * 0.25f
             m.setTranslate(x, y)
             sh.setLocalMatrix(m)
             paint.shader = sh

@@ -79,7 +79,7 @@ class ChatController(
         }
         scroll.background = aurora
         // стекло должно перерисовываться, когда под ним что-то движется
-        scroll.setOnScrollChangeListener { _, _, _, _, _ -> GlassHub.refresh() }
+        scroll.setOnScrollChangeListener { _, _, y, _, _ -> aurora.scrollY = y; aurora.invalidateSelf(); GlassHub.refresh() }
         // чат идёт под поле ввода: нижний отступ равен высоте панели ввода
         val composer = root.findViewById<View>(R.id.composer)
         composer.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
