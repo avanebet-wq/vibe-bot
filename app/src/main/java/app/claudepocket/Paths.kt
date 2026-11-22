@@ -67,6 +67,20 @@ class Paths(ctx: Context) {
             prefs.edit().putString("model", value).commit()
         }
 
+    /** Уровень мышления для `claude --effort` (пусто — по умолчанию). */
+    var effort: String
+        get() = prefs.getString("effort", "") ?: ""
+        set(value) {
+            prefs.edit().putString("effort", value).commit()
+        }
+
+    /** Последний список моделей, полученный от Claude Code. */
+    var modelsJson: String?
+        get() = prefs.getString("models_json", null)
+        set(value) {
+            prefs.edit().putString("models_json", value).apply()
+        }
+
     /** Идентификатор последнего разговора, чтобы продолжить его после перезапуска. */
     var sessionId: String?
         get() = prefs.getString("session_id", null)

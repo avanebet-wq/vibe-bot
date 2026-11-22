@@ -67,7 +67,8 @@ class MainActivity : Activity() {
         loginPanel = findViewById(R.id.login_panel)
         chatPanel = findViewById(R.id.chat_panel)
         onboarding = Onboarding(this, findViewById(R.id.onb_panel)) { route() }
-        chat = ChatController(this, chatPanel, { showChatMenu(it) }, { chooseModel() })
+        chat = ChatController(this, chatPanel, { showChatMenu(it) }, { chooseModel() }, { chooseEffort() })
+        chat.onModelsChanged = { refreshPills() }
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
         btnLoginCopy = findViewById(R.id.btn_login_copy)
@@ -261,7 +262,7 @@ class MainActivity : Activity() {
         chatPanel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Claude готов к работе")
         ChatEngine.init(this)
-        chat.setModelLabel(modelLabel(paths.model))
+        refreshPills()
         chat.attach()
     }
 
@@ -378,36 +379,62 @@ class MainActivity : Activity() {
         m.show()
     }
 
-    private val models = listOf(
-        Triple("", "По умолчанию", "модель по умолчанию для твоего аккаунта"),
-        Triple("sonnet", "Sonnet", "сбалансированная: быстро и умно"),
-        Triple("opus", "Opus", "для сложных задач"),
-        Triple("haiku", "Haiku", "самая быстрая"),
-        Triple("fable", "Fable", "новейшая, может потребовать кредиты"),
-    )
-
-    private fun modelLabel(alias: String) = models.firstOrNull { it.first == alias }?.second ?: alias
+    private fun refreshPills() {
+        val m = ModelCatalog.find(this, paths.model)
+        val canEffort = m != null && m.efforts.isNotEmpty()
+        val effort = if (canEffort) ModelCatalog.effortName(paths.effort) else "—"
+        chat.setPills(ModelCatalog.label(this, paths.model), effort, canEffort)
+    }
 
     private fun chooseModel() {
         if (ChatEngine.busy) {
             toast("Дождись конца ответа или останови его")
             return
         }
-        val items = models.map { "${it.second} — ${it.third}" }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Модель")
-            .setSingleChoiceItems(items, models.indexOfFirst { it.first == paths.model }.coerceAtLeast(0)) { d, which ->
-                val alias = models[which].first
+        val rows = ModelCatalog.all(this).map { m ->
+            val current = m.value == paths.model.ifEmpty { "default" }
+            val subtitle = ModelCatalog.descriptionRu(m) + if (m.value != "default" && m.resolved != m.value) "" else ""
+            Sheets.Row(ModelCatalog.title(m), subtitle, current) {
+                val alias = if (m.value == "default") "" else m.value
                 if (alias != paths.model) {
                     paths.model = alias
+                    // если новая модель не умеет выбранный уровень мышления — сбрасываем его на «авто»
+                    if (paths.effort.isNotEmpty() && paths.effort !in m.efforts) paths.effort = ""
                     ChatEngine.shutdown() // следующее сообщение запустит Claude с новой моделью, разговор сохранится
-                    chat.setModelLabel(modelLabel(alias))
-                    toast("Модель: ${models[which].second}")
+                    refreshPills()
+                    toast("Модель: " + ModelCatalog.label(this, alias))
                 }
-                d.dismiss()
             }
-            .setNegativeButton("Отмена", null)
-            .show()
+        }
+        Sheets.show(this, "Модель", rows)
+    }
+
+    private fun chooseEffort() {
+        if (ChatEngine.busy) {
+            toast("Дождись конца ответа или останови его")
+            return
+        }
+        val m = ModelCatalog.find(this, paths.model)
+        if (m == null || m.efforts.isEmpty()) {
+            toast("У этой модели нет настройки уровня мышления")
+            return
+        }
+        val rows = mutableListOf<Sheets.Row>()
+        rows.add(Sheets.Row("Авто", "уровень по умолчанию для модели", paths.effort.isEmpty()) { setEffort("") })
+        ModelCatalog.EFFORT_NAMES.keys.filter { it in m.efforts }.forEach { level ->
+            rows.add(
+                Sheets.Row(ModelCatalog.effortName(level), ModelCatalog.EFFORT_HINTS[level] ?: "", paths.effort == level) { setEffort(level) },
+            )
+        }
+        Sheets.show(this, "Уровень мышления", rows)
+    }
+
+    private fun setEffort(level: String) {
+        if (level == paths.effort) return
+        paths.effort = level
+        ChatEngine.shutdown() // применится со следующим сообщением, разговор сохранится
+        refreshPills()
+        toast("Мышление: " + if (level.isEmpty()) "авто" else ModelCatalog.effortName(level))
     }
 
     private fun choosePermissionMode() {

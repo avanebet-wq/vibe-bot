@@ -44,6 +44,7 @@ object ChatEngine {
         fun changed(m: Msg)
         fun busyChanged(busy: Boolean)
         fun cleared()
+        fun modelsChanged()
     }
 
     val messages = ArrayList<Msg>()
@@ -227,6 +228,7 @@ object ChatEngine {
         )
         if (resumeId != null) args.append(" --resume ").append(resumeId)
         if (paths.model.matches(Regex("[a-z0-9.\\-]+"))) args.append(" --model ").append(paths.model)
+        if (paths.effort.matches(Regex("[a-z]+"))) args.append(" --effort ").append(paths.effort)
         val hasSd = ctx.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         val pb = ProcessBuilder(Proot.argv(paths, listOf("/bin/bash", "-lc", "mkdir -p ~/work; cd ~/work; exec $args"), hasSd))
@@ -240,6 +242,11 @@ object ChatEngine {
         proc = p
         stdin = p.outputStream
         Thread({ readLoop(ctx, paths, p) }, "chat-reader").start()
+        // просим Claude Code прислать актуальный список моделей (придёт ответом control_response)
+        write(
+            JSONObject().put("type", "control_request").put("request_id", MODELS_REQUEST)
+                .put("request", JSONObject().put("subtype", "initialize")).toString(),
+        )
     }
 
     private fun readLoop(ctx: Context, paths: Paths, p: Process) {
@@ -322,6 +329,15 @@ object ChatEngine {
                     }
                 }
             }
+            "control_response" -> {
+                val resp = o.optJSONObject("response") ?: return
+                if (resp.optString("request_id") == MODELS_REQUEST) {
+                    resp.optJSONObject("response")?.optJSONArray("models")?.let {
+                        ModelCatalog.update(ctx, it)
+                        listener?.modelsChanged()
+                    }
+                }
+            }
             "control_request" -> {
                 val r = o.optJSONObject("request") ?: return
                 if (r.optString("subtype") == "can_use_tool") {
@@ -352,6 +368,7 @@ object ChatEngine {
         }
     }
 
+    private const val MODELS_REQUEST = "models-1"
     private const val NO_CONVERSATION = "No conversation found"
 
     /** Разговор исчез с диска: начинаем новый и повторяем последнее сообщение. */

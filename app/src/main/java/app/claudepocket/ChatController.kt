@@ -21,7 +21,8 @@ class ChatController(
     private val act: Activity,
     private val root: View,
     private val onMenu: (View) -> Unit,
-    private val onModel: (View) -> Unit,
+    private val onModel: () -> Unit,
+    private val onEffort: () -> Unit,
 ) : ChatEngine.Listener {
 
     private val scroll: ScrollView = root.findViewById(R.id.chat_scroll)
@@ -30,6 +31,8 @@ class ChatController(
     private val input: EditText = root.findViewById(R.id.chat_input)
     private val send: Button = root.findViewById(R.id.chat_send)
     private val views = HashMap<ChatEngine.Msg, View>()
+    private val pillModel: TextView = root.findViewById(R.id.chat_model_pill)
+    private val pillEffort: TextView = root.findViewById(R.id.chat_effort_pill)
 
     private val accent = act.getColor(R.color.accent)
     private val panel = act.getColor(R.color.panel)
@@ -39,8 +42,20 @@ class ChatController(
 
     init {
         root.findViewById<View>(R.id.chat_menu).setOnClickListener { onMenu(it) }
-        root.findViewById<View>(R.id.chat_model).setOnClickListener { onModel(it) }
-        send.background = rounded(accent, dp(12))
+        val composer: View = root.findViewById(R.id.composer)
+        composer.background = GradientDrawable().apply {
+            setColor(panel)
+            cornerRadius = dp(26).toFloat()
+            setStroke(dp(1), keyColor)
+        }
+        pillModel.background = rounded(keyColor, dp(22))
+        pillEffort.background = rounded(keyColor, dp(22))
+        pillModel.setOnClickListener { onModel() }
+        pillEffort.setOnClickListener { onEffort() }
+        send.background = GradientDrawable().apply {
+            setColor(accent)
+            shape = GradientDrawable.OVAL
+        }
         send.setOnClickListener {
             if (ChatEngine.busy) {
                 ChatEngine.stop()
@@ -55,8 +70,11 @@ class ChatController(
         refreshSend()
     }
 
-    fun setModelLabel(label: String) {
-        root.findViewById<TextView>(R.id.chat_model).text = "$label ▾"
+    /** Обновляет подписи на кнопках модели и уровня мышления. */
+    fun setPills(model: String, effort: String, effortEnabled: Boolean) {
+        pillModel.text = "$model ▾"
+        pillEffort.text = "🧠 $effort"
+        pillEffort.alpha = if (effortEnabled) 1f else 0.4f
     }
 
     /** Подключает контроллер к движку и отрисовывает уже накопленную переписку. */
@@ -101,6 +119,12 @@ class ChatController(
     override fun cleared() {
         render()
     }
+
+    override fun modelsChanged() {
+        onModelsChanged?.invoke()
+    }
+
+    var onModelsChanged: (() -> Unit)? = null
 
     // ------------------------------------------------------------------ views
 
@@ -279,7 +303,7 @@ class ChatController(
     // ------------------------------------------------------------------ misc
 
     private fun refreshSend() {
-        send.text = if (ChatEngine.busy) "■" else "➤"
+        send.text = if (ChatEngine.busy) "■" else "↑"
     }
 
     private fun nearBottom(): Boolean {
