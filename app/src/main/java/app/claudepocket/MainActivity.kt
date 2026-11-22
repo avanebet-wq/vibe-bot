@@ -35,6 +35,8 @@ class MainActivity : Activity() {
     private lateinit var onboarding: Onboarding
     private lateinit var skillsPanel: View
     private lateinit var skills: SkillsController
+    private lateinit var profilePanel: View
+    private lateinit var profileAvatar: AvatarView
     private lateinit var chat: ChatController
     private lateinit var btnLoginOpen: Button
     private lateinit var btnLoginSubmit: Button
@@ -79,7 +81,21 @@ class MainActivity : Activity() {
             onChanged = { ChatEngine.shutdown() }, // навыки читаются при запуске Claude; разговор сохранится
         )
         onboarding = Onboarding(this, findViewById(R.id.onb_panel)) { route() }
-        chat = ChatController(this, chatPanel, { showChatMenu(it) }, { chooseModel() }, { chooseEffort() }, { showPlusMenu(it) }, { f, action -> fileAction(f, action) })
+        profilePanel = findViewById(R.id.profile_panel)
+        profileAvatar = findViewById(R.id.profile_avatar)
+        profileAvatar.setOnClickListener { pickAvatar() }
+        chat = ChatController(
+            this, chatPanel,
+            onMenu = { showChatMenu(it) },
+            onModel = { chooseModel() },
+            onEffort = { chooseEffort() },
+            onSkills = { showSkills() },
+            onNewChat = { ChatEngine.newChat(this) },
+            onProfile = { showProfile() },
+            onPlus = { showPlusMenu(it) },
+            onFile = { f, action -> fileAction(f, action) },
+        )
+        loadAvatar()
         chat.onModelsChanged = { refreshPills() }
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
@@ -95,9 +111,20 @@ class MainActivity : Activity() {
         logScroll = findViewById(R.id.log_scroll)
         logText = findViewById(R.id.log_text)
 
-        btnInstall.background = rounded(getColor(R.color.accent), dp(12))
-        btnLoginOpen.background = rounded(getColor(R.color.accent), dp(12))
-        btnLoginSubmit.background = rounded(getColor(R.color.accent), dp(12))
+        btnInstall.background = rounded(getColor(R.color.accent), dp(28))
+        btnLoginOpen.background = rounded(getColor(R.color.accent), dp(28))
+        btnLoginSubmit.background = rounded(getColor(R.color.accent), dp(28))
+        loginCode.background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(getColor(R.color.panel))
+            cornerRadius = dp(26).toFloat()
+            setStroke(dp(1), getColor(R.color.line))
+        }
+        loginCode.setPadding(dp(20), dp(14), dp(20), dp(14))
+        logScroll.background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(getColor(R.color.panel))
+            cornerRadius = dp(18).toFloat()
+            setStroke(dp(1), getColor(R.color.line))
+        }
         btnInstall.setOnClickListener { startInstall() }
         detailsToggle.setOnClickListener {
             val show = logScroll.visibility != View.VISIBLE
@@ -125,7 +152,7 @@ class MainActivity : Activity() {
         if (!installing && paths.installed.exists()) {
             if (chatPanel.visibility == View.VISIBLE) {
                 chat.attach()
-            } else if (loginPanel.visibility != View.VISIBLE && skillsPanel.visibility != View.VISIBLE) {
+            } else if (loginPanel.visibility != View.VISIBLE && skillsPanel.visibility != View.VISIBLE && profilePanel.visibility != View.VISIBLE) {
                 route()
             }
         }
@@ -152,6 +179,7 @@ class MainActivity : Activity() {
         chatPanel.visibility = View.GONE
         loginPanel.visibility = View.VISIBLE
         skillsPanel.visibility = View.GONE
+        profilePanel.visibility = View.GONE
         startLogin()
     }
 
@@ -202,7 +230,7 @@ class MainActivity : Activity() {
         if (error == null) {
             showChat()
         } else {
-            loginStatus.setTextColor(Color.parseColor("#FF6B6B"))
+            loginStatus.setTextColor(getColor(R.color.error))
             loginStatus.text = error
             btnLoginOpen.isEnabled = false
             btnLoginOpen.text = "Готовлю новую ссылку…"
@@ -214,7 +242,7 @@ class MainActivity : Activity() {
     /** Перезапускает вход, оставив сообщение об ошибке на экране. */
     private fun startLoginKeepError(error: String) {
         startLogin()
-        loginStatus.setTextColor(Color.parseColor("#FF6B6B"))
+        loginStatus.setTextColor(getColor(R.color.error))
         loginStatus.text = error
     }
 
@@ -262,6 +290,7 @@ class MainActivity : Activity() {
         installPanel.visibility = View.VISIBLE
         loginPanel.visibility = View.GONE
         skillsPanel.visibility = View.GONE
+        profilePanel.visibility = View.GONE
         chatPanel.visibility = View.GONE
     }
 
@@ -274,6 +303,7 @@ class MainActivity : Activity() {
         installPanel.visibility = View.GONE
         loginPanel.visibility = View.GONE
         skillsPanel.visibility = View.GONE
+        profilePanel.visibility = View.GONE
         chatPanel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Claude готов к работе")
         ChatEngine.init(this)
@@ -346,7 +376,7 @@ class MainActivity : Activity() {
             btnInstall.isEnabled = true
             btnInstall.text = "Повторить установку"
             progress.visibility = View.GONE
-            stepText.setTextColor(Color.parseColor("#FF6B6B"))
+            stepText.setTextColor(getColor(R.color.error))
             stepText.text = "Ошибка: $error"
             hintText.text = "Можно нажать кнопку ещё раз — уже скачанное повторно не загружается."
         }
@@ -374,9 +404,67 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- menu
 
+    // ---------------------------------------------------------------- профиль: только аватар и пузыри
+
+    private fun showProfile() {
+        chat.detach()
+        chat.hideKeyboard()
+        chatPanel.visibility = View.GONE
+        skillsPanel.visibility = View.GONE
+        profilePanel.background = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(androidx.core.graphics.ColorUtils.blendARGB(getColor(R.color.key), getColor(R.color.accent), 0.22f), getColor(R.color.bg)),
+        )
+        profilePanel.visibility = View.VISIBLE
+    }
+
+    override fun onBackPressed() {
+        if (profilePanel.visibility == View.VISIBLE) showChat() else super.onBackPressed()
+    }
+
+    private fun pickAvatar() {
+        try {
+            startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE), REQ_AVATAR)
+        } catch (e: Exception) {
+            toast("Не нашёл, чем выбрать фото")
+        }
+    }
+
+    private fun loadAvatar() {
+        val b = if (paths.avatar.exists()) android.graphics.BitmapFactory.decodeFile(paths.avatar.path) else null
+        profileAvatar.setBitmap(b)
+        chat.setAvatar(b)
+    }
+
+    /** Берёт выбранное фото, обрезает до квадрата 512×512 и сохраняет как аватар. */
+    private fun saveAvatar(uri: Uri) {
+        Thread {
+            try {
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+                var sample = 1
+                while (minOf(bounds.outWidth, bounds.outHeight) / sample > 1024) sample *= 2
+                val src = contentResolver.openInputStream(uri)?.use {
+                    android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+                } ?: throw IllegalStateException()
+                val side = minOf(src.width, src.height)
+                val square = android.graphics.Bitmap.createBitmap(src, (src.width - side) / 2, (src.height - side) / 2, side, side)
+                val out = android.graphics.Bitmap.createScaledBitmap(square, 512, 512, true)
+                paths.avatar.outputStream().use { out.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                main.post {
+                    profileAvatar.setBitmap(out)
+                    chat.setAvatar(out)
+                }
+            } catch (_: Throwable) {
+                main.post { toast("Не удалось сохранить фото") }
+            }
+        }.start()
+    }
+
     private fun showSkills() {
         chat.detach()
         chatPanel.visibility = View.GONE
+        profilePanel.visibility = View.GONE
         skillsPanel.visibility = View.VISIBLE
         skills.show()
     }
@@ -449,6 +537,7 @@ class MainActivity : Activity() {
                     }
                 }.start()
             }
+            REQ_AVATAR -> data.data?.let { saveAvatar(it) }
             REQ_SAVE -> {
                 val src = pendingSave ?: return
                 val dst = data.data ?: return
@@ -513,15 +602,29 @@ class MainActivity : Activity() {
         chat.setPills(ModelCatalog.label(this, paths.model), effort, canEffort)
     }
 
-    private fun chooseModel() {
+    private fun chooseModel() = showModelSheet()
+
+    private fun chooseEffort() = showModelSheet()
+
+    /** Один лист для модели и уровня мышления (как на макете): сверху уровни таблетками, ниже список моделей. */
+    private fun showModelSheet() {
         if (ChatEngine.busy) {
             toast("Дождись конца ответа или останови его")
             return
         }
+        val sections = ArrayList<Sheets.Section>()
+        val cur = ModelCatalog.find(this, paths.model)
+        if (cur != null && cur.efforts.isNotEmpty()) {
+            val chips = ArrayList<Sheets.Chip>()
+            chips.add(Sheets.Chip("Авто", paths.effort.isEmpty()) { setEffort("") })
+            ModelCatalog.EFFORT_NAMES.keys.filter { it in cur.efforts }.forEach { level ->
+                chips.add(Sheets.Chip(ModelCatalog.effortName(level), paths.effort == level) { setEffort(level) })
+            }
+            sections.add(Sheets.Section("Уровень мышления", chips = chips))
+        }
         val rows = ModelCatalog.all(this).map { m ->
             val current = m.value == paths.model.ifEmpty { "default" }
-            val subtitle = ModelCatalog.descriptionRu(m) + if (m.value != "default" && m.resolved != m.value) "" else ""
-            Sheets.Row(ModelCatalog.title(m), subtitle, current) {
+            Sheets.Row(ModelCatalog.title(m), ModelCatalog.descriptionRu(m), current) {
                 val alias = if (m.value == "default") "" else m.value
                 if (alias != paths.model) {
                     paths.model = alias
@@ -533,27 +636,8 @@ class MainActivity : Activity() {
                 }
             }
         }
-        Sheets.show(this, "Модель", rows)
-    }
-
-    private fun chooseEffort() {
-        if (ChatEngine.busy) {
-            toast("Дождись конца ответа или останови его")
-            return
-        }
-        val m = ModelCatalog.find(this, paths.model)
-        if (m == null || m.efforts.isEmpty()) {
-            toast("У этой модели нет настройки уровня мышления")
-            return
-        }
-        val rows = mutableListOf<Sheets.Row>()
-        rows.add(Sheets.Row("Авто", "уровень по умолчанию для модели", paths.effort.isEmpty()) { setEffort("") })
-        ModelCatalog.EFFORT_NAMES.keys.filter { it in m.efforts }.forEach { level ->
-            rows.add(
-                Sheets.Row(ModelCatalog.effortName(level), ModelCatalog.EFFORT_HINTS[level] ?: "", paths.effort == level) { setEffort(level) },
-            )
-        }
-        Sheets.show(this, "Уровень мышления", rows)
+        sections.add(Sheets.Section("Модель", rows = rows))
+        Sheets.show(this, sections)
     }
 
     private fun setEffort(level: String) {
@@ -634,6 +718,7 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_STORAGE = 1
         private const val REQ_PICK_PHOTO = 21
+        private const val REQ_AVATAR = 24
         private const val REQ_PICK_FILE = 22
         private const val REQ_SAVE = 23
         private const val CLAUDE_APP = "com.anthropic.claude"

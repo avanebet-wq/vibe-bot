@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Светлая тема: динамические цвета системы (Monet) -->
+    <color name="bg">@android:color/system_neutral1_10</color>
+    <color name="panel">@android:color/system_neutral1_50</color>
+    <color name="key">@android:color/system_neutral1_100</color>
+    <color name="line">@android:color/system_neutral2_200</color>
+    <color name="accent">@android:color/system_accent1_600</color>
+    <color name="on_accent">@android:color/system_accent1_0</color>
+    <color name="text">@android:color/system_neutral1_900</color>
+    <color name="muted">@android:color/system_neutral2_700</color>
+    <color name="error">#C62828</color>
+    <color name="success">#2E7D32</color>
+    <color name="warn">#B26A00</color>
+    <color name="badge_red">#E5484D</color>
+</resources>

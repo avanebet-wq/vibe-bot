@@ -32,8 +32,13 @@ class SkillsController(
     init {
         root.findViewById<View>(R.id.skills_back).setOnClickListener { onBack() }
         root.findViewById<View>(R.id.skills_create).setOnClickListener { onCreateWithClaude() }
-        installBtn.background = rounded(act.getColor(R.color.accent), dp(12))
-        urlField.background = rounded(act.getColor(R.color.panel), dp(12))
+        installBtn.background = rounded(act.getColor(R.color.accent), dp(28))
+        urlField.background = GradientDrawable().apply {
+            setColor(act.getColor(R.color.panel))
+            cornerRadius = dp(26).toFloat()
+            setStroke(dp(1), act.getColor(R.color.line))
+        }
+        urlField.setPadding(dp(20), dp(14), dp(20), dp(14))
         installBtn.setOnClickListener { install() }
     }
 
@@ -53,7 +58,11 @@ class SkillsController(
             val card = LinearLayout(act)
             card.orientation = LinearLayout.VERTICAL
             card.setPadding(dp(16), dp(12), dp(16), dp(12))
-            card.background = rounded(act.getColor(R.color.panel), dp(16))
+            card.background = GradientDrawable().apply {
+                setColor(act.getColor(R.color.panel))
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), act.getColor(R.color.line))
+            }
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.bottomMargin = dp(8)
             card.layoutParams = lp
@@ -61,7 +70,7 @@ class SkillsController(
             if (s.description.isNotEmpty()) {
                 card.addView(text(s.description, act.getColor(R.color.muted), 13f).apply { maxLines = 4; ellipsize = android.text.TextUtils.TruncateAt.END })
             }
-            card.addView(text("Удалить", Color.parseColor("#FF6B6B"), 13f).apply {
+            card.addView(text("Удалить", act.getColor(R.color.error), 13f).apply {
                 setPadding(0, dp(8), 0, 0)
                 setOnClickListener { confirmRemove(s) }
             })
@@ -89,7 +98,7 @@ class SkillsController(
         if (working) return
         val src = Skills.parse(urlField.text.toString())
         if (src == null) {
-            status.setTextColor(Color.parseColor("#FF6B6B"))
+            status.setTextColor(act.getColor(R.color.error))
             status.text = "Нужна ссылка вида https://github.com/автор/репозиторий (или автор/репозиторий)"
             return
         }
@@ -105,12 +114,12 @@ class SkillsController(
                 installBtn.isEnabled = true
                 installBtn.text = "Установить"
                 if (r.error == null) {
-                    status.setTextColor(Color.parseColor("#7BD88F"))
+                    status.setTextColor(act.getColor(R.color.success))
                     status.text = "Установлено: " + r.installed.joinToString(", ")
                     urlField.setText("")
                     onChanged()
                 } else {
-                    status.setTextColor(Color.parseColor("#FF6B6B"))
+                    status.setTextColor(act.getColor(R.color.error))
                     status.text = r.error
                 }
                 refresh()

@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#0B0F14</color>
-    <color name="panel">#141B22</color>
-    <color name="key">#1E2832</color>
-    <color name="accent">#D97757</color>
-    <color name="text">#E6EDF3</color>
-    <color name="muted">#8B98A5</color>
+    <!-- Светлая тема, запасная палитра (Android до 12). На Android 12+ цвета берутся из системы: values-v31. -->
+    <color name="bg">#F6F6F8</color>
+    <color name="panel">#ECECF0</color>
+    <color name="key">#E0E0E6</color>
+    <color name="line">#CFCFD8</color>
+    <color name="accent">#3A68E3</color>
+    <color name="on_accent">#FFFFFF</color>
+    <color name="text">#1A1A1E</color>
+    <color name="muted">#55555C</color>
+    <color name="error">#C62828</color>
+    <color name="success">#2E7D32</color>
+    <color name="warn">#B26A00</color>
+    <color name="badge_red">#E5484D</color>
+    <color name="glass">#14000000</color>
 </resources>

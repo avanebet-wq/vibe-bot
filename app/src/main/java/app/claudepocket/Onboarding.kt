@@ -27,14 +27,14 @@ class Onboarding(
     private val panel: View,
     private val onDone: () -> Unit,
 ) {
-    private enum class Badge(val label: String, val color: Int) {
-        REQUIRED("ОБЯЗАТЕЛЬНО", Color.parseColor("#D9534F")),
-        RECOMMENDED("РЕКОМЕНДУЕТСЯ", Color.parseColor("#3D8BFD")),
-        NONE("", 0),
+    private enum class Badge(val label: String, val colorRes: Int) {
+        REQUIRED("ОБЯЗАТЕЛЬНО", R.color.badge_red),
+        RECOMMENDED("РЕКОМЕНДУЕТСЯ", R.color.accent),
+        NONE("", R.color.accent),
     }
 
     private class Slide(
-        val emoji: String,
+        val icon: Int,
         val title: String,
         val text: String,
         val badge: Badge,
@@ -45,7 +45,7 @@ class Onboarding(
 
     private val card: FrameLayout = panel.findViewById(R.id.onb_card)
     private val dots: LinearLayout = panel.findViewById(R.id.onb_dots)
-    private val emoji: TextView = panel.findViewById(R.id.onb_emoji)
+    private val emoji: android.widget.ImageView = panel.findViewById(R.id.onb_emoji)
     private val badge: TextView = panel.findViewById(R.id.onb_badge)
     private val title: TextView = panel.findViewById(R.id.onb_title)
     private val text: TextView = panel.findViewById(R.id.onb_text)
@@ -55,26 +55,26 @@ class Onboarding(
 
     private val slides = listOf(
         Slide(
-            "👋", "Давай настроим", "Несколько секунд — и приложение больше ни о чём не попросит. Нажимай «Разрешить», а не нужное можно пропустить.",
+            R.drawable.ic_spark, "Давай настроим", "Несколько секунд — и приложение больше ни о чём не попросит. Нажимай «Разрешить», а не нужное можно пропустить.",
             Badge.NONE, "Начать",
         ),
         Slide(
-            "🔔", "Уведомления",
+            R.drawable.ic_bell, "Уведомления",
             "Пока Claude работает, Android показывает одно постоянное уведомление. Без него система может остановить работу в фоне.",
             Badge.REQUIRED, "Разрешить", ::notificationsGranted, ::requestNotifications,
         ),
         Slide(
-            "🔋", "Работа в фоне",
+            R.drawable.ic_bolt, "Работа в фоне",
             "Чтобы Android не «усыплял» приложение: задачи Claude и вход в аккаунт не прервутся, когда ты свернёшь экран.",
             Badge.REQUIRED, "Разрешить", ::batteryGranted, ::requestBattery,
         ),
         Slide(
-            "📁", "Память телефона",
+            R.drawable.ic_folder, "Память телефона",
             "Claude сможет читать и сохранять файлы в папке /sdcard: фото, документы, загрузки. Для работы только в ~/work не нужно.",
             Badge.RECOMMENDED, "Разрешить", ::storageGranted, ::requestStorage,
         ),
         Slide(
-            "✅", "Всё готово", "Больше разрешений мы просить не будем. Дальше — установка Claude Code в одно нажатие.",
+            R.drawable.ic_check, "Всё готово", "Больше разрешений мы просить не будем. Дальше — установка Claude Code в одно нажатие.",
             Badge.NONE, "Продолжить",
         ),
     )
@@ -94,10 +94,27 @@ class Onboarding(
             cornerRadius = dp(28).toFloat()
             setStroke(dp(1), act.getColor(R.color.key))
         }
-        primary.background = rounded(act.getColor(R.color.accent), dp(14))
+        primary.background = rounded(act.getColor(R.color.accent), dp(24))
+        breathe()
         primary.setOnClickListener { onPrimary() }
         secondary.setOnClickListener { next() }
         bind()
+    }
+
+    /** Значок на карточке «дышит» — мягко пульсирует (отключается системной настройкой анимации). */
+    private fun breathe() {
+        val on = if (android.os.Build.VERSION.SDK_INT >= 26) android.animation.ValueAnimator.areAnimatorsEnabled() else true
+        if (!on) return
+        android.animation.ObjectAnimator.ofPropertyValuesHolder(
+            emoji,
+            android.animation.PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.1f),
+            android.animation.PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.1f),
+        ).apply {
+            duration = 1600
+            repeatCount = android.animation.ValueAnimator.INFINITE
+            repeatMode = android.animation.ValueAnimator.REVERSE
+            start()
+        }
     }
 
     val isVisible: Boolean get() = panel.visibility == View.VISIBLE
@@ -160,7 +177,11 @@ class Onboarding(
 
     private fun bind() {
         val s = slides[index]
-        emoji.text = s.emoji
+        emoji.setImageDrawable(Icons.get(act, s.icon, act.getColor(R.color.accent)))
+        emoji.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(androidx.core.graphics.ColorUtils.setAlphaComponent(act.getColor(R.color.accent), 46))
+        }
         title.text = s.title
         text.text = s.text
         if (s.badge == Badge.NONE) {
@@ -168,7 +189,7 @@ class Onboarding(
         } else {
             badge.visibility = View.VISIBLE
             badge.text = s.badge.label
-            badge.background = rounded(s.badge.color, dp(8))
+            badge.background = rounded(act.getColor(s.badge.colorRes), dp(8))
         }
         val g = s.granted
         val ok = g?.invoke() == true
@@ -178,7 +199,7 @@ class Onboarding(
             attempted[index] -> "Разрешение пока не выдано"
             else -> ""
         }
-        state.setTextColor(if (ok) Color.parseColor("#7BD88F") else Color.parseColor("#FFB454"))
+        state.setTextColor(act.getColor(if (ok) R.color.success else R.color.warn))
         primary.text = when {
             g == null -> s.primary
             ok -> "Далее"

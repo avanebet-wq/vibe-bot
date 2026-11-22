@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тёмная тема: динамические цвета системы (Monet), чёрный OLED-фон -->
+    <color name="bg">@android:color/system_neutral1_1000</color>
+    <color name="panel">@android:color/system_neutral1_900</color>
+    <color name="key">@android:color/system_neutral1_800</color>
+    <color name="line">@android:color/system_neutral2_700</color>
+    <color name="accent">@android:color/system_accent1_500</color>
+    <color name="on_accent">@android:color/system_accent1_0</color>
+    <color name="text">@android:color/system_neutral1_100</color>
+    <color name="muted">@android:color/system_neutral2_300</color>
+    <color name="error">#FF6B6B</color>
+    <color name="success">#7BD88F</color>
+    <color name="warn">#FFB454</color>
+    <color name="badge_red">#E5484D</color>
+</resources>

@@ -27,6 +27,9 @@ class Paths(ctx: Context) {
     /** Выполнен вход в аккаунт. */
     val loggedIn = File(files, "loggedin.ok")
 
+    /** Аватар пользователя (квадрат 512×512), если выбран. */
+    val avatar = File(files, "avatar.png")
+
     private val nativeDir: String = ctx.applicationInfo.nativeLibraryDir
     val proot = File(nativeDir, "libproot.so")
     val loader = File(nativeDir, "libproot-loader.so")

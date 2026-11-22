@@ -1,30 +1,38 @@
 package app.claudepocket
 
+import android.animation.ValueAnimator
 import android.app.Activity
-import android.graphics.Color
-import android.os.Handler
-import android.os.Looper
+import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
+import android.text.TextUtils
 import android.text.method.LinkMovementMethod
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
-import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.graphics.ColorUtils
 import org.json.JSONObject
 
-/** Экран чата: пузыри сообщений, карточки действий Claude и запросы разрешений. */
+/** Экран чата в стиле «Профиль»: живая шапка, пузыри сообщений, карточки действий и поле ввода со свечением. */
 class ChatController(
     private val act: Activity,
     private val root: View,
     private val onMenu: (View) -> Unit,
     private val onModel: () -> Unit,
     private val onEffort: () -> Unit,
+    private val onSkills: () -> Unit,
+    private val onNewChat: () -> Unit,
+    private val onProfile: () -> Unit,
     private val onPlus: (View) -> Unit,
     private val onFile: (ChatEngine.Msg.File, String) -> Unit,
 ) : ChatEngine.Listener {
@@ -32,9 +40,26 @@ class ChatController(
     private val scroll: ScrollView = root.findViewById(R.id.chat_scroll)
     private val list: LinearLayout = root.findViewById(R.id.chat_list)
     private val status: TextView = root.findViewById(R.id.chat_status)
-    private val statusRow: View = root.findViewById(R.id.chat_status_row)
+    private val working: View = root.findViewById(R.id.chat_working)
+    private val field: GlowFrame = root.findViewById(R.id.chat_field)
+    private val fieldIcon: View = root.findViewById(R.id.chat_field_icon)
     private val activityText: TextView = root.findViewById(R.id.chat_activity)
-    private val stopBtn: TextView = root.findViewById(R.id.chat_stop)
+    private val left: ImageView = root.findViewById(R.id.chat_left)
+    private val input: EditText = root.findViewById(R.id.chat_input)
+    private val send: ImageView = root.findViewById(R.id.chat_send)
+    private val views = HashMap<ChatEngine.Msg, View>()
+    private val attachScroll: View = root.findViewById(R.id.attach_scroll)
+    private val attachRow: LinearLayout = root.findViewById(R.id.attach_row)
+    private val pendingAttachments = ArrayList<Files.Attachment>()
+
+    private val headPanel: FrameLayout = root.findViewById(R.id.head_panel)
+    private val headCompact: View = root.findViewById(R.id.head_compact)
+    private val headSub: TextView = root.findViewById(R.id.head_sub)
+    private val compactSub: TextView = root.findViewById(R.id.compact_sub)
+    private val headAvatar: AvatarView = root.findViewById(R.id.head_avatar)
+    private val compactAvatar: AvatarView = root.findViewById(R.id.compact_avatar)
+    private val headBubbles: BubblesView = root.findViewById(R.id.head_bubbles)
+
     private val ticker = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
@@ -42,78 +67,137 @@ class ChatController(
             ticker.postDelayed(this, 500)
         }
     }
-    private val input: EditText = root.findViewById(R.id.chat_input)
-    private val send: Button = root.findViewById(R.id.chat_send)
-    private val views = HashMap<ChatEngine.Msg, View>()
-    private val plus: TextView = root.findViewById(R.id.chat_plus)
-    private val attachScroll: View = root.findViewById(R.id.attach_scroll)
-    private val attachRow: LinearLayout = root.findViewById(R.id.attach_row)
-    private val pendingAttachments = ArrayList<Files.Attachment>()
-    private val pillModel: TextView = root.findViewById(R.id.chat_model_pill)
-    private val pillEffort: TextView = root.findViewById(R.id.chat_effort_pill)
 
     private val accent = act.getColor(R.color.accent)
+    private val onAccent = act.getColor(R.color.on_accent)
     private val panel = act.getColor(R.color.panel)
     private val keyColor = act.getColor(R.color.key)
+    private val lineColor = act.getColor(R.color.line)
     private val textColor = act.getColor(R.color.text)
     private val muted = act.getColor(R.color.muted)
+    private val bgColor = act.getColor(R.color.bg)
+
+    private var expanded = true
+    private var headerAnimating = false
+    private var touching = false
 
     init {
-        root.findViewById<View>(R.id.chat_menu).setOnClickListener { onMenu(it) }
-        val composer: View = root.findViewById(R.id.composer)
-        composer.background = GradientDrawable().apply {
-            setColor(panel)
-            cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), keyColor)
+        // фон шапки: цвет обоев тихо растворяется в чёрном (как в «профиле v2»)
+        headPanel.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(ColorUtils.blendARGB(keyColor, accent, 0.26f), bgColor),
+        )
+        headCompact.background = GradientDrawable().apply { setColor(bgColor) }
+        headAvatar.glow = true
+        compactAvatar.glow = false
+        headBubbles.apply {
+            count = 8
+            centerYdp = 64f
+            radiiDp = floatArrayOf(69f, 86f, 99f)
+            sizesDp = floatArrayOf(35f, 29f, 40f)
+            xk = 0.95f
+            yk = 0.5f
         }
-        pillModel.background = rounded(keyColor, dp(22))
-        stopBtn.background = rounded(keyColor, dp(17))
-        stopBtn.setOnClickListener {
-            stopBtn.text = "Останавливаю…"
-            stopBtn.isEnabled = false
-            ChatEngine.stop()
+        root.findViewById<View>(R.id.act_model).setOnClickListener { onModel() }
+        root.findViewById<View>(R.id.act_effort).setOnClickListener { onEffort() }
+        root.findViewById<View>(R.id.act_skills).setOnClickListener { onSkills() }
+        root.findViewById<View>(R.id.act_new).setOnClickListener { onNewChat() }
+        root.findViewById<View>(R.id.act_more).setOnClickListener { onMenu(it) }
+        root.findViewById<View>(R.id.compact_more).setOnClickListener { onMenu(it) }
+        headAvatar.setOnClickListener { onProfile() }
+        headCompact.setOnClickListener { setHeaderExpanded(true) }
+        fieldIcon.setOnClickListener { onModel() }
+
+        scroll.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> touching = true
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> scroll.postDelayed({ touching = false }, 350)
+            }
+            false
         }
-        plus.background = GradientDrawable().apply {
-            setColor(keyColor)
-            shape = GradientDrawable.OVAL
+        // свернуть шапку, когда читаешь вниз; развернуть, когда долистал до самого верха
+        scroll.setOnScrollChangeListener { _, _, y, _, oldY ->
+            if (!touching || headerAnimating) return@setOnScrollChangeListener
+            if (y > oldY && y > dp(30)) setHeaderExpanded(false)
+            else if (y == 0 && oldY > 0) setHeaderExpanded(true)
         }
-        plus.setOnClickListener { onPlus(it) }
-        pillEffort.background = rounded(keyColor, dp(22))
-        pillModel.setOnClickListener { onModel() }
-        pillEffort.setOnClickListener { onEffort() }
-        send.background = GradientDrawable().apply {
-            setColor(accent)
-            shape = GradientDrawable.OVAL
-        }
-        send.setOnClickListener {
+        input.setOnFocusChangeListener { _, focused -> if (focused) setHeaderExpanded(false) }
+
+        left.setOnClickListener {
             if (ChatEngine.busy) {
+                status.text = "Останавливаю…"
                 ChatEngine.stop()
             } else {
-                val text = input.text.toString().trim()
-                if (text.isNotEmpty() || pendingAttachments.isNotEmpty()) {
-                    val files = ArrayList(pendingAttachments)
-                    pendingAttachments.clear()
-                    renderChips()
-                    input.setText("")
-                    ChatEngine.send(act, text, files)
-                }
+                onPlus(it)
+            }
+        }
+        send.setOnClickListener {
+            if (ChatEngine.busy) return@setOnClickListener
+            val text = input.text.toString().trim()
+            if (text.isNotEmpty() || pendingAttachments.isNotEmpty()) {
+                val files = ArrayList(pendingAttachments)
+                pendingAttachments.clear()
+                renderChips()
+                input.setText("")
+                setHeaderExpanded(false)
+                ChatEngine.send(act, text, files)
             }
         }
         refreshSend()
     }
+
+    // ------------------------------------------------------------------ шапка
+
+    fun setAvatar(b: Bitmap?) {
+        headAvatar.setBitmap(b)
+        compactAvatar.setBitmap(b)
+    }
+
+    /** Подпись под именем: модель и уровень мышления. */
+    fun setPills(model: String, effort: String, effortEnabled: Boolean) {
+        val sub = if (effortEnabled) "$model · мышление: ${effort.lowercase()}" else model
+        headSub.text = sub
+        compactSub.text = sub
+    }
+
+    fun setHeaderExpanded(e: Boolean, animate: Boolean = true) {
+        if (e == expanded) return
+        expanded = e
+        val full = dp(238)
+        val lp = headPanel.layoutParams
+        if (!animate) {
+            lp.height = if (e) full else 0
+            headPanel.layoutParams = lp
+            headPanel.visibility = if (e) View.VISIBLE else View.GONE
+            headCompact.visibility = if (e) View.GONE else View.VISIBLE
+            return
+        }
+        headPanel.visibility = View.VISIBLE
+        headCompact.visibility = if (e) View.GONE else View.VISIBLE
+        headerAnimating = true
+        ValueAnimator.ofInt(if (lp.height <= 0 && e) 0 else lp.height, if (e) full else 0).apply {
+            duration = 220
+            addUpdateListener {
+                lp.height = it.animatedValue as Int
+                headPanel.layoutParams = lp
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    headerAnimating = false
+                    if (!e) headPanel.visibility = View.GONE
+                }
+            })
+            start()
+        }
+    }
+
+    // ------------------------------------------------------------------ ввод
 
     /** Подставляет текст в поле ввода (например, заготовку запроса). */
     fun prefill(text: String) {
         input.setText(text)
         input.setSelection(text.length)
         input.requestFocus()
-    }
-
-    /** Обновляет подписи на кнопках модели и уровня мышления. */
-    fun setPills(model: String, effort: String, effortEnabled: Boolean) {
-        pillModel.text = "$model ▾"
-        pillEffort.text = "🧠 $effort"
-        pillEffort.alpha = if (effortEnabled) 1f else 0.4f
     }
 
     /** Подключает контроллер к движку и отрисовывает уже накопленную переписку. */
@@ -125,18 +209,29 @@ class ChatController(
     fun detach() {
         if (ChatEngine.listener === this) ChatEngine.listener = null
         ticker.removeCallbacks(tick)
+        field.glowing = false
     }
 
-    /** Показывает «кольцо + Думает… N с» и запускает счётчик, пока идёт ответ. */
+    /** Показывает «кольцо + Думает… N с» в поле, светящуюся обводку и серую подсказку, пока идёт ответ. */
     private fun setThinking(on: Boolean) {
         ticker.removeCallbacks(tick)
-        statusRow.visibility = if (on) View.VISIBLE else View.GONE
+        field.glowing = on
+        input.visibility = if (on) View.GONE else View.VISIBLE
+        fieldIcon.visibility = if (on) View.GONE else View.VISIBLE
+        working.visibility = if (on) View.VISIBLE else View.GONE
+        activityText.visibility = if (on) View.VISIBLE else View.GONE
+        activityText.background = GradientDrawable().apply {
+            setColor(panel)
+            cornerRadius = dp(16).toFloat()
+            setStroke(dp(1), lineColor)
+        }
+        left.setImageResource(if (on) R.drawable.ic_stop else R.drawable.ic_clip)
+        left.contentDescription = if (on) "Остановить" else "Прикрепить"
         if (on) {
-            stopBtn.text = "■  Остановить"
-            stopBtn.isEnabled = true
             updateStatusText()
             ticker.postDelayed(tick, 500)
         }
+        refreshSend()
     }
 
     private fun updateStatusText() {
@@ -152,7 +247,7 @@ class ChatController(
         activityText.text = currentActivity()
     }
 
-    /** Серая строка: что Claude делает прямо сейчас. */
+    /** Подсказка над полем: что Claude делает прямо сейчас. */
     private fun currentActivity(): String {
         val msgs = ChatEngine.messages
         val last = msgs.lastOrNull()
@@ -201,6 +296,7 @@ class ChatController(
         ChatEngine.messages.forEach { addView(it, scrollDown = false) }
         setThinking(ChatEngine.busy)
         refreshSend()
+        setHeaderExpanded(ChatEngine.messages.isEmpty(), animate = false)
         scrollToEnd()
     }
 
@@ -220,7 +316,6 @@ class ChatController(
 
     override fun busyChanged(busy: Boolean) {
         setThinking(busy)
-        refreshSend()
     }
 
     override fun cleared() {
@@ -242,12 +337,16 @@ class ChatController(
         attachScroll.visibility = if (pendingAttachments.isEmpty()) View.GONE else View.VISIBLE
         pendingAttachments.forEach { a ->
             val chip = TextView(act)
-            chip.text = (if (a.isImage) "🖼 " else "📎 ") + a.name.take(26) + "  ✕"
+            chip.text = a.name.take(26) + "   ✕"
             chip.setTextColor(textColor)
             chip.textSize = 13f
             chip.maxLines = 1
-            chip.setPadding(dp(12), dp(8), dp(12), dp(8))
-            chip.background = rounded(keyColor, dp(16))
+            chip.setPadding(dp(14), dp(9), dp(14), dp(9))
+            chip.background = GradientDrawable().apply {
+                setColor(panel)
+                cornerRadius = dp(18).toFloat()
+                setStroke(dp(1), lineColor)
+            }
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.rightMargin = dp(6)
             chip.layoutParams = lp
@@ -276,10 +375,11 @@ class ChatController(
     }
 
     private fun welcome(): View = TextView(act).apply {
-        text = "Привет! Я Claude Code.\n\nНапиши, что нужно сделать, — например:\n• «Создай страницу-визитку и открой её»\n• «Объясни, что в этой папке»\n• «Исправь ошибку в main.py»\n\nЧтобы выполнить команду напрямую, начни сообщение с «!», например: !ls или !apt install nano\n\nФайлы создаются в папке ~/work."
+        text = "Привет! Я Claude Code.\n\nНапиши, что нужно сделать, например:\n• «Создай страницу-визитку и открой её»\n• «Объясни, что в этой папке»\n• «Исправь ошибку в main.py»\n\nЧтобы выполнить команду напрямую, начни сообщение с «!», например: !ls или !apt install nano\n\nФайлы создаются в папке ~/work."
         setTextColor(muted)
         textSize = 15f
-        setPadding(dp(8), dp(24), dp(8), dp(8))
+        gravity = Gravity.CENTER
+        setPadding(dp(16), dp(20), dp(16), dp(8))
     }
 
     private fun create(m: ChatEngine.Msg): View = when (m) {
@@ -289,20 +389,27 @@ class ChatController(
         is ChatEngine.Msg.Permission -> card(accentBorder = true)
         is ChatEngine.Msg.Info -> card()
         is ChatEngine.Msg.Shell -> card()
-        is ChatEngine.Msg.File -> card(accentBorder = true)
+        is ChatEngine.Msg.File -> card()
     }
 
     private fun bubble(user: Boolean): View {
         val t = TextView(act)
-        t.setTextColor(if (user) Color.WHITE else textColor)
+        t.setTextColor(if (user) onAccent else textColor)
         t.textSize = 16f
         t.setLineSpacing(0f, 1.1f)
         t.setPadding(dp(14), dp(10), dp(14), dp(10))
         t.setTextIsSelectable(true)
         t.movementMethod = LinkMovementMethod.getInstance()
-        t.background = rounded(if (user) accent else panel, dp(16))
+        val r = dp(20).toFloat()
+        val tail = dp(6).toFloat()
+        t.background = GradientDrawable().apply {
+            setColor(if (user) accent else panel)
+            // у пузыря один острый нижний угол — «хвостик» в сторону автора
+            cornerRadii = floatArrayOf(r, r, r, r, if (user) tail else r, if (user) tail else r, if (user) r else tail, if (user) r else tail)
+            if (!user) setStroke(dp(1), lineColor)
+        }
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        lp.setMargins(if (user) dp(48) else 0, dp(6), if (user) 0 else dp(24), dp(6))
+        lp.setMargins(if (user) dp(48) else 0, dp(4), if (user) 0 else dp(28), dp(4))
         lp.gravity = if (user) Gravity.END else Gravity.START
         t.layoutParams = lp
         return t
@@ -311,11 +418,11 @@ class ChatController(
     private fun card(accentBorder: Boolean = false): View {
         val c = LinearLayout(act)
         c.orientation = LinearLayout.VERTICAL
-        c.setPadding(dp(12), dp(10), dp(12), dp(10))
+        c.setPadding(dp(14), dp(12), dp(14), dp(12))
         c.background = GradientDrawable().apply {
-            setColor(keyColor)
-            cornerRadius = dp(12).toFloat()
-            if (accentBorder) setStroke(dp(1), accent)
+            setColor(panel)
+            cornerRadius = dp(18).toFloat()
+            setStroke(dp(1), if (accentBorder) ColorUtils.setAlphaComponent(accent, 140) else lineColor)
         }
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         lp.setMargins(0, dp(4), 0, dp(4))
@@ -338,9 +445,31 @@ class ChatController(
             is ChatEngine.Msg.Info -> {
                 val c = v as LinearLayout
                 c.removeAllViews()
-                c.addView(label(m.text, if (m.error) Color.parseColor("#FF6B6B") else muted, 14f))
+                c.addView(label(m.text, if (m.error) act.getColor(R.color.error) else muted, 14f))
             }
         }
+    }
+
+    /** Круглая кнопка со значком и подписью под ней (как «звонок / видео / поиск» в профиле). */
+    private fun actionItem(icon: Int, caption: String, onClick: () -> Unit): View {
+        val box = LinearLayout(act)
+        box.orientation = LinearLayout.VERTICAL
+        box.gravity = Gravity.CENTER_HORIZONTAL
+        val iv = ImageView(act)
+        iv.setImageDrawable(Icons.get(act, icon, textColor))
+        iv.setBackgroundResource(R.drawable.bg_circle)
+        iv.setPadding(dp(12), dp(12), dp(12), dp(12))
+        iv.contentDescription = caption
+        box.addView(iv, LinearLayout.LayoutParams(dp(46), dp(46)))
+        val tv = TextView(act)
+        tv.text = caption
+        tv.setTextColor(muted)
+        tv.textSize = 11f
+        tv.setPadding(0, dp(4), 0, 0)
+        box.addView(tv)
+        box.setOnClickListener { onClick() }
+        box.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        return box
     }
 
     private fun bindFile(m: ChatEngine.Msg.File, c: LinearLayout) {
@@ -356,25 +485,38 @@ class ChatController(
                 val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
                 val bmp = android.graphics.BitmapFactory.decodeFile(f.path, opts)
                 if (bmp != null) {
-                    val iv = android.widget.ImageView(act)
+                    val iv = ImageView(act)
                     iv.setImageBitmap(bmp)
                     iv.adjustViewBounds = true
                     iv.maxHeight = dp(260)
-                    iv.scaleType = android.widget.ImageView.ScaleType.FIT_START
-                    iv.setPadding(0, 0, 0, dp(8))
+                    iv.scaleType = ImageView.ScaleType.FIT_START
+                    iv.setPadding(0, 0, 0, dp(10))
                     c.addView(iv)
                 }
             } catch (_: Throwable) {
             }
         }
-        c.addView(label("📎 " + f.name, textColor, 15f, bold = true))
-        c.addView(label(Files.humanSize(f.length()) + " · " + mime, muted, 12f))
+        val head = LinearLayout(act)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val ic = ImageView(act)
+        ic.setImageDrawable(Icons.get(act, R.drawable.ic_file, onAccent))
+        ic.setBackgroundResource(R.drawable.bg_circle_accent)
+        ic.setPadding(dp(11), dp(11), dp(11), dp(11))
+        head.addView(ic, LinearLayout.LayoutParams(dp(44), dp(44)))
+        val col = LinearLayout(act)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(12), 0, 0, 0)
+        col.addView(label(f.name, textColor, 15f, bold = true))
+        col.addView(label(Files.humanSize(f.length()) + " · " + mime, muted, 12f))
+        head.addView(col)
+        c.addView(head)
         val row = LinearLayout(act)
         row.orientation = LinearLayout.HORIZONTAL
-        row.setPadding(0, dp(8), 0, 0)
-        row.addView(actionButton("Открыть", accent) { onFile(m, "open") })
-        row.addView(actionButton("Сохранить", keyColor) { onFile(m, "save") })
-        row.addView(actionButton("Отправить", keyColor) { onFile(m, "share") })
+        row.setPadding(0, dp(12), 0, 0)
+        row.addView(actionItem(R.drawable.ic_open, "Открыть") { onFile(m, "open") })
+        row.addView(actionItem(R.drawable.ic_dl, "Сохранить") { onFile(m, "save") })
+        row.addView(actionItem(R.drawable.ic_share, "Отправить") { onFile(m, "share") })
         c.addView(row)
     }
 
@@ -396,7 +538,7 @@ class ChatController(
             out.setPadding(0, dp(4), 0, dp(2))
             c.addView(out)
         }
-        if (m.state == ChatEngine.FAILED && m.exit != 0) c.addView(label("Код завершения: ${m.exit}", Color.parseColor("#FF6B6B"), 12f))
+        if (m.state == ChatEngine.FAILED && m.exit != 0) c.addView(label("Код завершения: ${m.exit}", act.getColor(R.color.error), 12f))
     }
 
     private fun bindTool(m: ChatEngine.Msg.Tool, c: LinearLayout) {
@@ -407,7 +549,7 @@ class ChatController(
             ChatEngine.FAILED -> "✗ "
             else -> "… "
         }
-        c.addView(label(mark + title, if (m.state == ChatEngine.FAILED) Color.parseColor("#FF6B6B") else muted, 14f, bold = true))
+        c.addView(label(mark + title, if (m.state == ChatEngine.FAILED) act.getColor(R.color.error) else muted, 14f, bold = true))
         if (detail.isNotEmpty()) c.addView(label(detail, muted, 13f, mono = true))
     }
 
@@ -417,36 +559,41 @@ class ChatController(
         c.addView(label("Claude просит разрешения:\n$title", textColor, 15f, bold = true))
         if (detail.isNotEmpty()) c.addView(label(detail, muted, 13f, mono = true))
         when (m.decision) {
-            ChatEngine.ALLOWED -> c.addView(label("✓ Разрешено", Color.parseColor("#7BD88F"), 14f))
-            ChatEngine.DENIED -> c.addView(label("✗ Отклонено", Color.parseColor("#FF6B6B"), 14f))
+            ChatEngine.ALLOWED -> c.addView(label("✓ Разрешено", act.getColor(R.color.success), 14f))
+            ChatEngine.DENIED -> c.addView(label("✗ Отклонено", act.getColor(R.color.error), 14f))
             else -> {
                 val row = LinearLayout(act)
                 row.orientation = LinearLayout.HORIZONTAL
                 row.setPadding(0, dp(10), 0, 0)
-                row.addView(actionButton("Разрешить", accent) { ChatEngine.respond(m, true) })
-                row.addView(actionButton("Отклонить", keyColor) { ChatEngine.respond(m, false) })
+                row.addView(pill("Разрешить", true, 1f, 0) { ChatEngine.respond(m, true) })
+                row.addView(pill("Отклонить", false, 1f, dp(8)) { ChatEngine.respond(m, false) })
                 c.addView(row)
                 if (m.suggestion != null) {
-                    val always = actionButton("Разрешать правки файлов без вопросов", keyColor) { ChatEngine.respond(m, true, rememberEdits = true) }
-                    (always.layoutParams as LinearLayout.LayoutParams).apply { width = ViewGroup.LayoutParams.MATCH_PARENT; topMargin = dp(6); leftMargin = 0 }
+                    val always = pill("Разрешать правки файлов без вопросов", false, 0f, 0) { ChatEngine.respond(m, true, rememberEdits = true) }
+                    (always.layoutParams as LinearLayout.LayoutParams).apply { width = ViewGroup.LayoutParams.MATCH_PARENT; topMargin = dp(8) }
                     c.addView(always)
                 }
             }
         }
     }
 
-    private fun actionButton(text: String, color: Int, onClick: () -> Unit): Button {
-        val b = Button(act)
+    /** Кнопка-таблетка высотой 44dp: акцентная (главная) или нейтральная. */
+    private fun pill(text: String, primary: Boolean, weight: Float, leftMargin: Int, onClick: () -> Unit): TextView {
+        val b = TextView(act)
         b.text = text
-        b.isAllCaps = false
-        b.setTextColor(Color.WHITE)
+        b.gravity = Gravity.CENTER
+        b.setTextColor(if (primary) onAccent else textColor)
         b.textSize = 14f
-        b.minHeight = 0
-        b.minimumHeight = dp(44)
-        b.background = rounded(color, dp(10))
-        val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        lp.leftMargin = dp(6)
-        lp.rightMargin = dp(0)
+        b.typeface = Typeface.DEFAULT_BOLD
+        b.maxLines = 1
+        b.ellipsize = TextUtils.TruncateAt.END
+        b.setPadding(dp(14), 0, dp(14), 0)
+        b.background = GradientDrawable().apply {
+            setColor(if (primary) accent else keyColor)
+            cornerRadius = dp(22).toFloat()
+        }
+        val lp = LinearLayout.LayoutParams(if (weight > 0f) 0 else ViewGroup.LayoutParams.WRAP_CONTENT, dp(44), weight)
+        lp.leftMargin = leftMargin
         b.layoutParams = lp
         b.setOnClickListener { onClick() }
         return b
@@ -483,7 +630,7 @@ class ChatController(
     // ------------------------------------------------------------------ misc
 
     private fun refreshSend() {
-        send.text = if (ChatEngine.busy) "■" else "↑"
+        send.alpha = if (ChatEngine.busy) 0.45f else 1f
     }
 
     private fun nearBottom(): Boolean {
@@ -501,9 +648,4 @@ class ChatController(
     }
 
     private fun dp(v: Int) = (v * act.resources.displayMetrics.density).toInt()
-
-    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
-        setColor(color)
-        cornerRadius = radius.toFloat()
-    }
 }

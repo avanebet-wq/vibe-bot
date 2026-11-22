@@ -36,7 +36,7 @@
             android:layout_marginTop="24dp"
             android:text="Установить всё"
             android:textAllCaps="false"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/on_accent"
             android:textSize="18sp"
             android:textStyle="bold" />
 
@@ -168,7 +168,7 @@
                     android:layout_marginTop="10dp"
                     android:text="Установить"
                     android:textAllCaps="false"
-                    android:textColor="#FFFFFF"
+                    android:textColor="@color/on_accent"
                     android:textSize="16sp"
                     android:textStyle="bold" />
 
@@ -244,11 +244,12 @@
                     android:orientation="vertical"
                     android:padding="20dp">
 
-                    <TextView
+                    <ImageView
                         android:id="@+id/onb_emoji"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:textSize="46sp" />
+                        android:layout_width="68dp"
+                        android:layout_height="68dp"
+                        android:contentDescription="@null"
+                        android:padding="19dp" />
 
                     <TextView
                         android:id="@+id/onb_badge"
@@ -259,7 +260,7 @@
                         android:paddingLeft="10dp"
                         android:paddingRight="10dp"
                         android:paddingTop="2dp"
-                        android:textColor="#FFFFFF"
+                        android:textColor="@color/on_accent"
                         android:textSize="11sp"
                         android:textStyle="bold" />
 
@@ -297,7 +298,7 @@
                         android:layout_height="48dp"
                         android:layout_marginTop="14dp"
                         android:textAllCaps="false"
-                        android:textColor="#FFFFFF"
+                        android:textColor="@color/on_accent"
                         android:textSize="15sp"
                         android:textStyle="bold" />
 
@@ -321,31 +322,243 @@
         android:orientation="vertical"
         android:visibility="gone">
 
-        <LinearLayout
+        <!-- шапка: живая панель профиля (разворачивается и сворачивается) -->
+        <FrameLayout
+            android:id="@+id/head_panel"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:background="@color/panel"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingLeft="16dp">
+            android:layout_height="238dp">
+
+            <app.claudepocket.BubblesView
+                android:id="@+id/head_bubbles"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <app.claudepocket.AvatarView
+                android:id="@+id/head_avatar"
+                android:layout_width="150dp"
+                android:layout_height="150dp"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="-11dp"
+                android:contentDescription="Профиль" />
 
             <TextView
-                android:layout_width="0dp"
+                android:id="@+id/head_name"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
+                android:layout_marginTop="112dp"
+                android:gravity="center"
                 android:text="Claude"
                 android:textColor="@color/text"
                 android:textSize="19sp"
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/chat_menu"
-                android:layout_width="52dp"
-                android:layout_height="match_parent"
+                android:id="@+id/head_sub"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="137dp"
+                android:ellipsize="end"
                 android:gravity="center"
-                android:text="⋮"
-                android:textColor="@color/text"
-                android:textSize="24sp" />
+                android:maxLines="1"
+                android:paddingLeft="24dp"
+                android:paddingRight="24dp"
+                android:textColor="@color/muted"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:id="@+id/head_actions"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom"
+                android:orientation="horizontal"
+                android:paddingBottom="8dp"
+                android:paddingLeft="6dp"
+                android:paddingRight="6dp">
+
+            <LinearLayout
+                android:id="@+id/act_model"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_circle_glass"
+                    android:contentDescription="Модель"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_cpu"
+                    android:tint="@color/text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Модель"
+                    android:textColor="@color/text"
+                    android:textSize="10.5sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/act_effort"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_circle_glass"
+                    android:contentDescription="Мышление"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_spark"
+                    android:tint="@color/text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Мышление"
+                    android:textColor="@color/text"
+                    android:textSize="10.5sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/act_skills"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_circle_glass"
+                    android:contentDescription="Навыки"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_wrench"
+                    android:tint="@color/text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Навыки"
+                    android:textColor="@color/text"
+                    android:textSize="10.5sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/act_new"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_circle_glass"
+                    android:contentDescription="Новый чат"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_newchat"
+                    android:tint="@color/text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Новый чат"
+                    android:textColor="@color/text"
+                    android:textSize="10.5sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/act_more"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_circle_glass"
+                    android:contentDescription="Ещё"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_more"
+                    android:tint="@color/text" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Ещё"
+                    android:textColor="@color/text"
+                    android:textSize="10.5sp" />
+            </LinearLayout>
+
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- компактная шапка, когда панель свёрнута -->
+        <LinearLayout
+            android:id="@+id/head_compact"
+            android:layout_width="match_parent"
+            android:layout_height="58dp"
+            android:background="@color/bg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="14dp"
+            android:paddingRight="8dp"
+            android:visibility="gone">
+
+            <app.claudepocket.AvatarView
+                android:id="@+id/compact_avatar"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:contentDescription="Профиль" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="10dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Claude"
+                    android:textColor="@color/text"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/compact_sub"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="@color/muted"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/compact_more"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:contentDescription="Ещё"
+                android:padding="12dp"
+                android:src="@drawable/ic_more"
+                android:tint="@color/text" />
         </LinearLayout>
 
         <ScrollView
@@ -363,165 +576,160 @@
                 android:padding="12dp" />
         </ScrollView>
 
+        <!-- поле ввода как в ролике: круг слева, таблетка, круглая кнопка отправки -->
         <LinearLayout
-            android:id="@+id/chat_status_row"
+            android:id="@+id/composer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingBottom="6dp"
-            android:paddingLeft="20dp"
-            android:paddingRight="20dp"
-            android:paddingTop="2dp"
-            android:visibility="gone">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <app.claudepocket.DotsSpinner
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
-
-                <TextView
-                    android:id="@+id/chat_status"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginLeft="10dp"
-                    android:text="Думает…"
-                    android:textColor="@color/text"
-                    android:textSize="14sp" />
-
-                <View
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="1" />
-
-                <TextView
-                    android:id="@+id/chat_stop"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:gravity="center"
-                    android:paddingLeft="14dp"
-                    android:paddingRight="14dp"
-                    android:text="■  Остановить"
-                    android:textColor="@color/text"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
+            android:paddingBottom="8dp"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
+            android:paddingTop="6dp">
 
             <TextView
                 android:id="@+id/chat_activity"
-                android:layout_width="match_parent"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginLeft="32dp"
+                android:layout_marginBottom="8dp"
+                android:layout_marginLeft="52dp"
                 android:ellipsize="end"
                 android:maxLines="1"
-                android:textColor="@color/muted"
-                android:textSize="13sp" />
-        </LinearLayout>
+                android:paddingBottom="7dp"
+                android:paddingLeft="13dp"
+                android:paddingRight="13dp"
+                android:paddingTop="7dp"
+                android:textColor="@color/text"
+                android:textSize="12.5sp"
+                android:visibility="gone" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:padding="10dp">
-
-            <LinearLayout
-                android:id="@+id/composer"
+            <HorizontalScrollView
+                android:id="@+id/attach_scroll"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="14dp">
-
-                <HorizontalScrollView
-                    android:id="@+id/attach_scroll"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="6dp"
-                    android:scrollbars="none"
-                    android:visibility="gone">
-
-                    <LinearLayout
-                        android:id="@+id/attach_row"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal" />
-                </HorizontalScrollView>
-
-                <EditText
-                    android:id="@+id/chat_input"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:background="@null"
-                    android:hint="Что сделать?"
-                    android:inputType="textCapSentences|textMultiLine"
-                    android:maxLines="6"
-                    android:minHeight="44dp"
-                    android:padding="4dp"
-                    android:textColor="@color/text"
-                    android:textColorHint="@color/muted"
-                    android:textSize="18sp" />
+                android:layout_marginBottom="6dp"
+                android:scrollbars="none"
+                android:visibility="gone">
 
                 <LinearLayout
-                    android:layout_width="match_parent"
+                    android:id="@+id/attach_row"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
 
-                    <TextView
-                        android:id="@+id/chat_plus"
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="bottom"
+                android:orientation="horizontal">
+
+                <ImageView
+                    android:id="@+id/chat_left"
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_circle"
+                    android:contentDescription="Прикрепить"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_clip"
+                    android:tint="@color/text" />
+
+                <app.claudepocket.GlowFrame
+                    android:id="@+id/chat_field"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="4dp"
+                    android:layout_marginRight="4dp"
+                    android:layout_weight="1"
+                    android:minHeight="54dp">
+
+                    <EditText
+                        android:id="@+id/chat_input"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_vertical"
+                        android:background="@null"
+                        android:hint="Что сделать?"
+                        android:inputType="textCapSentences|textMultiLine"
+                        android:maxLines="5"
+                        android:minHeight="46dp"
+                        android:paddingBottom="10dp"
+                        android:paddingLeft="20dp"
+                        android:paddingRight="46dp"
+                        android:paddingTop="10dp"
+                        android:textColor="@color/text"
+                        android:textColorHint="@color/muted"
+                        android:textSize="16sp" />
+
+                    <ImageView
+                        android:id="@+id/chat_field_icon"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:layout_gravity="center_vertical|end"
                         android:layout_marginRight="8dp"
-                        android:gravity="center"
-                        android:text="+"
-                        android:textColor="@color/text"
-                        android:textSize="26sp" />
+                        android:contentDescription="Модель и мышление"
+                        android:padding="9dp"
+                        android:src="@drawable/ic_cpu"
+                        android:tint="@color/muted" />
 
-                    <TextView
-                        android:id="@+id/chat_model_pill"
-                        android:layout_width="0dp"
-                        android:layout_height="44dp"
-                        android:layout_weight="1"
-                        android:ellipsize="end"
+                    <LinearLayout
+                        android:id="@+id/chat_working"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
                         android:gravity="center_vertical"
-                        android:maxLines="1"
-                        android:paddingLeft="16dp"
+                        android:minHeight="54dp"
+                        android:orientation="horizontal"
+                        android:paddingLeft="20dp"
                         android:paddingRight="16dp"
-                        android:textColor="@color/text"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
+                        android:visibility="gone">
 
-                    <TextView
-                        android:id="@+id/chat_effort_pill"
-                        android:layout_width="wrap_content"
-                        android:layout_height="44dp"
-                        android:layout_marginLeft="8dp"
-                        android:gravity="center_vertical"
-                        android:maxLines="1"
-                        android:paddingLeft="14dp"
-                        android:paddingRight="14dp"
-                        android:textColor="@color/text"
-                        android:textSize="14sp" />
+                        <app.claudepocket.DotsSpinner
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
 
-                    <Button
-                        android:id="@+id/chat_send"
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:layout_marginLeft="8dp"
-                        android:minWidth="0dp"
-                        android:minHeight="0dp"
-                        android:padding="0dp"
-                        android:text="↑"
-                        android:textColor="#FFFFFF"
-                        android:textSize="22sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
+                        <TextView
+                            android:id="@+id/chat_status"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginLeft="10dp"
+                            android:text="Думает…"
+                            android:textColor="@color/text"
+                            android:textSize="16sp" />
+                    </LinearLayout>
+                </app.claudepocket.GlowFrame>
+
+                <ImageView
+                    android:id="@+id/chat_send"
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:background="@drawable/bg_circle_accent"
+                    android:contentDescription="Отправить"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_send"
+                    android:tint="@color/on_accent" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>
+
+    <!-- Страница профиля: только аватар и пузыри -->
+    <FrameLayout
+        android:id="@+id/profile_panel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <app.claudepocket.BubblesView
+            android:id="@+id/profile_bubbles"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <app.claudepocket.AvatarView
+            android:id="@+id/profile_avatar"
+            android:layout_width="300dp"
+            android:layout_height="300dp"
+            android:layout_gravity="center"
+            android:contentDescription="Аватар" />
+    </FrameLayout>
 
     <!-- Экран входа в аккаунт -->
     <LinearLayout
@@ -564,7 +772,7 @@
             android:enabled="false"
             android:text="Готовлю ссылку…"
             android:textAllCaps="false"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/on_accent"
             android:textSize="16sp"
             android:textStyle="bold" />
 
@@ -619,7 +827,7 @@
             android:layout_marginTop="10dp"
             android:text="Войти"
             android:textAllCaps="false"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/on_accent"
             android:textSize="16sp"
             android:textStyle="bold" />
 

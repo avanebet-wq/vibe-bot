@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тёмная тема, запасная палитра: чёрный OLED-фон, графитовые поверхности, синий акцент -->
+    <color name="bg">#050507</color>
+    <color name="panel">#19181B</color>
+    <color name="key">#262529</color>
+    <color name="line">#2B3040</color>
+    <color name="accent">#3A68E3</color>
+    <color name="on_accent">#FFFFFF</color>
+    <color name="text">#ECECEE</color>
+    <color name="muted">#A09FA6</color>
+    <color name="error">#FF6B6B</color>
+    <color name="success">#7BD88F</color>
+    <color name="warn">#FFB454</color>
+    <color name="badge_red">#E5484D</color>
+    <color name="glass">#1AFFFFFF</color>
+</resources>
