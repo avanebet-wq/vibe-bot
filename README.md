@@ -20,8 +20,8 @@ Android-приложение, которое **одной кнопкой** ст�
 
 ## Как это устроено
 
-- `libproot.so` — [PRoot для Android](https://github.com/green-green-avk/build-proot-android)
-  (запускает Linux без root-прав), лежит в `jniLibs`, поэтому Android разрешает его выполнять.
+- `libproot.so` — [PRoot для Android](https://github.com/termux/proot)
+  (запускает Linux без root-прав; сборка из пакетов Termux вместе с libtalloc и libandroid-shmem), лежит в `jniLibs`, поэтому Android разрешает его выполнять.
 - «Установить всё» скачивает `ubuntu-base` (arm64) с cdimage.ubuntu.com, проверяет SHA-256,
   распаковывает в `files/rootfs` и запускает `assets/setup.sh` внутри Ubuntu: пакеты + официальный
   установщик Claude Code (`curl -fsSL https://claude.ai/install.sh | bash`).

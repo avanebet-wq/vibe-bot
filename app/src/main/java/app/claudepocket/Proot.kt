@@ -37,7 +37,7 @@ object Proot {
         val a = mutableListOf(
             p.proot.path,
             "-r", p.rootfs.path,
-            "-0", "--link2symlink", "--kill-on-exit", "--tcsetsf2tcsets",
+            "-0", "--link2symlink", "--kill-on-exit",
             "-b", "/dev", "-b", "/proc", "-b", "/sys",
             "-b", "/proc/self/fd:/dev/fd",
             "-b", "/proc/self/fd/0:/dev/stdin",
@@ -64,7 +64,8 @@ object Proot {
     /** Окружение самого процесса proot (на стороне Android). */
     fun hostEnv(p: Paths, noSeccomp: Boolean): Map<String, String> {
         val e = HashMap<String, String>(System.getenv())
-        e.remove("LD_LIBRARY_PATH")
+        // proot зависит от libtalloc.so / libandroid-shmem.so, лежащих рядом с ним
+        e["LD_LIBRARY_PATH"] = p.proot.parent ?: ""
         e.remove("LD_PRELOAD")
         e["PROOT_TMP_DIR"] = p.tmp.path
         e["PROOT_LOADER"] = p.loader.path
