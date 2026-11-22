@@ -560,7 +560,7 @@ class ChatController(
     }
 
     private fun scrollToEnd() {
-        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        scroll.post { scroll.scrollTo(0, scroll.getChildAt(0)?.height ?: 0) } // не fullScroll: он уводит фокус из поля ввода
     }
 
     fun hideKeyboard() {
