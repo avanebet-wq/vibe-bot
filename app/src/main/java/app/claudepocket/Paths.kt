@@ -41,6 +41,20 @@ class Paths(ctx: Context) {
             prefs.edit().putInt("font_sp", value).apply()
         }
 
+    /** manual — спрашивать разрешения, acceptEdits — править файлы без вопросов. */
+    var permissionMode: String
+        get() = prefs.getString("perm_mode", "manual") ?: "manual"
+        set(value) {
+            prefs.edit().putString("perm_mode", value).apply()
+        }
+
+    /** Идентификатор последнего разговора, чтобы продолжить его после перезапуска. */
+    var sessionId: String?
+        get() = prefs.getString("session_id", null)
+        set(value) {
+            prefs.edit().putString("session_id", value).apply()
+        }
+
     fun ensureDirs() {
         listOf(rootfs, tmp, shm, downloads, home, fakeProc).forEach { it.mkdirs() }
     }

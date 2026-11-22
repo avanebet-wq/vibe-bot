@@ -42,6 +42,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     private lateinit var installPanel: View
     private lateinit var termPanel: View
     private lateinit var loginPanel: View
+    private lateinit var chatPanel: View
+    private lateinit var chat: ChatController
     private lateinit var btnLoginOpen: Button
     private lateinit var btnLoginSubmit: Button
     private lateinit var btnLoginCopy: TextView
@@ -78,6 +80,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         installPanel = findViewById(R.id.install_panel)
         termPanel = findViewById(R.id.term_panel)
         loginPanel = findViewById(R.id.login_panel)
+        chatPanel = findViewById(R.id.chat_panel)
+        chat = ChatController(this, chatPanel) { showChatMenu(it) }
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
         btnLoginCopy = findViewById(R.id.btn_login_copy)
@@ -110,7 +114,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         findViewById<View>(R.id.login_skip).setOnClickListener {
             paths.loggedIn.writeText("1")
             login?.cancel()
-            showTerminal()
+            showChat()
         }
         btnRestart.setOnClickListener { newSession() }
 
@@ -127,10 +131,17 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         if (!installing && paths.installed.exists()) {
             if (termPanel.visibility == View.VISIBLE) {
                 if (SessionHolder.session == null) btnRestart.visibility = View.VISIBLE
+            } else if (chatPanel.visibility == View.VISIBLE) {
+                chat.attach()
             } else if (loginPanel.visibility != View.VISIBLE) {
                 route()
             }
         }
+    }
+
+    override fun onPause() {
+        chat.detach()
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -144,13 +155,14 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         when {
             !paths.installed.exists() -> showInstall()
             !paths.loggedIn.exists() -> showLogin()
-            else -> showTerminal()
+            else -> showChat()
         }
     }
 
     private fun showLogin() {
         installPanel.visibility = View.GONE
         termPanel.visibility = View.GONE
+        chatPanel.visibility = View.GONE
         loginPanel.visibility = View.VISIBLE
         startLogin()
     }
@@ -197,7 +209,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
     private fun onLoginFinished(error: String?) {
         if (error == null) {
-            showTerminal()
+            showChat()
         } else {
             loginStatus.setTextColor(Color.parseColor("#FF6B6B"))
             loginStatus.text = error
@@ -229,19 +241,35 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         installPanel.visibility = View.VISIBLE
         loginPanel.visibility = View.GONE
         termPanel.visibility = View.GONE
+        chatPanel.visibility = View.GONE
+    }
+
+    /** Один раз просит доступ к памяти телефона; true — запрос показан, экран откроется после ответа. */
+    private fun askStorageOnce(): Boolean {
+        val prefs = getSharedPreferences("claude_pocket", MODE_PRIVATE)
+        if (hasStorage() || prefs.getBoolean("asked_storage", false)) return false
+        prefs.edit().putBoolean("asked_storage", true).apply()
+        requestPermissions(
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE),
+            REQ_STORAGE,
+        )
+        return true
+    }
+
+    private fun showChat() {
+        if (askStorageOnce()) return
+        installPanel.visibility = View.GONE
+        loginPanel.visibility = View.GONE
+        termPanel.visibility = View.GONE
+        chatPanel.visibility = View.VISIBLE
+        KeepAliveService.start(this, "Claude готов к работе")
+        chat.attach()
     }
 
     private fun showTerminal() {
-        // /sdcard внутри Linux появится, только если выдан доступ к памяти — спросим один раз до старта.
-        val prefs = getSharedPreferences("claude_pocket", MODE_PRIVATE)
-        if (!hasStorage() && !prefs.getBoolean("asked_storage", false)) {
-            prefs.edit().putBoolean("asked_storage", true).apply()
-            requestPermissions(
-                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE),
-                REQ_STORAGE,
-            )
-            return
-        }
+        if (askStorageOnce()) return
+        chat.detach()
+        chatPanel.visibility = View.GONE
         installPanel.visibility = View.GONE
         loginPanel.visibility = View.GONE
         termPanel.visibility = View.VISIBLE
@@ -257,7 +285,9 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_STORAGE) {
-            if (paths.installed.exists() && paths.loggedIn.exists()) showTerminal()
+            if (paths.installed.exists() && paths.loggedIn.exists()) {
+                if (termPanel.visibility == View.VISIBLE) showTerminal() else showChat()
+            }
             if (hasStorage() && SessionHolder.session != null) {
                 Toast.makeText(this, "Доступ выдан. Новая сессия (меню ⋮) подключит /sdcard", Toast.LENGTH_LONG).show()
             }
@@ -448,6 +478,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         m.menu.add(0, 5, 4, "Доступ к памяти телефона")
         m.menu.add(0, 6, 5, "Новая сессия")
         m.menu.add(0, 7, 6, "Переустановить всё")
+        m.menu.add(0, 8, 7, "Вернуться в чат")
         m.setOnMenuItemClickListener {
             when (it.itemId) {
                 1 -> SessionHolder.session?.let { s -> pasteFromClipboard(s) }
@@ -457,10 +488,46 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
                 5 -> requestStorage()
                 6 -> newSession()
                 7 -> confirmReinstall()
+                8 -> showChat()
             }
             true
         }
         m.show()
+    }
+
+    private fun showChatMenu(anchor: View) {
+        val m = PopupMenu(this, anchor)
+        m.menu.add(0, 1, 0, "Новый чат")
+        m.menu.add(0, 2, 1, "Разрешения: " + if (paths.permissionMode == "acceptEdits") "править без вопросов" else "спрашивать")
+        m.menu.add(0, 3, 2, "Терминал")
+        m.menu.add(0, 4, 3, "Переустановить всё")
+        m.setOnMenuItemClickListener {
+            when (it.itemId) {
+                1 -> ChatEngine.newChat(this)
+                2 -> choosePermissionMode()
+                3 -> showTerminal()
+                4 -> confirmReinstall()
+            }
+            true
+        }
+        m.show()
+    }
+
+    private fun choosePermissionMode() {
+        val modes = arrayOf("manual", "acceptEdits")
+        val names = arrayOf("Спрашивать перед каждым действием", "Править файлы без вопросов (команды — с вопросом)")
+        AlertDialog.Builder(this)
+            .setTitle("Разрешения Claude")
+            .setSingleChoiceItems(names, modes.indexOf(paths.permissionMode)) { d, which ->
+                if (paths.permissionMode != modes[which]) {
+                    paths.permissionMode = modes[which]
+                    ChatEngine.shutdown() // следующий запрос стартует с новым режимом, разговор сохранится
+                    toast("Режим изменён")
+                }
+                d.dismiss()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun requestStorage() {
@@ -503,6 +570,9 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
                 val old = SessionHolder.session
                 SessionHolder.session = null
                 old?.finishIfRunning()
+                ChatEngine.shutdown()
+                ChatEngine.messages.clear()
+                paths.sessionId = null
                 KeepAliveService.stop(this)
                 Toast.makeText(this, "Удаляю…", Toast.LENGTH_SHORT).show()
                 Thread {

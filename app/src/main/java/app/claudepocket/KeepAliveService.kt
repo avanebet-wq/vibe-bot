@@ -24,6 +24,7 @@ class KeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            ChatEngine.shutdown()
             SessionHolder.session?.finishIfRunning()
             SessionHolder.session = null
             stopSelf()
