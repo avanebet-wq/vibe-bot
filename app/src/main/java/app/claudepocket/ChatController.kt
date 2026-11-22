@@ -233,7 +233,11 @@ class ChatController(
     private fun bind(m: ChatEngine.Msg, v: View) {
         when (m) {
             is ChatEngine.Msg.User -> (v as TextView).text = m.text
-            is ChatEngine.Msg.Assistant -> (v as TextView).text = Markdown.render(Files.strip(m.text), 0x33808080)
+            is ChatEngine.Msg.Assistant -> {
+                val sp = android.text.SpannableStringBuilder(Markdown.render(Files.strip(m.text), 0x33808080))
+                android.text.util.Linkify.addLinks(sp, android.text.util.Linkify.WEB_URLS) // ссылки становятся нажимаемыми
+                (v as TextView).text = sp
+            }
             is ChatEngine.Msg.Tool -> bindTool(m, v as LinearLayout)
             is ChatEngine.Msg.Permission -> bindPermission(m, v as LinearLayout)
             is ChatEngine.Msg.Shell -> bindShell(m, v as LinearLayout)

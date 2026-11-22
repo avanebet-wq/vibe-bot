@@ -419,9 +419,10 @@ object ChatEngine {
     // ------------------------------------------------------------------ helpers
 
     private fun userLine(text: String, attachments: List<Files.Attachment> = emptyList()): String {
+        val hint = if (Files.needsSendHint(text)) "\n\n" + Files.SEND_HINT else ""
         if (attachments.isEmpty()) {
             return JSONObject().put("type", "user")
-                .put("message", JSONObject().put("role", "user").put("content", text)).toString()
+                .put("message", JSONObject().put("role", "user").put("content", text + hint)).toString()
         }
         val content = JSONArray()
         attachments.filter { it.isImage }.forEach { a ->
@@ -435,7 +436,7 @@ object ChatEngine {
             }
         }
         val note = "Прикреплены файлы (лежат в /root/work/uploads/): " + attachments.joinToString(", ") { it.name }
-        content.put(JSONObject().put("type", "text").put("text", text.ifBlank { "Посмотри прикреплённые файлы." } + "\n\n" + note))
+        content.put(JSONObject().put("type", "text").put("text", text.ifBlank { "Посмотри прикреплённые файлы." } + "\n\n" + note + hint))
         return JSONObject().put("type", "user")
             .put("message", JSONObject().put("role", "user").put("content", content)).toString()
     }
