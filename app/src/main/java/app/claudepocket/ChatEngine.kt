@@ -27,6 +27,9 @@ object ChatEngine {
             var decision: Int = PENDING,
         ) : Msg()
         class Info(val text: String, val error: Boolean = false) : Msg()
+
+        /** Команда, запущенная напрямую (сообщение, начинающееся с «!»), без участия Claude. */
+        class Shell(val cmd: String, var output: String = "", var state: Int = RUNNING, var exit: Int = 0) : Msg()
     }
 
     const val RUNNING = 0
@@ -76,6 +79,10 @@ object ChatEngine {
 
     fun send(ctx: Context, text: String) {
         if (busy) return
+        if (text.startsWith("!") && text.length > 1) {
+            runShell(ctx.applicationContext, text.substring(1).trim())
+            return
+        }
         add(Msg.User(text))
         setBusy(true)
         val paths = Paths(ctx.applicationContext)
@@ -85,6 +92,10 @@ object ChatEngine {
     }
 
     fun stop() {
+        shellProc?.let {
+            it.destroy()
+            return
+        }
         write(
             JSONObject()
                 .put("type", "control_request")
@@ -132,6 +143,76 @@ object ChatEngine {
         p?.destroy()
         setBusy(false)
     }
+
+    // ------------------------------------------------------------------ direct commands
+
+    @Volatile private var shellProc: Process? = null
+    private const val SHELL_CAP = 20000
+
+    /** apt без вопросов: ввод закрыт, так что подтверждение «Y/n» нельзя дать вручную. */
+    private const val APT_YES = "apt(){ command apt -y \"\$@\"; }; apt-get(){ command apt-get -y \"\$@\"; }; "
+
+    private fun runShell(ctx: Context, cmd: String) {
+        val m = Msg.Shell(cmd)
+        add(m)
+        setBusy(true)
+        val paths = Paths(ctx)
+        val hasSd = ctx.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        val p: Process
+        try {
+            val pb = ProcessBuilder(Proot.argv(paths, listOf("/bin/bash", "-lc", "mkdir -p ~/work; cd ~/work; " + APT_YES + cmd), hasSd))
+            pb.environment().apply {
+                clear()
+                putAll(Proot.hostEnv(paths, paths.noSeccomp))
+            }
+            pb.directory(paths.home)
+            pb.redirectErrorStream(true)
+            p = pb.start()
+        } catch (t: Throwable) {
+            m.output = t.message ?: t.toString()
+            m.state = FAILED
+            changed(m)
+            setBusy(false)
+            return
+        }
+        shellProc = p
+        p.outputStream.close() // ввод закрыт: программы, ждущие ответа, завершатся, а не зависнут
+        Thread({
+            val buf = StringBuilder()
+            var posted = false
+            try {
+                val r = p.inputStream.bufferedReader()
+                val chunk = CharArray(4096)
+                while (true) {
+                    val n = r.read(chunk)
+                    if (n < 0) break
+                    synchronized(buf) { buf.append(chunk, 0, n) }
+                    if (!posted) {
+                        posted = true
+                        main.postDelayed({
+                            posted = false
+                            m.output = synchronized(buf) { clip(buf) }
+                            changed(m)
+                        }, 120)
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            val code = try { p.waitFor() } catch (_: Exception) { -1 }
+            main.post {
+                m.output = synchronized(buf) { clip(buf) }
+                m.exit = code
+                m.state = if (code == 0) OK else FAILED
+                if (shellProc === p) shellProc = null
+                changed(m)
+                setBusy(false)
+            }
+        }, "shell-reader").start()
+    }
+
+    private fun clip(b: StringBuilder): String =
+        if (b.length > SHELL_CAP) "…\n" + b.substring(b.length - SHELL_CAP) else b.toString()
 
     // ------------------------------------------------------------------ process
 

@@ -107,7 +107,7 @@ class ChatController(
     }
 
     private fun welcome(): View = TextView(act).apply {
-        text = "Привет! Я Claude Code.\n\nНапиши, что нужно сделать, — например:\n• «Создай страницу-визитку и открой её»\n• «Объясни, что в этой папке»\n• «Исправь ошибку в main.py»\n\nФайлы создаются в папке ~/work."
+        text = "Привет! Я Claude Code.\n\nНапиши, что нужно сделать, — например:\n• «Создай страницу-визитку и открой её»\n• «Объясни, что в этой папке»\n• «Исправь ошибку в main.py»\n\nЧтобы выполнить команду напрямую, начни сообщение с «!», например: !ls или !apt install nano\n\nФайлы создаются в папке ~/work."
         setTextColor(muted)
         textSize = 15f
         setPadding(dp(8), dp(24), dp(8), dp(8))
@@ -119,6 +119,7 @@ class ChatController(
         is ChatEngine.Msg.Tool -> card()
         is ChatEngine.Msg.Permission -> card(accentBorder = true)
         is ChatEngine.Msg.Info -> card()
+        is ChatEngine.Msg.Shell -> card()
     }
 
     private fun bubble(user: Boolean): View {
@@ -158,12 +159,34 @@ class ChatController(
             is ChatEngine.Msg.Assistant -> (v as TextView).text = Markdown.render(m.text, 0x33808080)
             is ChatEngine.Msg.Tool -> bindTool(m, v as LinearLayout)
             is ChatEngine.Msg.Permission -> bindPermission(m, v as LinearLayout)
+            is ChatEngine.Msg.Shell -> bindShell(m, v as LinearLayout)
             is ChatEngine.Msg.Info -> {
                 val c = v as LinearLayout
                 c.removeAllViews()
                 c.addView(label(m.text, if (m.error) Color.parseColor("#FF6B6B") else muted, 14f))
             }
         }
+    }
+
+    private fun bindShell(m: ChatEngine.Msg.Shell, c: LinearLayout) {
+        c.removeAllViews()
+        val head = when (m.state) {
+            ChatEngine.OK -> "✓ "
+            ChatEngine.FAILED -> "✗ "
+            else -> "… "
+        }
+        c.addView(label(head + m.cmd, textColor, 14f, bold = true, mono = true))
+        if (m.output.isNotEmpty()) {
+            val out = TextView(act)
+            out.text = if (m.output.length > 4000) "…\n" + m.output.takeLast(4000) else m.output
+            out.setTextColor(muted)
+            out.textSize = 12f
+            out.typeface = Typeface.MONOSPACE
+            out.setTextIsSelectable(true)
+            out.setPadding(0, dp(4), 0, dp(2))
+            c.addView(out)
+        }
+        if (m.state == ChatEngine.FAILED && m.exit != 0) c.addView(label("Код завершения: ${m.exit}", Color.parseColor("#FF6B6B"), 12f))
     }
 
     private fun bindTool(m: ChatEngine.Msg.Tool, c: LinearLayout) {

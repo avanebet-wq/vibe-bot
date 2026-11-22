@@ -9,38 +9,27 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowManager
-import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
-import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import com.termux.terminal.TerminalSession
-import com.termux.view.TerminalView
-import com.termux.view.TerminalViewClient
 
-class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
+class MainActivity : Activity() {
 
     private lateinit var paths: Paths
     private val main = Handler(Looper.getMainLooper())
 
     private lateinit var installPanel: View
-    private lateinit var termPanel: View
     private lateinit var loginPanel: View
     private lateinit var chatPanel: View
     private lateinit var onboarding: Onboarding
@@ -57,19 +46,12 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     private var login: LoginFlow? = null
     private var loginUrl: String? = null
     private lateinit var btnInstall: Button
-    private lateinit var btnRestart: Button
     private lateinit var stepText: TextView
     private lateinit var hintText: TextView
     private lateinit var progress: ProgressBar
     private lateinit var logScroll: ScrollView
     private lateinit var logText: TextView
-    private lateinit var terminal: TerminalView
-    private lateinit var keysRow: LinearLayout
-    private lateinit var ctrlKey: TextView
-    private lateinit var altKey: TextView
 
-    private var ctrlOn = false
-    private var altOn = false
     private var installing = false
     private val logLines = ArrayDeque<String>()
     private var logDirty = false
@@ -82,7 +64,6 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         setContentView(R.layout.activity_main)
 
         installPanel = findViewById(R.id.install_panel)
-        termPanel = findViewById(R.id.term_panel)
         loginPanel = findViewById(R.id.login_panel)
         chatPanel = findViewById(R.id.chat_panel)
         onboarding = Onboarding(this, findViewById(R.id.onb_panel)) { route() }
@@ -95,17 +76,13 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         loginStatus = findViewById(R.id.login_status)
         detailsToggle = findViewById(R.id.details_toggle)
         btnInstall = findViewById(R.id.btn_install)
-        btnRestart = findViewById(R.id.btn_restart)
         stepText = findViewById(R.id.step_text)
         hintText = findViewById(R.id.hint_text)
         progress = findViewById(R.id.progress)
         logScroll = findViewById(R.id.log_scroll)
         logText = findViewById(R.id.log_text)
-        terminal = findViewById(R.id.terminal)
-        keysRow = findViewById(R.id.keys_row)
 
         btnInstall.background = rounded(getColor(R.color.accent), dp(12))
-        btnRestart.background = rounded(getColor(R.color.accent), dp(10))
         btnLoginOpen.background = rounded(getColor(R.color.accent), dp(12))
         btnLoginSubmit.background = rounded(getColor(R.color.accent), dp(12))
         btnInstall.setOnClickListener { startInstall() }
@@ -123,26 +100,17 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
             login?.cancel()
             showChat()
         }
-        btnRestart.setOnClickListener { newSession() }
-
-        terminal.setTerminalViewClient(this)
-        buildKeys()
-
-        SessionHolder.ui = this
         if (paths.onboardingDone) route() else onboarding.show()
     }
 
     override fun onResume() {
         super.onResume()
-        SessionHolder.ui = this
         if (onboarding.isVisible) {
             onboarding.refresh()
             return
         }
         if (!installing && paths.installed.exists()) {
-            if (termPanel.visibility == View.VISIBLE) {
-                if (SessionHolder.session == null) btnRestart.visibility = View.VISIBLE
-            } else if (chatPanel.visibility == View.VISIBLE) {
+            if (chatPanel.visibility == View.VISIBLE) {
                 chat.attach()
             } else if (loginPanel.visibility != View.VISIBLE) {
                 route()
@@ -154,11 +122,6 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         ChatEngine.flush()
         chat.detach()
         super.onPause()
-    }
-
-    override fun onDestroy() {
-        if (SessionHolder.ui === this) SessionHolder.ui = null
-        super.onDestroy()
     }
 
     // ---------------------------------------------------------------- screens
@@ -173,7 +136,6 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
     private fun showLogin() {
         installPanel.visibility = View.GONE
-        termPanel.visibility = View.GONE
         chatPanel.visibility = View.GONE
         loginPanel.visibility = View.VISIBLE
         startLogin()
@@ -285,7 +247,6 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     private fun showInstall() {
         installPanel.visibility = View.VISIBLE
         loginPanel.visibility = View.GONE
-        termPanel.visibility = View.GONE
         chatPanel.visibility = View.GONE
     }
 
@@ -297,27 +258,10 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         if (askStorageOnce()) return
         installPanel.visibility = View.GONE
         loginPanel.visibility = View.GONE
-        termPanel.visibility = View.GONE
         chatPanel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Claude готов к работе")
         ChatEngine.init(this)
         chat.attach()
-    }
-
-    private fun showTerminal() {
-        if (askStorageOnce()) return
-        chat.detach()
-        chatPanel.visibility = View.GONE
-        installPanel.visibility = View.GONE
-        loginPanel.visibility = View.GONE
-        termPanel.visibility = View.VISIBLE
-        val s = SessionHolder.session ?: createSession()
-        terminal.setTextSize(sp(paths.fontSizeSp))
-        terminal.attachSession(s)
-        btnRestart.visibility = View.GONE
-        KeepAliveService.start(this, "Сессия работает")
-        terminal.requestFocus()
-        main.postDelayed({ showKeyboard() }, 300)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -327,11 +271,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
             return
         }
         if (requestCode == REQ_STORAGE) {
-            if (paths.installed.exists() && paths.loggedIn.exists()) {
-                if (termPanel.visibility == View.VISIBLE) showTerminal() else showChat()
-            }
-            if (hasStorage() && SessionHolder.session != null) {
-                Toast.makeText(this, "Доступ выдан. Новая сессия (меню ⋮) подключит /sdcard", Toast.LENGTH_LONG).show()
+            if (hasStorage()) {
+                Toast.makeText(this, "Доступ выдан. Новый чат (меню ⋮) подключит /sdcard", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -409,139 +350,18 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         }
     }
 
-    // ---------------------------------------------------------------- session
-
-    private fun createSession(): TerminalSession {
-        Proot.ensureFakeProc(paths)
-        val argv = Proot.argv(paths, listOf("/bin/bash", "/root/.launch.sh"), hasStorage())
-        val s = TerminalSession(
-            argv[0], paths.home.path, argv.toTypedArray(),
-            Proot.hostEnvArray(paths, paths.noSeccomp), 3000, SessionHolder.client,
-        )
-        SessionHolder.session = s
-        return s
-    }
-
-    private fun newSession() {
-        val old = SessionHolder.session
-        SessionHolder.session = null
-        old?.finishIfRunning()
-        val s = createSession()
-        terminal.attachSession(s)
-        btnRestart.visibility = View.GONE
-        KeepAliveService.start(this, "Сессия работает")
-        terminal.requestFocus()
-    }
-
-    override fun onScreenChanged() {
-        terminal.onScreenUpdated()
-    }
-
-    override fun onSessionFinished(session: TerminalSession) {
-        if (session !== SessionHolder.session) return // уже заменена новой
-        SessionHolder.session = null
-        KeepAliveService.stop(this)
-        btnRestart.visibility = View.VISIBLE
-    }
-
-    override fun copyToClipboard(text: String) {
+    private fun copyToClipboard(text: String) {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("terminal", text))
+        cm.setPrimaryClip(ClipData.newPlainText("claude", text))
     }
 
-    override fun pasteFromClipboard(session: TerminalSession) {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = cm.primaryClip ?: return
-        if (clip.itemCount == 0) return
-        val text = clip.getItemAt(0).coerceToText(this)?.toString()
-        if (!text.isNullOrEmpty()) session.emulator?.paste(text)
-    }
-
-    // ---------------------------------------------------------------- extra keys & menu
-
-    private fun buildKeys() {
-        keysRow.removeAllViews()
-        addKey("ESC") { send("\u001b") }
-        addKey("TAB") { send("\t") }
-        ctrlKey = addKey("CTRL") { ctrlOn = !ctrlOn; refreshMods() }
-        altKey = addKey("ALT") { altOn = !altOn; refreshMods() }
-        addKey("^C") { send("\u0003") }
-        addKey("←") { arrow('D') }
-        addKey("↓") { arrow('B') }
-        addKey("↑") { arrow('A') }
-        addKey("→") { arrow('C') }
-        addKey("/") { send("/") }
-        addKey("-") { send("-") }
-        addKey("|") { send("|") }
-        addKey("~") { send("~") }
-        val menu = addKey("⋮") { showMenu(it) }
-        menu.minWidth = dp(52)
-        refreshMods()
-    }
-
-    private fun addKey(label: String, onClick: (View) -> Unit): TextView {
-        val t = TextView(this)
-        t.text = label
-        t.setTextColor(Color.WHITE)
-        t.textSize = 14f
-        t.typeface = Typeface.DEFAULT_BOLD
-        t.gravity = Gravity.CENTER
-        t.minWidth = dp(44)
-        t.setPadding(dp(10), 0, dp(10), 0)
-        t.background = rounded(getColor(R.color.key), dp(6))
-        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        lp.setMargins(dp(2), 0, dp(2), 0)
-        t.layoutParams = lp
-        t.setOnClickListener { onClick(it) }
-        keysRow.addView(t)
-        return t
-    }
-
-    private fun refreshMods() {
-        ctrlKey.background = rounded(getColor(if (ctrlOn) R.color.accent else R.color.key), dp(6))
-        altKey.background = rounded(getColor(if (altOn) R.color.accent else R.color.key), dp(6))
-    }
-
-    private fun send(text: String) {
-        SessionHolder.session?.write(text)
-    }
-
-    private fun arrow(c: Char) {
-        val app = SessionHolder.session?.emulator?.isCursorKeysApplicationMode == true
-        send((if (app) "\u001bO" else "\u001b[") + c)
-    }
-
-    private fun showMenu(anchor: View) {
-        val m = PopupMenu(this, anchor)
-        m.menu.add(0, 1, 0, "Вставить из буфера")
-        m.menu.add(0, 2, 1, "Открыть ссылку из терминала")
-        m.menu.add(0, 3, 2, "Шрифт крупнее")
-        m.menu.add(0, 4, 3, "Шрифт мельче")
-        m.menu.add(0, 5, 4, "Доступ к памяти телефона")
-        m.menu.add(0, 6, 5, "Новая сессия")
-        m.menu.add(0, 7, 6, "Переустановить всё")
-        m.menu.add(0, 8, 7, "Вернуться в чат")
-        m.setOnMenuItemClickListener {
-            when (it.itemId) {
-                1 -> SessionHolder.session?.let { s -> pasteFromClipboard(s) }
-                2 -> openLinkDialog()
-                3 -> changeFont(+1)
-                4 -> changeFont(-1)
-                5 -> requestStorage()
-                6 -> newSession()
-                7 -> confirmReinstall()
-                8 -> showChat()
-            }
-            true
-        }
-        m.show()
-    }
+    // ---------------------------------------------------------------- menu
 
     private fun showChatMenu(anchor: View) {
         val m = PopupMenu(this, anchor)
         m.menu.add(0, 1, 0, "Новый чат")
         m.menu.add(0, 2, 1, "Разрешения: " + if (paths.permissionMode == "acceptEdits") "править без вопросов" else "спрашивать")
-        m.menu.add(0, 3, 2, "Терминал")
+        m.menu.add(0, 3, 2, "Доступ к памяти телефона")
         m.menu.add(0, 4, 3, "Переустановить всё")
         m.menu.add(0, 5, 4, "Войти в другой аккаунт")
         m.setOnMenuItemClickListener {
@@ -549,7 +369,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
                 5 -> { paths.loggedIn.delete(); ChatEngine.shutdown(); showLogin() }
                 1 -> ChatEngine.newChat(this)
                 2 -> choosePermissionMode()
-                3 -> showTerminal()
+                3 -> requestStorage()
                 4 -> confirmReinstall()
             }
             true
@@ -585,35 +405,11 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         }
     }
 
-    private fun changeFont(delta: Int) {
-        paths.fontSizeSp = (paths.fontSizeSp + delta).coerceIn(8, 28)
-        terminal.setTextSize(sp(paths.fontSizeSp))
-    }
-
-    private fun openLinkDialog() {
-        val text = SessionHolder.session?.emulator?.screen?.transcriptText.orEmpty()
-        val url = URL_RE.findAll(text).map { it.value.trimEnd('.', ',', ')', ']') }.lastOrNull()
-        if (url == null) {
-            Toast.makeText(this, "В терминале нет ссылок", Toast.LENGTH_SHORT).show()
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Ссылка из терминала")
-            .setMessage(url)
-            .setPositiveButton("Открыть") { _, _ -> openUrl(url) }
-            .setNeutralButton("Копировать") { _, _ -> copyToClipboard(url) }
-            .setNegativeButton("Отмена", null)
-            .show()
-    }
-
     private fun confirmReinstall() {
         AlertDialog.Builder(this)
             .setTitle("Переустановить всё?")
             .setMessage("Система Ubuntu будет удалена и установлена заново. Вход в аккаунт и папка проектов ~/work сохранятся; остальные файлы внутри системы и установленные программы пропадут.")
             .setPositiveButton("Удалить и установить заново") { _, _ ->
-                val old = SessionHolder.session
-                SessionHolder.session = null
-                old?.finishIfRunning()
                 ChatEngine.shutdown()
                 KeepAliveService.stop(this)
                 Toast.makeText(this, "Удаляю…", Toast.LENGTH_SHORT).show()
@@ -637,56 +433,6 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
             .show()
     }
 
-    private fun showKeyboard() {
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.showSoftInput(terminal, InputMethodManager.SHOW_IMPLICIT)
-    }
-
-    // ---------------------------------------------------------------- TerminalViewClient
-
-    override fun onScale(scale: Float): Float {
-        if (scale < 0.9f || scale > 1.1f) {
-            changeFont(if (scale > 1f) +1 else -1)
-            return 1.0f
-        }
-        return scale
-    }
-
-    override fun onSingleTapUp(e: MotionEvent?) = showKeyboard()
-    override fun shouldBackButtonBeMappedToEscape() = false
-    override fun shouldEnforceCharBasedInput() = true
-    override fun shouldUseCtrlSpaceWorkaround() = false
-    override fun isTerminalViewSelected() = true
-    override fun copyModeChanged(copyMode: Boolean) {}
-    override fun onKeyDown(keyCode: Int, e: KeyEvent?, session: TerminalSession?) = false
-    override fun onKeyUp(keyCode: Int, e: KeyEvent?) = false
-    override fun onLongPress(event: MotionEvent?) = false
-    override fun readControlKey() = ctrlOn
-    override fun readAltKey() = altOn
-    override fun readShiftKey() = false
-    override fun readFnKey() = false
-
-    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession?): Boolean {
-        // залипающие CTRL/ALT действуют на одну следующую клавишу
-        if (ctrlOn || altOn) {
-            ctrlOn = false
-            altOn = false
-            main.post { refreshMods() }
-        }
-        return false
-    }
-
-    override fun onEmulatorSet() {}
-    override fun logError(tag: String?, message: String?) { android.util.Log.e(tag, message ?: "") }
-    override fun logWarn(tag: String?, message: String?) { android.util.Log.w(tag, message ?: "") }
-    override fun logInfo(tag: String?, message: String?) { android.util.Log.i(tag, message ?: "") }
-    override fun logDebug(tag: String?, message: String?) { android.util.Log.d(tag, message ?: "") }
-    override fun logVerbose(tag: String?, message: String?) { android.util.Log.v(tag, message ?: "") }
-    override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {
-        android.util.Log.e(tag, message ?: "", e)
-    }
-    override fun logStackTrace(tag: String?, e: Exception?) { android.util.Log.e(tag, "", e) }
-
     // ---------------------------------------------------------------- helpers
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -703,6 +449,5 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         private const val CLAUDE_APP = "com.anthropic.claude"
         private val CODE_RE = Regex("^[A-Za-z0-9_\\-]{10,}#[A-Za-z0-9_\\-]{10,}$")
         private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
-        private val URL_RE = Regex("https?://[^\\s\"'<>│┃╭╮╰╯─]+")
     }
 }

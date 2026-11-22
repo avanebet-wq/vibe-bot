@@ -13,8 +13,8 @@ android {
         // targetSdk 28 on purpose (same as Termux): apps targeting 29+ are not allowed to
         // execute files from their own data directory, which a Linux userland needs.
         targetSdk = 28
-        versionCode = 7
-        versionName = "1.6"
+        versionCode = 8
+        versionName = "1.7"
         ndk { abiFilters += "arm64-v8a" }
     }
 
@@ -59,6 +59,4 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("com.github.termux.termux-app:terminal-view:v0.118.0")
-    implementation("com.github.termux.termux-app:terminal-emulator:v0.118.0")
 }
