@@ -66,6 +66,15 @@ class ChatController(
     private val bgColor = act.getColor(R.color.bg)
 
     init {
+        // поле ввода выросло или поднялась клавиатура: область чата сжалась — держим конец переписки над полем
+        scroll.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val oldH = oldBottom - oldTop
+            val newH = bottom - top
+            if (oldH > 0 && newH < oldH) {
+                val child = scroll.getChildAt(0)
+                if (child != null && child.bottom - (scroll.scrollY + oldH) < dp(120)) scrollToEnd()
+            }
+        }
         root.findViewById<View>(R.id.glass_btn).setOnClickListener { onMenu(it) }
         fieldIcon.setOnClickListener { onModel() }
 
