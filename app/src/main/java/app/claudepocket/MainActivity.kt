@@ -26,6 +26,7 @@ import android.widget.Toast
 
 class MainActivity : Activity() {
 
+
     private lateinit var paths: Paths
     private val main = Handler(Looper.getMainLooper())
 
@@ -72,7 +73,8 @@ class MainActivity : Activity() {
         val real = (dm.xdpi + dm.ydpi) / 2f
         val cfg = android.content.res.Configuration(base.resources.configuration)
         cfg.fontScale = 1f
-        if (real in 200f..700f) cfg.densityDpi = real.toInt()
+        val base0 = if (real in 200f..700f) real else cfg.densityDpi.toFloat()
+        cfg.densityDpi = (base0 * COMPACT).toInt() // компактнее: всё (текст, кнопки, отступы) на 12% мельче
         super.attachBaseContext(base.createConfigurationContext(cfg))
     }
 
@@ -740,6 +742,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        const val COMPACT = 0.88f
         private const val REQ_STORAGE = 1
         private const val REQ_PICK_PHOTO = 21
         private const val REQ_AVATAR = 24
