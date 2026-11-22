@@ -56,6 +56,10 @@ object ChatEngine {
     var busy = false
         private set
 
+    /** Когда начался текущий ответ (для счётчика «Думает… N с»). */
+    var busySince = 0L
+        private set
+
     private val main = Handler(Looper.getMainLooper())
     private val writer = Executors.newSingleThreadExecutor()
     private var proc: Process? = null
@@ -466,6 +470,7 @@ object ChatEngine {
     private fun setBusy(b: Boolean) {
         if (busy == b) return
         busy = b
+        if (b) busySince = android.os.SystemClock.elapsedRealtime()
         listener?.busyChanged(b)
     }
 }

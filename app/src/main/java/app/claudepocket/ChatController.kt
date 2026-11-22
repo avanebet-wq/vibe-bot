@@ -2,6 +2,8 @@ package app.claudepocket
 
 import android.app.Activity
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.method.LinkMovementMethod
@@ -30,6 +32,14 @@ class ChatController(
     private val scroll: ScrollView = root.findViewById(R.id.chat_scroll)
     private val list: LinearLayout = root.findViewById(R.id.chat_list)
     private val status: TextView = root.findViewById(R.id.chat_status)
+    private val statusRow: View = root.findViewById(R.id.chat_status_row)
+    private val ticker = Handler(Looper.getMainLooper())
+    private val tick = object : Runnable {
+        override fun run() {
+            updateStatusText()
+            ticker.postDelayed(this, 500)
+        }
+    }
     private val input: EditText = root.findViewById(R.id.chat_input)
     private val send: Button = root.findViewById(R.id.chat_send)
     private val views = HashMap<ChatEngine.Msg, View>()
@@ -106,6 +116,29 @@ class ChatController(
 
     fun detach() {
         if (ChatEngine.listener === this) ChatEngine.listener = null
+        ticker.removeCallbacks(tick)
+    }
+
+    /** Показывает «кольцо + Думает… N с» и запускает счётчик, пока идёт ответ. */
+    private fun setThinking(on: Boolean) {
+        ticker.removeCallbacks(tick)
+        statusRow.visibility = if (on) View.VISIBLE else View.GONE
+        if (on) {
+            updateStatusText()
+            ticker.postDelayed(tick, 500)
+        }
+    }
+
+    private fun updateStatusText() {
+        val sec = ((android.os.SystemClock.elapsedRealtime() - ChatEngine.busySince) / 1000).coerceAtLeast(0)
+        val time = if (sec < 60) "$sec с" else "${sec / 60} мин ${"%02d".format(sec % 60)} с"
+        val last = ChatEngine.messages.lastOrNull()
+        val what = when {
+            last is ChatEngine.Msg.Shell && last.state == ChatEngine.RUNNING -> "Выполняется"
+            last is ChatEngine.Msg.Permission && last.decision == ChatEngine.PENDING -> "Ждёт твоего ответа"
+            else -> "Думает"
+        }
+        status.text = "$what… $time"
     }
 
     private fun render() {
@@ -113,7 +146,7 @@ class ChatController(
         views.clear()
         if (ChatEngine.messages.isEmpty()) list.addView(welcome())
         ChatEngine.messages.forEach { addView(it, scrollDown = false) }
-        status.visibility = if (ChatEngine.busy) View.VISIBLE else View.GONE
+        setThinking(ChatEngine.busy)
         refreshSend()
         scrollToEnd()
     }
@@ -133,7 +166,7 @@ class ChatController(
     }
 
     override fun busyChanged(busy: Boolean) {
-        status.visibility = if (busy) View.VISIBLE else View.GONE
+        setThinking(busy)
         refreshSend()
     }
 
