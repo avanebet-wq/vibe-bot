@@ -56,6 +56,5 @@ GitHub Actions собирает APK при каждом push (`.github/workflows
 ## Сторонние материалы
 
 - Шрифт **Inter** (SIL Open Font License 1.1) — близкая замена SF Pro, поддерживает кириллицу.
-- Шейдер преломления стекла `res/raw/liquidglass_effect.agsl` взят из проекта [AndroidLiquidGlassView](https://github.com/QmDeve/AndroidLiquidGlassView) (лицензия MIT, © QmDeve). Работает на Android 13+, на старых версиях рисуется плоское стекло без преломления.
-
-- Рецепт стекла (линза, подсветка по краю, упругая реакция на касание) сверен с проектом [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache-2.0).
+- Стекло «Liquid Glass» на экране чата рисует библиотека [Backdrop](https://github.com/Kyant0/AndroidLiquidGlass) (Kyant, Apache-2.0). Рецепт кнопки повторяет её пример `LiquidButton`. Работает на Android 13+, на старых версиях стекло без преломления.
+- Экран чата написан на Jetpack Compose, остальные экраны пока на обычных View.

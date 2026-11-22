@@ -24,7 +24,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
-class MainActivity : Activity() {
+class MainActivity : androidx.activity.ComponentActivity() {
 
 
     private lateinit var paths: Paths
@@ -322,7 +322,7 @@ class MainActivity : Activity() {
         chat.attach()
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (onboarding.isVisible) {
             onboarding.refresh()

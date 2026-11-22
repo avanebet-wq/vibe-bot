@@ -1,11 +1,12 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "app.claudepocket"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "app.claudepocket"
@@ -13,8 +14,8 @@ android {
         // targetSdk 28 on purpose (same as Termux): apps targeting 29+ are not allowed to
         // execute files from their own data directory, which a Linux userland needs.
         targetSdk = 28
-        versionCode = 34
-        versionName = "1.33"
+        versionCode = 35
+        versionName = "1.34"
         ndk { abiFilters += "arm64-v8a" }
     }
 
@@ -49,7 +50,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
 
     lint {
         abortOnError = false
@@ -57,6 +57,14 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-compose:1.11.0")
+    implementation("androidx.compose.ui:ui:1.10.3")
+    implementation("androidx.compose.foundation:foundation:1.10.3")
+    implementation("io.github.kyant0:backdrop:1.0.6")
 }
