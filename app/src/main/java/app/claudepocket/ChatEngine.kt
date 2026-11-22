@@ -60,6 +60,18 @@ object ChatEngine {
 
     // ------------------------------------------------------------------ public API
 
+    private var loaded = false
+
+    /** Загружает сохранённую переписку (один раз за запуск процесса). */
+    fun init(ctx: Context) {
+        if (loaded) return
+        loaded = true
+        messages.addAll(ChatStore.load(Paths(ctx.applicationContext).chatFile))
+    }
+
+    /** Немедленно записывает переписку на диск (при сворачивании приложения). */
+    fun flush() = ChatStore.saveNow(messages)
+
     fun isAlive(): Boolean = proc?.isAlive == true
 
     fun send(ctx: Context, text: String) {
@@ -108,6 +120,7 @@ object ChatEngine {
         messages.clear()
         current = null
         setBusy(false)
+        ChatStore.saveNow(messages)
         listener?.cleared()
     }
 
@@ -168,16 +181,9 @@ object ChatEngine {
         if (proc !== p) return // остановлен нами
         proc = null
         stdin = null
-        val retry = pending
-        if (!gotOutput && resumed && retry != null) {
-            // прошлый разговор не нашёлся — начинаем с чистого листа и повторяем сообщение
-            paths.sessionId = null
-            start(ctx, paths)
-            write(userLine(retry))
-            return
-        }
+        val t = synchronized(tail) { tail.joinToString("\n") }
+        if (t.contains(NO_CONVERSATION) && retryFresh(ctx, paths)) return
         if (busy) {
-            val t = synchronized(tail) { tail.joinToString("\n") }
             add(Msg.Info(if (t.isNotBlank()) "Claude остановился:\n$t" else "Соединение с Claude прервано. Отправь сообщение ещё раз.", true))
             setBusy(false)
         }
@@ -254,11 +260,30 @@ object ChatEngine {
                 pending = null
                 if (o.optBoolean("is_error")) {
                     val text = o.optString("result").ifBlank { "Не удалось выполнить запрос" }
+                    val all = text + (o.optJSONArray("errors")?.toString() ?: "")
+                    // сбрасываем разговор ТОЛЬКО если Claude прямо сказал, что такого разговора нет
+                    if (all.contains(NO_CONVERSATION) && retryFresh(ctx, paths)) return
                     add(Msg.Info(text, true))
                 }
                 setBusy(false)
             }
         }
+    }
+
+    private const val NO_CONVERSATION = "No conversation found"
+
+    /** Разговор исчез с диска: начинаем новый и повторяем последнее сообщение. */
+    private fun retryFresh(ctx: Context, paths: Paths): Boolean {
+        val retry = pending ?: return false
+        if (!resumed) return false
+        paths.sessionId = null
+        val old = proc
+        proc = null
+        stdin = null
+        old?.destroy()
+        start(ctx, paths)
+        write(userLine(retry))
+        return true
     }
 
     private fun appendText(delta: String) {
@@ -292,10 +317,12 @@ object ChatEngine {
 
     private fun add(m: Msg) {
         messages.add(m)
+        ChatStore.scheduleSave(messages)
         listener?.added(m)
     }
 
     private fun changed(m: Msg) {
+        ChatStore.scheduleSave(messages)
         listener?.changed(m)
     }
 

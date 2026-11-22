@@ -140,6 +140,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     }
 
     override fun onPause() {
+        ChatEngine.flush()
         chat.detach()
         super.onPause()
     }
@@ -263,6 +264,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         termPanel.visibility = View.GONE
         chatPanel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Claude готов к работе")
+        ChatEngine.init(this)
         chat.attach()
     }
 
@@ -501,8 +503,10 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         m.menu.add(0, 2, 1, "Разрешения: " + if (paths.permissionMode == "acceptEdits") "править без вопросов" else "спрашивать")
         m.menu.add(0, 3, 2, "Терминал")
         m.menu.add(0, 4, 3, "Переустановить всё")
+        m.menu.add(0, 5, 4, "Войти в другой аккаунт")
         m.setOnMenuItemClickListener {
             when (it.itemId) {
+                5 -> { paths.loggedIn.delete(); ChatEngine.shutdown(); showLogin() }
                 1 -> ChatEngine.newChat(this)
                 2 -> choosePermissionMode()
                 3 -> showTerminal()
@@ -565,14 +569,12 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     private fun confirmReinstall() {
         AlertDialog.Builder(this)
             .setTitle("Переустановить всё?")
-            .setMessage("Система Ubuntu со всеми файлами внутри (включая проекты в ~/work) будет удалена, затем установка пройдёт заново.")
+            .setMessage("Система Ubuntu будет удалена и установлена заново. Вход в аккаунт и папка проектов ~/work сохранятся; остальные файлы внутри системы и установленные программы пропадут.")
             .setPositiveButton("Удалить и установить заново") { _, _ ->
                 val old = SessionHolder.session
                 SessionHolder.session = null
                 old?.finishIfRunning()
                 ChatEngine.shutdown()
-                ChatEngine.messages.clear()
-                paths.sessionId = null
                 KeepAliveService.stop(this)
                 Toast.makeText(this, "Удаляю…", Toast.LENGTH_SHORT).show()
                 Thread {

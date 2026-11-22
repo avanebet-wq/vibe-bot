@@ -19,6 +19,11 @@ class Paths(ctx: Context) {
     /** Установка полностью завершена (Claude Code работает). */
     val installed = File(files, "installed.ok")
 
+    val chatFile = File(files, "chat.json")
+
+    /** Сюда на время переустановки откладываются вход (.claude) и проекты (work). */
+    val keep = File(files, "keep")
+
     /** Выполнен вход в аккаунт. */
     val loggedIn = File(files, "loggedin.ok")
 
@@ -52,7 +57,7 @@ class Paths(ctx: Context) {
     var sessionId: String?
         get() = prefs.getString("session_id", null)
         set(value) {
-            prefs.edit().putString("session_id", value).apply()
+            prefs.edit().putString("session_id", value).commit()
         }
 
     fun ensureDirs() {

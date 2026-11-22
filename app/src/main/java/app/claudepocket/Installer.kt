@@ -159,6 +159,7 @@ class Installer(private val ctx: Context, private val ui: Ui) {
     private fun configureRootfs() {
         ui.step("Настраиваю систему…", -1)
         val r = p.rootfs
+        restoreKept()
         File(r, "tmp").mkdirs()
         File(r, "root/work").mkdirs()
         File(r, "sdcard").mkdirs()
@@ -202,6 +203,17 @@ class Installer(private val ctx: Context, private val ui: Ui) {
             )
         }
         Proot.ensureFakeProc(p)
+    }
+
+    /** Возвращает на место вход и проекты, отложенные перед переустановкой. */
+    private fun restoreKept() {
+        if (!p.keep.exists()) return
+        p.keep.listFiles()?.forEach { src ->
+            val dst = File(p.rootfs, "root/${src.name}")
+            execLines(ProcessBuilder("/system/bin/rm", "-rf", dst.path)) { }
+            execLines(ProcessBuilder("/system/bin/mv", src.path, dst.path)) { }
+        }
+        execLines(ProcessBuilder("/system/bin/rm", "-rf", p.keep.path)) { }
     }
 
     private fun writeAsset(name: String, dest: File) {
@@ -258,13 +270,23 @@ class Installer(private val ctx: Context, private val ui: Ui) {
 
         /** Стирает установленную систему (для «Переустановить»). Не следует по символьным ссылкам. */
         fun wipeRootfs(p: Paths) {
+            // вход в аккаунт (.claude), его настройки и проекты переживают переустановку
+            val keptLogin = File(p.rootfs, "root/.claude").exists()
             if (p.rootfs.exists()) {
+                p.keep.mkdirs()
+                for (n in listOf(".claude", ".claude.json", "work")) {
+                    val src = File(p.rootfs, "root/$n")
+                    if (!src.exists()) continue
+                    val dst = File(p.keep, n)
+                    execLines(ProcessBuilder("/system/bin/rm", "-rf", dst.path)) { }
+                    execLines(ProcessBuilder("/system/bin/mv", src.path, dst.path)) { }
+                }
                 execLines(ProcessBuilder("/system/bin/chmod", "-R", "u+rwX", p.rootfs.path)) { }
                 execLines(ProcessBuilder("/system/bin/rm", "-rf", p.rootfs.path)) { }
             }
             p.rootfsReady.delete()
             p.installed.delete()
-            p.loggedIn.delete()
+            if (!keptLogin && !File(p.keep, ".claude").exists()) p.loggedIn.delete()
         }
 
         private fun execLines(pb: ProcessBuilder, onLine: (String) -> Unit): Int {
