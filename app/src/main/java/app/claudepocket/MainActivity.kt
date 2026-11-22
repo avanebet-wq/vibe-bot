@@ -48,6 +48,9 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     private lateinit var btnLoginOpen: Button
     private lateinit var btnLoginSubmit: Button
     private lateinit var btnLoginCopy: TextView
+    private lateinit var btnLoginBrowser: TextView
+    private var loginOpened = false
+    private var lastClip: String? = null
     private lateinit var loginCode: EditText
     private lateinit var loginStatus: TextView
     private lateinit var detailsToggle: TextView
@@ -87,6 +90,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
         btnLoginCopy = findViewById(R.id.btn_login_copy)
+        btnLoginBrowser = findViewById(R.id.btn_login_browser)
         loginCode = findViewById(R.id.login_code)
         loginStatus = findViewById(R.id.login_status)
         detailsToggle = findViewById(R.id.details_toggle)
@@ -110,7 +114,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
             logScroll.visibility = if (show) View.VISIBLE else View.GONE
             detailsToggle.text = if (show) "Скрыть подробности" else "Показать подробности"
         }
-        btnLoginOpen.setOnClickListener { loginUrl?.let { openUrl(it) } }
+        btnLoginOpen.setOnClickListener { loginUrl?.let { openLogin(it, preferClaudeApp = true) } }
+        btnLoginBrowser.setOnClickListener { loginUrl?.let { openLogin(it, preferClaudeApp = false) } }
         btnLoginCopy.setOnClickListener { loginUrl?.let { copyToClipboard(it); toast("Ссылка скопирована") } }
         btnLoginSubmit.setOnClickListener { submitCode() }
         findViewById<View>(R.id.login_skip).setOnClickListener {
@@ -179,6 +184,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         btnLoginOpen.isEnabled = false
         btnLoginOpen.text = "Готовлю ссылку…"
         btnLoginCopy.visibility = View.GONE
+        btnLoginBrowser.visibility = View.GONE
+        loginOpened = false
         btnLoginSubmit.isEnabled = true
         loginStatus.setTextColor(getColor(R.color.muted))
         loginStatus.text = ""
@@ -191,6 +198,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
                     btnLoginOpen.isEnabled = true
                     btnLoginOpen.text = "Открыть страницу входа"
                     btnLoginCopy.visibility = View.VISIBLE
+                    btnLoginBrowser.visibility = View.VISIBLE
                 }
             }
 
@@ -232,6 +240,36 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         startLogin()
         loginStatus.setTextColor(Color.parseColor("#FF6B6B"))
         loginStatus.text = error
+    }
+
+    /** Открывает страницу входа: сначала в приложении Claude (если оно умеет), иначе в браузере. */
+    private fun openLogin(url: String, preferClaudeApp: Boolean) {
+        loginOpened = true
+        if (preferClaudeApp) {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(CLAUDE_APP)
+            if (intent.resolveActivity(packageManager) != null) {
+                try {
+                    startActivity(intent)
+                    return
+                } catch (_: Exception) {
+                }
+            }
+        }
+        openUrl(url)
+    }
+
+    /** Если после входа в буфере лежит код входа — подставляем и отправляем его сами. */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus || !loginOpened || loginPanel.visibility != View.VISIBLE) return
+        if (!btnLoginSubmit.isEnabled) return // код уже отправлен, ждём результата
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
+        if (clip != null && clip != lastClip && CODE_RE.matches(clip)) {
+            lastClip = clip // один и тот же код дважды не отправляем
+            loginCode.setText(clip)
+            submitCode()
+        }
     }
 
     private fun openUrl(url: String) {
@@ -662,6 +700,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
     companion object {
         private const val REQ_STORAGE = 1
+        private const val CLAUDE_APP = "com.anthropic.claude"
+        private val CODE_RE = Regex("^[A-Za-z0-9_\\-]{10,}#[A-Za-z0-9_\\-]{10,}$")
         private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
         private val URL_RE = Regex("https?://[^\\s\"'<>│┃╭╮╰╯─]+")
     }

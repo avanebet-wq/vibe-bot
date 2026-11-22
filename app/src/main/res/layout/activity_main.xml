@@ -346,6 +346,17 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/btn_login_browser"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:padding="6dp"
+            android:text="Открыть в браузере"
+            android:textColor="@color/accent"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/btn_login_copy"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -360,7 +371,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:text="2. Вставь код сюда"
+            android:text="2. Скопируй код — я вставлю его сам (или вставь вручную)"
             android:textColor="@color/text"
             android:textSize="16sp" />
 
