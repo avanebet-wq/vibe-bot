@@ -251,6 +251,7 @@ object ChatEngine {
         resumed = resumeId != null
         gotOutput = false
         tail.clear()
+        Files.writeMemory(ctx) // постоянные правила среды (~/.claude/CLAUDE.md)
         // подсказка Claude про приложение и отправку файлов (читается из файла, чтобы не экранировать кавычки)
         try { java.io.File(paths.rootfs, "root/.pocket-prompt.txt").writeText(Files.SYSTEM_PROMPT) } catch (_: Exception) { }
         val args = StringBuilder(
