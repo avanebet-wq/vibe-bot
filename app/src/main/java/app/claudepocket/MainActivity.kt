@@ -62,6 +62,20 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- lifecycle
 
+    /**
+     * Размеры не зависят от настройки «Размер экрана»/шрифта и от заявленного dpi: берём реальную
+     * плотность пикселей панели (xdpi/ydpi), поэтому кнопки и текст имеют одинаковый физический
+     * размер на любой диагонали. Нереалистичное значение игнорируем и оставляем системное.
+     */
+    override fun attachBaseContext(base: android.content.Context) {
+        val dm = base.resources.displayMetrics
+        val real = (dm.xdpi + dm.ydpi) / 2f
+        val cfg = android.content.res.Configuration(base.resources.configuration)
+        cfg.fontScale = 1f
+        if (real in 200f..700f) cfg.densityDpi = real.toInt()
+        super.attachBaseContext(base.createConfigurationContext(cfg))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         paths = Paths(this)
