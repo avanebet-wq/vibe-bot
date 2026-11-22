@@ -254,7 +254,7 @@ class GlassButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
     }
 
     override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
-        glass.touch(e, 0.08f)
+        glass.touch(e, 0.08f, true)
         return super.onTouchEvent(e)
     }
 

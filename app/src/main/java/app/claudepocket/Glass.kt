@@ -102,7 +102,7 @@ class GlassSurface(private val host: View) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val sheen = Paint(Paint.ANTI_ALIAS_FLAG)
     private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.3f * dp }
+    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.1f * dp }
     private val hair = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 0.6f * dp }
     private val inset = RectF()
     private val touchP = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -112,10 +112,17 @@ class GlassSurface(private val host: View) {
     private var anim: ValueAnimator? = null
 
     /** Палец на стекле: оно «вздувается» с пружиной, под пальцем загорается свет. */
-    fun touch(e: MotionEvent, grow: Float) {
+    private var sx = 0f
+    private var sy = 0f
+    private var dragX = 0f
+    private var dragY = 0f
+    private var drag = false
+
+    fun touch(e: MotionEvent, grow: Float, rubber: Boolean = false) {
+        drag = rubber
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { tx = e.x; ty = e.y; animate(1f, 260L, grow, true) }
-            MotionEvent.ACTION_MOVE -> { tx = e.x; ty = e.y; host.invalidate() }
+            MotionEvent.ACTION_DOWN -> { tx = e.x; ty = e.y; sx = e.rawX; sy = e.rawY; dragX = 0f; dragY = 0f; animate(1f, 260L, grow, true) }
+            MotionEvent.ACTION_MOVE -> { tx = e.x; ty = e.y; dragX = e.rawX - sx; dragY = e.rawY - sy; applyDrag(); host.invalidate() }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> animate(0f, 520L, grow, false)
         }
     }
@@ -132,9 +139,18 @@ class GlassSurface(private val host: View) {
             press = from + (target - from) * spring.getInterpolation(t)
             host.scaleX = 1f + growBy * press
             host.scaleY = host.scaleX
+            applyDrag()
             host.invalidate()
             if (t < 1f) host.postOnAnimation(this)
         }
+    }
+
+    /** Кнопка тянется за пальцем с сопротивлением и пружинит назад, как у Kyant. */
+    private fun applyDrag() {
+        if (!drag) return
+        val m = min(host.width, host.height).toFloat().coerceAtLeast(1f)
+        host.translationX = m * kotlin.math.tanh(0.05f * dragX / m) * press
+        host.translationY = m * kotlin.math.tanh(0.05f * dragY / m) * press
     }
 
     /** Своя покадровая анимация: не зависит от системной настройки «Анимация» (её часто выключают). */
@@ -178,7 +194,7 @@ class GlassSurface(private val host: View) {
     /** Заливка, блик, внутреннее свечение и ободок, как у стекла iOS. */
     private fun finish(c: Canvas, rect: RectF, rad: Float, refracted: Boolean) {
         val n = night()
-        fill.color = if (n) Color.argb(if (refracted) 84 else 140, 66, 66, 74) else Color.argb(if (refracted) 78 else 140, 255, 255, 255)
+        fill.color = if (n) Color.argb(if (refracted) 20 else 130, 255, 255, 255) else Color.argb(if (refracted) 72 else 150, 255, 255, 255)
         c.drawRoundRect(rect, rad, rad, fill)
 
         val cx = rect.centerX()
@@ -187,7 +203,7 @@ class GlassSurface(private val host: View) {
         val ly = GlassHub.ly
         sheen.shader = RadialGradient(
             cx + lx * rect.width() * 0.55f, cy + ly * rect.height() * 0.9f, max(rect.width() * 0.6f, rect.height() * 1.2f),
-            intArrayOf(Color.argb(if (n) 52 else 135, 255, 255, 255), Color.TRANSPARENT), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP,
+            intArrayOf(Color.argb(if (n) 30 else 70, 255, 255, 255), Color.TRANSPARENT), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP,
         )
         c.drawRoundRect(rect, rad, rad, sheen)
 
@@ -197,19 +213,19 @@ class GlassSurface(private val host: View) {
         c.save()
         c.clipPath(path)
         glow.strokeWidth = 14f * dp
-        glow.color = Color.argb(if (n) 22 else 60, 255, 255, 255)
+        glow.color = Color.argb(if (n) 8 else 22, 255, 255, 255)
         c.drawRoundRect(rect, rad, rad, glow)
         c.restore()
 
         // ободок: ярко там, где свет входит (сверху слева) и выходит (снизу справа)
         inset.set(rect.left + 0.65f * dp, rect.top + 0.65f * dp, rect.right - 0.65f * dp, rect.bottom - 0.65f * dp)
-        val a1 = if (n) 190 else 250
-        val a2 = if (n) 80 else 190
+        val a1 = 255
+        val a2 = if (n) 150 else 215
         val rr = kotlin.math.hypot(rect.width(), rect.height()) / 2f
         rim.shader = LinearGradient(
             cx + lx * rr, cy + ly * rr, cx - lx * rr, cy - ly * rr,
             intArrayOf(Color.argb(a1, 255, 255, 255), Color.argb(0, 255, 255, 255), Color.argb(0, 255, 255, 255), Color.argb(a2, 255, 255, 255)),
-            floatArrayOf(0f, 0.3f, 0.64f, 1f), Shader.TileMode.CLAMP,
+            floatArrayOf(0f, 0.34f, 0.6f, 1f), Shader.TileMode.CLAMP,
         )
         c.drawRoundRect(inset, rad, rad, rim)
         hair.color = Color.argb(if (n) 60 else 150, 255, 255, 255)
@@ -255,20 +271,21 @@ class GlassSurface(private val host: View) {
 
         private fun configure(rect: RectF, rad: Float, dp: Float, press: Float) {
             val minDim = min(rect.width(), rect.height())
-            val rh = min(13f * dp, minDim * 0.32f)
+            val rh = min(12f * dp, minDim * 0.4f)
+            val k = (minDim / (54f * dp)).coerceIn(0.7f, 1.2f)
             shader.setFloatUniform("size", rect.width(), rect.height())
             shader.setFloatUniform("offset", -rect.left, -rect.top)
             shader.setFloatUniform("cornerRadii", rad, rad, rad, rad)
             shader.setFloatUniform("refractionHeight", rh)
-            shader.setFloatUniform("refractionAmount", -rh * (2.1f + 1.2f * press))
-            shader.setFloatUniform("depthEffect", 0.25f)
-            shader.setFloatUniform("chromaticAberration", 0.1f + 0.15f * press)
+            shader.setFloatUniform("refractionAmount", -24f * dp * k * (1f + 0.25f * press))
+            shader.setFloatUniform("depthEffect", 0f)
+            shader.setFloatUniform("chromaticAberration", 0f)
             shader.setFloatUniform("contrast", 0f)
             shader.setFloatUniform("whitePoint", 0f)
-            shader.setFloatUniform("chromaMultiplier", 1.35f)
+            shader.setFloatUniform("chromaMultiplier", 1.5f)
             shader.setFloatUniform("tintColor", 1f, 1f, 1f)
             shader.setFloatUniform("tintAlpha", 0f)
-            val sigma = 4f * dp
+            val sigma = 2f * dp
             val blur = RenderEffect.createBlurEffect(sigma, sigma, Shader.TileMode.CLAMP)
             val refract = RenderEffect.createRuntimeShaderEffect(shader, "content")
             node.setRenderEffect(RenderEffect.createChainEffect(refract, blur))
@@ -296,7 +313,7 @@ class GlassCircle @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
-        glass.touch(e, 0.08f)
+        glass.touch(e, 0.08f, true)
         return super.onTouchEvent(e)
     }
 
