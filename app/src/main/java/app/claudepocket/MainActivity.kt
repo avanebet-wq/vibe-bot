@@ -23,6 +23,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
@@ -40,6 +41,15 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
     private lateinit var installPanel: View
     private lateinit var termPanel: View
+    private lateinit var loginPanel: View
+    private lateinit var btnLoginOpen: Button
+    private lateinit var btnLoginSubmit: Button
+    private lateinit var btnLoginCopy: TextView
+    private lateinit var loginCode: EditText
+    private lateinit var loginStatus: TextView
+    private lateinit var detailsToggle: TextView
+    private var login: LoginFlow? = null
+    private var loginUrl: String? = null
     private lateinit var btnInstall: Button
     private lateinit var btnRestart: Button
     private lateinit var stepText: TextView
@@ -67,6 +77,13 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
         installPanel = findViewById(R.id.install_panel)
         termPanel = findViewById(R.id.term_panel)
+        loginPanel = findViewById(R.id.login_panel)
+        btnLoginOpen = findViewById(R.id.btn_login_open)
+        btnLoginSubmit = findViewById(R.id.btn_login_submit)
+        btnLoginCopy = findViewById(R.id.btn_login_copy)
+        loginCode = findViewById(R.id.login_code)
+        loginStatus = findViewById(R.id.login_status)
+        detailsToggle = findViewById(R.id.details_toggle)
         btnInstall = findViewById(R.id.btn_install)
         btnRestart = findViewById(R.id.btn_restart)
         stepText = findViewById(R.id.step_text)
@@ -79,22 +96,40 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
         btnInstall.background = rounded(getColor(R.color.accent), dp(12))
         btnRestart.background = rounded(getColor(R.color.accent), dp(10))
+        btnLoginOpen.background = rounded(getColor(R.color.accent), dp(12))
+        btnLoginSubmit.background = rounded(getColor(R.color.accent), dp(12))
         btnInstall.setOnClickListener { startInstall() }
+        detailsToggle.setOnClickListener {
+            val show = logScroll.visibility != View.VISIBLE
+            logScroll.visibility = if (show) View.VISIBLE else View.GONE
+            detailsToggle.text = if (show) "Скрыть подробности" else "Показать подробности"
+        }
+        btnLoginOpen.setOnClickListener { loginUrl?.let { openUrl(it) } }
+        btnLoginCopy.setOnClickListener { loginUrl?.let { copyToClipboard(it); toast("Ссылка скопирована") } }
+        btnLoginSubmit.setOnClickListener { submitCode() }
+        findViewById<View>(R.id.login_skip).setOnClickListener {
+            paths.loggedIn.writeText("1")
+            login?.cancel()
+            showTerminal()
+        }
         btnRestart.setOnClickListener { newSession() }
 
         terminal.setTerminalViewClient(this)
         buildKeys()
 
         SessionHolder.ui = this
-        if (paths.installed.exists()) showTerminal() else showInstall()
+        route()
     }
 
     override fun onResume() {
         super.onResume()
         SessionHolder.ui = this
         if (!installing && paths.installed.exists()) {
-            if (termPanel.visibility != View.VISIBLE) showTerminal()
-            else if (SessionHolder.session == null) btnRestart.visibility = View.VISIBLE
+            if (termPanel.visibility == View.VISIBLE) {
+                if (SessionHolder.session == null) btnRestart.visibility = View.VISIBLE
+            } else if (loginPanel.visibility != View.VISIBLE) {
+                route()
+            }
         }
     }
 
@@ -105,8 +140,94 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
     // ---------------------------------------------------------------- screens
 
+    private fun route() {
+        when {
+            !paths.installed.exists() -> showInstall()
+            !paths.loggedIn.exists() -> showLogin()
+            else -> showTerminal()
+        }
+    }
+
+    private fun showLogin() {
+        installPanel.visibility = View.GONE
+        termPanel.visibility = View.GONE
+        loginPanel.visibility = View.VISIBLE
+        startLogin()
+    }
+
+    private fun startLogin() {
+        loginUrl = null
+        btnLoginOpen.isEnabled = false
+        btnLoginOpen.text = "Готовлю ссылку…"
+        btnLoginCopy.visibility = View.GONE
+        btnLoginSubmit.isEnabled = true
+        loginStatus.setTextColor(getColor(R.color.muted))
+        loginStatus.text = ""
+        loginCode.setText("")
+        login?.cancel()
+        val flow = LoginFlow(applicationContext, object : LoginFlow.Ui {
+            override fun onUrl(url: String) {
+                main.post {
+                    loginUrl = url
+                    btnLoginOpen.isEnabled = true
+                    btnLoginOpen.text = "Открыть страницу входа"
+                    btnLoginCopy.visibility = View.VISIBLE
+                }
+            }
+
+            override fun onFinished(error: String?) {
+                main.post { onLoginFinished(error) }
+            }
+        })
+        login = flow
+        flow.start()
+    }
+
+    private fun submitCode() {
+        val code = loginCode.text.toString().trim()
+        if (code.isEmpty()) {
+            toast("Вставь код из браузера")
+            return
+        }
+        btnLoginSubmit.isEnabled = false
+        loginStatus.setTextColor(getColor(R.color.muted))
+        loginStatus.text = "Проверяю код…"
+        login?.submit(code)
+    }
+
+    private fun onLoginFinished(error: String?) {
+        if (error == null) {
+            showTerminal()
+        } else {
+            loginStatus.setTextColor(Color.parseColor("#FF6B6B"))
+            loginStatus.text = error
+            btnLoginOpen.isEnabled = false
+            btnLoginOpen.text = "Готовлю новую ссылку…"
+            btnLoginCopy.visibility = View.GONE
+            main.postDelayed({ if (loginPanel.visibility == View.VISIBLE) startLoginKeepError(error) }, 800)
+        }
+    }
+
+    /** Перезапускает вход, оставив сообщение об ошибке на экране. */
+    private fun startLoginKeepError(error: String) {
+        startLogin()
+        loginStatus.setTextColor(Color.parseColor("#FF6B6B"))
+        loginStatus.text = error
+    }
+
+    private fun openUrl(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            toast("Не удалось открыть ссылку — скопируй её и открой в браузере")
+        }
+    }
+
+    private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+
     private fun showInstall() {
         installPanel.visibility = View.VISIBLE
+        loginPanel.visibility = View.GONE
         termPanel.visibility = View.GONE
     }
 
@@ -122,6 +243,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
             return
         }
         installPanel.visibility = View.GONE
+        loginPanel.visibility = View.GONE
         termPanel.visibility = View.VISIBLE
         val s = SessionHolder.session ?: createSession()
         terminal.setTextSize(sp(paths.fontSizeSp))
@@ -135,7 +257,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_STORAGE) {
-            if (paths.installed.exists()) showTerminal()
+            if (paths.installed.exists() && paths.loggedIn.exists()) showTerminal()
             if (hasStorage() && SessionHolder.session != null) {
                 Toast.makeText(this, "Доступ выдан. Новая сессия (меню ⋮) подключит /sdcard", Toast.LENGTH_LONG).show()
             }
@@ -158,7 +280,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         stepText.visibility = View.VISIBLE
         progress.visibility = View.VISIBLE
         progress.isIndeterminate = true
-        logScroll.visibility = View.VISIBLE
+        detailsToggle.visibility = View.VISIBLE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         KeepAliveService.start(this, "Устанавливаю Claude Code…")
 
@@ -185,9 +307,12 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         installing = false
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (error == null) {
-            showTerminal()
+            KeepAliveService.stop(this)
+            showLogin()
         } else {
             KeepAliveService.stop(this)
+            logScroll.visibility = View.VISIBLE
+            detailsToggle.text = "Скрыть подробности"
             btnInstall.isEnabled = true
             btnInstall.text = "Повторить установку"
             progress.visibility = View.GONE
@@ -364,13 +489,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         AlertDialog.Builder(this)
             .setTitle("Ссылка из терминала")
             .setMessage(url)
-            .setPositiveButton("Открыть") { _, _ ->
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                } catch (e: Exception) {
-                    Toast.makeText(this, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
-                }
-            }
+            .setPositiveButton("Открыть") { _, _ -> openUrl(url) }
             .setNeutralButton("Копировать") { _, _ -> copyToClipboard(url) }
             .setNegativeButton("Отмена", null)
             .show()
@@ -394,6 +513,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
                         stepText.visibility = View.GONE
                         progress.visibility = View.GONE
                         logScroll.visibility = View.GONE
+                        detailsToggle.visibility = View.GONE
+                        detailsToggle.text = "Показать подробности"
                         logLines.clear()
                         hintText.text = "Нужен интернет, около 1 ГБ свободного места и 5–15 минут. Не закрывай приложение и не блокируй экран."
                         showInstall()

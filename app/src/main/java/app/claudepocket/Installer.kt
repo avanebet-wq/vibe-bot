@@ -264,6 +264,7 @@ class Installer(private val ctx: Context, private val ui: Ui) {
             }
             p.rootfsReady.delete()
             p.installed.delete()
+            p.loggedIn.delete()
         }
 
         private fun execLines(pb: ProcessBuilder, onLine: (String) -> Unit): Int {

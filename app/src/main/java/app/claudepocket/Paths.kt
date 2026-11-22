@@ -19,6 +19,9 @@ class Paths(ctx: Context) {
     /** Установка полностью завершена (Claude Code работает). */
     val installed = File(files, "installed.ok")
 
+    /** Выполнен вход в аккаунт. */
+    val loggedIn = File(files, "loggedin.ok")
+
     private val nativeDir: String = ctx.applicationInfo.nativeLibraryDir
     val proot = File(nativeDir, "libproot.so")
     val loader = File(nativeDir, "libproot-loader.so")
