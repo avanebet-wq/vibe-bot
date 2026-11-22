@@ -742,7 +742,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        const val COMPACT = 1.0f
+        const val COMPACT = 1.2f
         private const val REQ_STORAGE = 1
         private const val REQ_PICK_PHOTO = 21
         private const val REQ_AVATAR = 24
