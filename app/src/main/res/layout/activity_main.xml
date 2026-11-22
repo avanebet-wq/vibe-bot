@@ -333,6 +333,7 @@
             android:background="@color/bg"
             android:fadingEdgeLength="44dp"
             android:fillViewport="true"
+            android:overScrollMode="never"
             android:requiresFadingEdge="vertical">
 
             <LinearLayout
