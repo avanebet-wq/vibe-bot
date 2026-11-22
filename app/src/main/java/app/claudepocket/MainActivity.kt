@@ -33,6 +33,8 @@ class MainActivity : Activity() {
     private lateinit var loginPanel: View
     private lateinit var chatPanel: View
     private lateinit var onboarding: Onboarding
+    private lateinit var skillsPanel: View
+    private lateinit var skills: SkillsController
     private lateinit var chat: ChatController
     private lateinit var btnLoginOpen: Button
     private lateinit var btnLoginSubmit: Button
@@ -66,6 +68,16 @@ class MainActivity : Activity() {
         installPanel = findViewById(R.id.install_panel)
         loginPanel = findViewById(R.id.login_panel)
         chatPanel = findViewById(R.id.chat_panel)
+        skillsPanel = findViewById(R.id.skills_panel)
+        skills = SkillsController(
+            this, skillsPanel,
+            onBack = { showChat() },
+            onCreateWithClaude = {
+                showChat()
+                chat.prefill("Создай навык Claude (папка ~/.claude/skills/<имя> с файлом SKILL.md), который ")
+            },
+            onChanged = { ChatEngine.shutdown() }, // навыки читаются при запуске Claude; разговор сохранится
+        )
         onboarding = Onboarding(this, findViewById(R.id.onb_panel)) { route() }
         chat = ChatController(this, chatPanel, { showChatMenu(it) }, { chooseModel() }, { chooseEffort() }, { showPlusMenu(it) }, { f, action -> fileAction(f, action) })
         chat.onModelsChanged = { refreshPills() }
@@ -113,7 +125,7 @@ class MainActivity : Activity() {
         if (!installing && paths.installed.exists()) {
             if (chatPanel.visibility == View.VISIBLE) {
                 chat.attach()
-            } else if (loginPanel.visibility != View.VISIBLE) {
+            } else if (loginPanel.visibility != View.VISIBLE && skillsPanel.visibility != View.VISIBLE) {
                 route()
             }
         }
@@ -139,6 +151,7 @@ class MainActivity : Activity() {
         installPanel.visibility = View.GONE
         chatPanel.visibility = View.GONE
         loginPanel.visibility = View.VISIBLE
+        skillsPanel.visibility = View.GONE
         startLogin()
     }
 
@@ -248,6 +261,7 @@ class MainActivity : Activity() {
     private fun showInstall() {
         installPanel.visibility = View.VISIBLE
         loginPanel.visibility = View.GONE
+        skillsPanel.visibility = View.GONE
         chatPanel.visibility = View.GONE
     }
 
@@ -259,6 +273,7 @@ class MainActivity : Activity() {
         if (askStorageOnce()) return
         installPanel.visibility = View.GONE
         loginPanel.visibility = View.GONE
+        skillsPanel.visibility = View.GONE
         chatPanel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Claude готов к работе")
         ChatEngine.init(this)
@@ -359,6 +374,13 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- menu
 
+    private fun showSkills() {
+        chat.detach()
+        chatPanel.visibility = View.GONE
+        skillsPanel.visibility = View.VISIBLE
+        skills.show()
+    }
+
     private fun showChatMenu(anchor: View) {
         val m = PopupMenu(this, anchor)
         m.menu.add(0, 1, 0, "Новый чат")
@@ -366,9 +388,11 @@ class MainActivity : Activity() {
         m.menu.add(0, 3, 2, "Доступ к памяти телефона")
         m.menu.add(0, 4, 3, "Переустановить всё")
         m.menu.add(0, 5, 4, "Войти в другой аккаунт")
+        m.menu.add(0, 6, 5, "Навыки")
         m.setOnMenuItemClickListener {
             when (it.itemId) {
                 5 -> { paths.loggedIn.delete(); ChatEngine.shutdown(); showLogin() }
+                6 -> showSkills()
                 1 -> ChatEngine.newChat(this)
                 2 -> choosePermissionMode()
                 3 -> requestStorage()

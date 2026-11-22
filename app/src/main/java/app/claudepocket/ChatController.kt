@@ -84,6 +84,13 @@ class ChatController(
         refreshSend()
     }
 
+    /** Подставляет текст в поле ввода (например, заготовку запроса). */
+    fun prefill(text: String) {
+        input.setText(text)
+        input.setSelection(text.length)
+        input.requestFocus()
+    }
+
     /** Обновляет подписи на кнопках модели и уровня мышления. */
     fun setPills(model: String, effort: String, effortEnabled: Boolean) {
         pillModel.text = "$model ▾"
