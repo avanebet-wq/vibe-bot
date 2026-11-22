@@ -48,6 +48,7 @@ class ChatController(
     private val attachRow: LinearLayout = root.findViewById(R.id.attach_row)
     private val pendingAttachments = ArrayList<Files.Attachment>()
 
+    private val aurora = AuroraDrawable(act)
     private val ticker = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
@@ -76,6 +77,7 @@ class ChatController(
                 if (child != null && child.bottom - (scroll.scrollY + oldH) < dp(120)) scrollToEnd()
             }
         }
+        scroll.background = aurora
         // стекло должно перерисовываться, когда под ним что-то движется
         scroll.setOnScrollChangeListener { _, _, _, _, _ -> GlassHub.refresh() }
         // чат идёт под поле ввода: нижний отступ равен высоте панели ввода
@@ -126,12 +128,16 @@ class ChatController(
     /** Подключает контроллер к движку и отрисовывает уже накопленную переписку. */
     fun attach() {
         GlassHub.source = scroll
+        aurora.start()
+        GlassHub.startTilt(act)
         ChatEngine.listener = this
         render()
     }
 
     fun detach() {
         if (GlassHub.source === scroll) GlassHub.source = null
+        aurora.stop()
+        GlassHub.stopTilt()
         if (ChatEngine.listener === this) ChatEngine.listener = null
         ticker.removeCallbacks(tick)
         field.glowing = false

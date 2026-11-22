@@ -196,6 +196,11 @@ class GlowFrame @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
         }
     }
 
+    override fun dispatchTouchEvent(e: android.view.MotionEvent): Boolean {
+        glass.touch(e, 0.025f)
+        return super.dispatchTouchEvent(e)
+    }
+
     override fun onDraw(c: Canvas) {
         val pad = 4f * dp
         rect.set(pad, pad, width - pad, height - pad)
@@ -248,10 +253,9 @@ class GlassButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? =
         }
     }
 
-    override fun drawableStateChanged() {
-        super.drawableStateChanged()
-        val s = if (isPressed) 0.93f else 1f
-        animate().scaleX(s).scaleY(s).setDuration(140).start()
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        glass.touch(e, 0.08f)
+        return super.onTouchEvent(e)
     }
 
     override fun onAttachedToWindow() { super.onAttachedToWindow(); GlassHub.add(this) }
