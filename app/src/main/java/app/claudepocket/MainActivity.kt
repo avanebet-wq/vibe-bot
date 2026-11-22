@@ -43,6 +43,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     private lateinit var termPanel: View
     private lateinit var loginPanel: View
     private lateinit var chatPanel: View
+    private lateinit var onboarding: Onboarding
     private lateinit var chat: ChatController
     private lateinit var btnLoginOpen: Button
     private lateinit var btnLoginSubmit: Button
@@ -81,6 +82,7 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         termPanel = findViewById(R.id.term_panel)
         loginPanel = findViewById(R.id.login_panel)
         chatPanel = findViewById(R.id.chat_panel)
+        onboarding = Onboarding(this, findViewById(R.id.onb_panel)) { route() }
         chat = ChatController(this, chatPanel) { showChatMenu(it) }
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
@@ -122,12 +124,16 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
         buildKeys()
 
         SessionHolder.ui = this
-        route()
+        if (paths.onboardingDone) route() else onboarding.show()
     }
 
     override fun onResume() {
         super.onResume()
         SessionHolder.ui = this
+        if (onboarding.isVisible) {
+            onboarding.refresh()
+            return
+        }
         if (!installing && paths.installed.exists()) {
             if (termPanel.visibility == View.VISIBLE) {
                 if (SessionHolder.session == null) btnRestart.visibility = View.VISIBLE
@@ -246,16 +252,8 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
     }
 
     /** Один раз просит доступ к памяти телефона; true — запрос показан, экран откроется после ответа. */
-    private fun askStorageOnce(): Boolean {
-        val prefs = getSharedPreferences("claude_pocket", MODE_PRIVATE)
-        if (hasStorage() || prefs.getBoolean("asked_storage", false)) return false
-        prefs.edit().putBoolean("asked_storage", true).apply()
-        requestPermissions(
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE),
-            REQ_STORAGE,
-        )
-        return true
-    }
+    @Suppress("FunctionOnlyReturningConstant")
+    private fun askStorageOnce(): Boolean = false // разрешения запрашивает только экран настройки
 
     private fun showChat() {
         if (askStorageOnce()) return
@@ -286,6 +284,10 @@ class MainActivity : Activity(), SessionHolder.Ui, TerminalViewClient {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (onboarding.isVisible) {
+            onboarding.refresh()
+            return
+        }
         if (requestCode == REQ_STORAGE) {
             if (paths.installed.exists() && paths.loggedIn.exists()) {
                 if (termPanel.visibility == View.VISIBLE) showTerminal() else showChat()

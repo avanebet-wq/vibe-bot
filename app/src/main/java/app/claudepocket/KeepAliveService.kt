@@ -48,12 +48,7 @@ class KeepAliveService : Service() {
     }
 
     private fun buildNotification(text: String): Notification {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Сессия Claude Pocket", NotificationManager.IMPORTANCE_LOW),
-            )
-        }
+        ensureChannel(this)
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -77,6 +72,15 @@ class KeepAliveService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "app.claudepocket.STOP"
         private const val EXTRA_TEXT = "text"
+
+        fun ensureChannel(ctx: Context) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                nm.createNotificationChannel(
+                    NotificationChannel(CHANNEL_ID, "Сессия Claude Pocket", NotificationManager.IMPORTANCE_LOW),
+                )
+            }
+        }
 
         fun start(ctx: Context, text: String) {
             ContextCompat.startForegroundService(

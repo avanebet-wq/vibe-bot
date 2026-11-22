@@ -40,6 +40,13 @@ class Paths(ctx: Context) {
             prefs.edit().putBoolean("no_seccomp", value).apply()
         }
 
+    /** Первоначальная настройка пройдена — разрешения больше не запрашиваются. */
+    var onboardingDone: Boolean
+        get() = prefs.getBoolean("onboarding_done", false)
+        set(value) {
+            prefs.edit().putBoolean("onboarding_done", value).commit()
+        }
+
     var fontSizeSp: Int
         get() = prefs.getInt("font_sp", 13)
         set(value) {
