@@ -74,7 +74,7 @@ class MainActivity : Activity() {
         val cfg = android.content.res.Configuration(base.resources.configuration)
         cfg.fontScale = 1f
         val base0 = if (real in 200f..700f) real else cfg.densityDpi.toFloat()
-        cfg.densityDpi = (base0 * COMPACT).toInt() // компактнее: всё (текст, кнопки, отступы) на 12% мельче
+        cfg.densityDpi = (base0 * COMPACT).toInt() // компактнее: всё (текст, кнопки, отступы) масштаб интерфейса
         super.attachBaseContext(base.createConfigurationContext(cfg))
     }
 
@@ -742,7 +742,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        const val COMPACT = 0.88f
+        const val COMPACT = 1.0f
         private const val REQ_STORAGE = 1
         private const val REQ_PICK_PHOTO = 21
         private const val REQ_AVATAR = 24
