@@ -222,3 +222,69 @@ class GlowFrame @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = n
     override fun onAttachedToWindow() { super.onAttachedToWindow(); running = glowing; if (running) invalidate() }
     override fun onDetachedFromWindow() { running = false; super.onDetachedFromWindow() }
 }
+
+/** Круглая кнопка в стиле «жидкого стекла»: прозрачная заливка, блик сверху, светлый переливающийся ободок. */
+class GlassButton @JvmOverloads constructor(ctx: Context, attrs: AttributeSet? = null) : View(ctx, attrs) {
+    private val dp = resources.displayMetrics.density
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val shade = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val shine = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.4f * dp }
+    private val glintRect = RectF()
+    private val icon = Icons.get(ctx, R.drawable.ic_user, ctx.getColor(R.color.text))
+
+    init {
+        isClickable = true
+        isFocusable = true
+        elevation = 7f * dp
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(v: View, o: android.graphics.Outline) {
+                o.setOval(0, 0, v.width, v.height)
+                o.alpha = 0.35f
+            }
+        }
+    }
+
+    override fun drawableStateChanged() {
+        super.drawableStateChanged()
+        invalidate()
+    }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val cx = w / 2f
+        val cy = h / 2f
+        val r = min(w, h) / 2f - 1.5f * dp
+        val night = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val accent = context.getColor(R.color.accent)
+        val pressed = isPressed
+        val s = if (pressed) 0.94f else 1f
+        c.save()
+        c.scale(s, s, cx, cy)
+
+        // стекло: полупрозрачная заливка
+        fill.color = if (night) Color.argb(if (pressed) 52 else 36, 255, 255, 255) else Color.argb(if (pressed) 150 else 120, 255, 255, 255)
+        c.drawCircle(cx, cy, r, fill)
+        // глубина: цвет обоев чуть просвечивает снизу справа
+        shade.shader = RadialGradient(cx + r * 0.35f, cy + r * 0.45f, r * 1.15f, intArrayOf(ColorUtils.setAlphaComponent(accent, 90), Color.TRANSPARENT), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+        c.drawCircle(cx, cy, r, shade)
+        // блик света сверху слева
+        shine.shader = RadialGradient(cx - r * 0.35f, cy - r * 0.5f, r * 1.0f, intArrayOf(Color.argb(if (night) 120 else 210, 255, 255, 255), Color.argb(24, 255, 255, 255), Color.TRANSPARENT), floatArrayOf(0f, 0.55f, 0.95f), Shader.TileMode.CLAMP)
+        c.drawCircle(cx, cy, r, shine)
+        // ободок: яркий сверху слева и снизу справа, как преломление на краю стекла
+        rim.shader = android.graphics.LinearGradient(0f, 0f, w, h, intArrayOf(Color.argb(235, 255, 255, 255), Color.argb(40, 255, 255, 255), Color.argb(14, 255, 255, 255), Color.argb(170, 255, 255, 255)), floatArrayOf(0f, 0.42f, 0.62f, 1f), Shader.TileMode.CLAMP)
+        c.drawCircle(cx, cy, r, rim)
+        // узкий глянцевый блик под верхним краем
+        glintRect.set(cx - r * 0.56f, cy - r * 0.9f, cx + r * 0.56f, cy - r * 0.42f)
+        glint.shader = android.graphics.LinearGradient(0f, glintRect.top, 0f, glintRect.bottom, Color.argb(if (night) 80 else 150, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        c.drawOval(glintRect, glint)
+
+        val half = 11f * dp
+        icon.setBounds((cx - half).toInt(), (cy - half).toInt(), (cx + half).toInt(), (cy + half).toInt())
+        icon.draw(c)
+        c.restore()
+    }
+}

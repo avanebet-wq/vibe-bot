@@ -86,17 +86,12 @@ class MainActivity : Activity() {
         profileAvatar.setOnClickListener { pickAvatar() }
         chat = ChatController(
             this, chatPanel,
-            onMenu = { showChatMenu(it) },
+            onMenu = { showGlassMenu(it) },
             onModel = { chooseModel() },
-            onEffort = { chooseEffort() },
-            onSkills = { showSkills() },
-            onNewChat = { ChatEngine.newChat(this) },
-            onProfile = { showProfile() },
             onPlus = { showPlusMenu(it) },
             onFile = { f, action -> fileAction(f, action) },
         )
         loadAvatar()
-        chat.onModelsChanged = { refreshPills() }
         btnLoginOpen = findViewById(R.id.btn_login_open)
         btnLoginSubmit = findViewById(R.id.btn_login_submit)
         btnLoginCopy = findViewById(R.id.btn_login_copy)
@@ -307,7 +302,6 @@ class MainActivity : Activity() {
         chatPanel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Claude готов к работе")
         ChatEngine.init(this)
-        refreshPills()
         chat.attach()
     }
 
@@ -406,20 +400,47 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- профиль: только аватар и пузыри
 
+    /** Меню под круглой стеклянной кнопкой: пока один пункт — «Профиль». Остальное временно спрятано. */
+    private fun showGlassMenu(anchor: View) {
+        GlassMenu.show(this, anchor, listOf(GlassMenu.Item(R.drawable.ic_user, "Профиль") { showProfile() }))
+    }
+
+    /** Профиль: квадратная карточка поверх чата, в центре аватар, вокруг летают пузырьки. */
     private fun showProfile() {
-        chat.detach()
         chat.hideKeyboard()
-        chatPanel.visibility = View.GONE
-        skillsPanel.visibility = View.GONE
-        profilePanel.background = android.graphics.drawable.GradientDrawable(
+        val dm = resources.displayMetrics
+        val side = minOf(dm.widthPixels - dp(32), (dm.heightPixels * 0.72f).toInt(), dp(420))
+        val card = findViewById<View>(R.id.profile_card)
+        card.layoutParams = (card.layoutParams as android.widget.FrameLayout.LayoutParams).apply { width = side; height = side }
+        card.background = android.graphics.drawable.GradientDrawable(
             android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(androidx.core.graphics.ColorUtils.blendARGB(getColor(R.color.key), getColor(R.color.accent), 0.22f), getColor(R.color.bg)),
-        )
+        ).apply {
+            cornerRadius = dp(32).toFloat()
+            setStroke(dp(1), getColor(R.color.line))
+        }
+        card.clipToOutline = true // пузырьки не выходят за скруглённые углы
+        profileAvatar.layoutParams = (profileAvatar.layoutParams as android.widget.FrameLayout.LayoutParams).apply { width = (side * 0.62f).toInt(); height = (side * 0.62f).toInt() }
+        val sideDp = side / dm.density
+        findViewById<BubblesView>(R.id.profile_bubbles).apply {
+            count = 12
+            centerYdp = -1f
+            radiiDp = floatArrayOf(sideDp * 0.27f, sideDp * 0.33f, sideDp * 0.385f)
+            sizesDp = floatArrayOf(44f, 36f, 50f)
+            xk = 1f
+            yk = 1f
+        }
         profilePanel.visibility = View.VISIBLE
+        profilePanel.setOnClickListener { profilePanel.visibility = View.GONE } // нажатие вне карточки закрывает
+        val animate = if (android.os.Build.VERSION.SDK_INT >= 26) android.animation.ValueAnimator.areAnimatorsEnabled() else true
+        if (animate) {
+            card.scaleX = 0.9f; card.scaleY = 0.9f; card.alpha = 0f
+            card.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(200).start()
+        }
     }
 
     override fun onBackPressed() {
-        if (profilePanel.visibility == View.VISIBLE) showChat() else super.onBackPressed()
+        if (profilePanel.visibility == View.VISIBLE) profilePanel.visibility = View.GONE else super.onBackPressed()
     }
 
     private fun pickAvatar() {
@@ -433,7 +454,6 @@ class MainActivity : Activity() {
     private fun loadAvatar() {
         val b = if (paths.avatar.exists()) android.graphics.BitmapFactory.decodeFile(paths.avatar.path) else null
         profileAvatar.setBitmap(b)
-        chat.setAvatar(b)
     }
 
     /** Берёт выбранное фото, обрезает до квадрата 512×512 и сохраняет как аватар. */
@@ -453,7 +473,6 @@ class MainActivity : Activity() {
                 paths.avatar.outputStream().use { out.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
                 main.post {
                     profileAvatar.setBitmap(out)
-                    chat.setAvatar(out)
                 }
             } catch (_: Throwable) {
                 main.post { toast("Не удалось сохранить фото") }
@@ -595,13 +614,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun refreshPills() {
-        val m = ModelCatalog.find(this, paths.model)
-        val canEffort = m != null && m.efforts.isNotEmpty()
-        val effort = if (canEffort) ModelCatalog.effortName(paths.effort) else "—"
-        chat.setPills(ModelCatalog.label(this, paths.model), effort, canEffort)
-    }
-
     private fun chooseModel() = showModelSheet()
 
     private fun chooseEffort() = showModelSheet()
@@ -631,8 +643,7 @@ class MainActivity : Activity() {
                     // если новая модель не умеет выбранный уровень мышления — сбрасываем его на «авто»
                     if (paths.effort.isNotEmpty() && paths.effort !in m.efforts) paths.effort = ""
                     ChatEngine.shutdown() // следующее сообщение запустит Claude с новой моделью, разговор сохранится
-                    refreshPills()
-                    toast("Модель: " + ModelCatalog.label(this, alias))
+                                toast("Модель: " + ModelCatalog.label(this, alias))
                 }
             }
         }
@@ -644,7 +655,6 @@ class MainActivity : Activity() {
         if (level == paths.effort) return
         paths.effort = level
         ChatEngine.shutdown() // применится со следующим сообщением, разговор сохранится
-        refreshPills()
         toast("Мышление: " + if (level.isEmpty()) "авто" else ModelCatalog.effortName(level))
     }
 

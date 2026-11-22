@@ -29,10 +29,6 @@ class ChatController(
     private val root: View,
     private val onMenu: (View) -> Unit,
     private val onModel: () -> Unit,
-    private val onEffort: () -> Unit,
-    private val onSkills: () -> Unit,
-    private val onNewChat: () -> Unit,
-    private val onProfile: () -> Unit,
     private val onPlus: (View) -> Unit,
     private val onFile: (ChatEngine.Msg.File, String) -> Unit,
 ) : ChatEngine.Listener {
@@ -52,14 +48,6 @@ class ChatController(
     private val attachRow: LinearLayout = root.findViewById(R.id.attach_row)
     private val pendingAttachments = ArrayList<Files.Attachment>()
 
-    private val headPanel: FrameLayout = root.findViewById(R.id.head_panel)
-    private val headCompact: View = root.findViewById(R.id.head_compact)
-    private val headSub: TextView = root.findViewById(R.id.head_sub)
-    private val compactSub: TextView = root.findViewById(R.id.compact_sub)
-    private val headAvatar: AvatarView = root.findViewById(R.id.head_avatar)
-    private val compactAvatar: AvatarView = root.findViewById(R.id.compact_avatar)
-    private val headBubbles: BubblesView = root.findViewById(R.id.head_bubbles)
-
     private val ticker = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
@@ -77,51 +65,9 @@ class ChatController(
     private val muted = act.getColor(R.color.muted)
     private val bgColor = act.getColor(R.color.bg)
 
-    private var expanded = true
-    private var headerAnimating = false
-    private var touching = false
-
     init {
-        // фон шапки: цвет обоев тихо растворяется в чёрном (как в «профиле v2»)
-        headPanel.background = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(ColorUtils.blendARGB(keyColor, accent, 0.26f), bgColor),
-        )
-        headCompact.background = GradientDrawable().apply { setColor(bgColor) }
-        headAvatar.glow = true
-        compactAvatar.glow = false
-        headBubbles.apply {
-            count = 8
-            centerYdp = 64f
-            radiiDp = floatArrayOf(69f, 86f, 99f)
-            sizesDp = floatArrayOf(35f, 29f, 40f)
-            xk = 0.95f
-            yk = 0.5f
-        }
-        root.findViewById<View>(R.id.act_model).setOnClickListener { onModel() }
-        root.findViewById<View>(R.id.act_effort).setOnClickListener { onEffort() }
-        root.findViewById<View>(R.id.act_skills).setOnClickListener { onSkills() }
-        root.findViewById<View>(R.id.act_new).setOnClickListener { onNewChat() }
-        root.findViewById<View>(R.id.act_more).setOnClickListener { onMenu(it) }
-        root.findViewById<View>(R.id.compact_more).setOnClickListener { onMenu(it) }
-        headAvatar.setOnClickListener { onProfile() }
-        headCompact.setOnClickListener { setHeaderExpanded(true) }
+        root.findViewById<View>(R.id.glass_btn).setOnClickListener { onMenu(it) }
         fieldIcon.setOnClickListener { onModel() }
-
-        scroll.setOnTouchListener { _, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> touching = true
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> scroll.postDelayed({ touching = false }, 350)
-            }
-            false
-        }
-        // свернуть шапку, когда читаешь вниз; развернуть, когда долистал до самого верха
-        scroll.setOnScrollChangeListener { _, _, y, _, oldY ->
-            if (!touching || headerAnimating) return@setOnScrollChangeListener
-            if (y > oldY && y > dp(30)) setHeaderExpanded(false)
-            else if (y == 0 && oldY > 0) setHeaderExpanded(true)
-        }
-        input.setOnFocusChangeListener { _, focused -> if (focused) setHeaderExpanded(false) }
 
         left.setOnClickListener {
             if (ChatEngine.busy) {
@@ -139,56 +85,10 @@ class ChatController(
                 pendingAttachments.clear()
                 renderChips()
                 input.setText("")
-                setHeaderExpanded(false)
                 ChatEngine.send(act, text, files)
             }
         }
         refreshSend()
-    }
-
-    // ------------------------------------------------------------------ шапка
-
-    fun setAvatar(b: Bitmap?) {
-        headAvatar.setBitmap(b)
-        compactAvatar.setBitmap(b)
-    }
-
-    /** Подпись под именем: модель и уровень мышления. */
-    fun setPills(model: String, effort: String, effortEnabled: Boolean) {
-        val sub = if (effortEnabled) "$model · мышление: ${effort.lowercase()}" else model
-        headSub.text = sub
-        compactSub.text = sub
-    }
-
-    fun setHeaderExpanded(e: Boolean, animate: Boolean = true) {
-        if (e == expanded) return
-        expanded = e
-        val full = dp(238)
-        val lp = headPanel.layoutParams
-        if (!animate) {
-            lp.height = if (e) full else 0
-            headPanel.layoutParams = lp
-            headPanel.visibility = if (e) View.VISIBLE else View.GONE
-            headCompact.visibility = if (e) View.GONE else View.VISIBLE
-            return
-        }
-        headPanel.visibility = View.VISIBLE
-        headCompact.visibility = if (e) View.GONE else View.VISIBLE
-        headerAnimating = true
-        ValueAnimator.ofInt(if (lp.height <= 0 && e) 0 else lp.height, if (e) full else 0).apply {
-            duration = 220
-            addUpdateListener {
-                lp.height = it.animatedValue as Int
-                headPanel.layoutParams = lp
-            }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(a: android.animation.Animator) {
-                    headerAnimating = false
-                    if (!e) headPanel.visibility = View.GONE
-                }
-            })
-            start()
-        }
     }
 
     // ------------------------------------------------------------------ ввод
@@ -296,7 +196,6 @@ class ChatController(
         ChatEngine.messages.forEach { addView(it, scrollDown = false) }
         setThinking(ChatEngine.busy)
         refreshSend()
-        setHeaderExpanded(ChatEngine.messages.isEmpty(), animate = false)
         scrollToEnd()
     }
 

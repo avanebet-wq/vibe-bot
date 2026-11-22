@@ -315,251 +315,17 @@
     </LinearLayout>
 
     <!-- Экран чата -->
-    <LinearLayout
+    <FrameLayout
         android:id="@+id/chat_panel"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical"
         android:visibility="gone">
 
-        <!-- шапка: живая панель профиля (разворачивается и сворачивается) -->
-        <FrameLayout
-            android:id="@+id/head_panel"
-            android:layout_width="match_parent"
-            android:layout_height="238dp">
-
-            <app.claudepocket.BubblesView
-                android:id="@+id/head_bubbles"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent" />
-
-            <app.claudepocket.AvatarView
-                android:id="@+id/head_avatar"
-                android:layout_width="150dp"
-                android:layout_height="150dp"
-                android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="-11dp"
-                android:contentDescription="Профиль" />
-
-            <TextView
-                android:id="@+id/head_name"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="112dp"
-                android:gravity="center"
-                android:text="Claude"
-                android:textColor="@color/text"
-                android:textSize="19sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/head_sub"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="137dp"
-                android:ellipsize="end"
-                android:gravity="center"
-                android:maxLines="1"
-                android:paddingLeft="24dp"
-                android:paddingRight="24dp"
-                android:textColor="@color/muted"
-                android:textSize="12sp" />
-
-            <LinearLayout
-                android:id="@+id/head_actions"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_gravity="bottom"
-                android:orientation="horizontal"
-                android:paddingBottom="8dp"
-                android:paddingLeft="6dp"
-                android:paddingRight="6dp">
-
-            <LinearLayout
-                android:id="@+id/act_model"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:gravity="center_horizontal"
-                android:orientation="vertical">
-
-                <ImageView
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:background="@drawable/bg_circle_glass"
-                    android:contentDescription="Модель"
-                    android:padding="12dp"
-                    android:src="@drawable/ic_cpu"
-                    android:tint="@color/text" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Модель"
-                    android:textColor="@color/text"
-                    android:textSize="10.5sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/act_effort"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:gravity="center_horizontal"
-                android:orientation="vertical">
-
-                <ImageView
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:background="@drawable/bg_circle_glass"
-                    android:contentDescription="Мышление"
-                    android:padding="12dp"
-                    android:src="@drawable/ic_spark"
-                    android:tint="@color/text" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Мышление"
-                    android:textColor="@color/text"
-                    android:textSize="10.5sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/act_skills"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:gravity="center_horizontal"
-                android:orientation="vertical">
-
-                <ImageView
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:background="@drawable/bg_circle_glass"
-                    android:contentDescription="Навыки"
-                    android:padding="12dp"
-                    android:src="@drawable/ic_wrench"
-                    android:tint="@color/text" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Навыки"
-                    android:textColor="@color/text"
-                    android:textSize="10.5sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/act_new"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:gravity="center_horizontal"
-                android:orientation="vertical">
-
-                <ImageView
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:background="@drawable/bg_circle_glass"
-                    android:contentDescription="Новый чат"
-                    android:padding="12dp"
-                    android:src="@drawable/ic_newchat"
-                    android:tint="@color/text" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Новый чат"
-                    android:textColor="@color/text"
-                    android:textSize="10.5sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/act_more"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:gravity="center_horizontal"
-                android:orientation="vertical">
-
-                <ImageView
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:background="@drawable/bg_circle_glass"
-                    android:contentDescription="Ещё"
-                    android:padding="12dp"
-                    android:src="@drawable/ic_more"
-                    android:tint="@color/text" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Ещё"
-                    android:textColor="@color/text"
-                    android:textSize="10.5sp" />
-            </LinearLayout>
-
-            </LinearLayout>
-        </FrameLayout>
-
-        <!-- компактная шапка, когда панель свёрнута -->
         <LinearLayout
-            android:id="@+id/head_compact"
+            android:id="@+id/chat_column"
             android:layout_width="match_parent"
-            android:layout_height="58dp"
-            android:background="@color/bg"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingLeft="14dp"
-            android:paddingRight="8dp"
-            android:visibility="gone">
-
-            <app.claudepocket.AvatarView
-                android:id="@+id/compact_avatar"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
-                android:contentDescription="Профиль" />
-
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginLeft="10dp"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Claude"
-                    android:textColor="@color/text"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/compact_sub"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:textColor="@color/muted"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
-            <ImageView
-                android:id="@+id/compact_more"
-                android:layout_width="46dp"
-                android:layout_height="46dp"
-                android:contentDescription="Ещё"
-                android:padding="12dp"
-                android:src="@drawable/ic_more"
-                android:tint="@color/text" />
-        </LinearLayout>
+            android:layout_height="match_parent"
+            android:orientation="vertical">
 
         <ScrollView
             android:id="@+id/chat_scroll"
@@ -573,7 +339,10 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="12dp" />
+                android:paddingBottom="12dp"
+                android:paddingLeft="12dp"
+                android:paddingRight="12dp"
+                android:paddingTop="64dp" />
         </ScrollView>
 
         <!-- поле ввода как в ролике: круг слева, таблетка, круглая кнопка отправки -->
@@ -709,26 +478,48 @@
                     android:tint="@color/on_accent" />
             </LinearLayout>
         </LinearLayout>
-    </LinearLayout>
+        </LinearLayout>
 
-    <!-- Страница профиля: только аватар и пузыри -->
+        <!-- круглая «стеклянная» кнопка справа вверху: открывает меню с пунктом «Профиль» -->
+        <app.claudepocket.GlassButton
+            android:id="@+id/glass_btn"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="top|end"
+            android:layout_marginRight="14dp"
+            android:layout_marginTop="10dp"
+            android:contentDescription="Меню" />
+    </FrameLayout>
+
+    <!-- Страница профиля: квадратная карточка, в центре аватар, вокруг летают пузырьки -->
     <FrameLayout
         android:id="@+id/profile_panel"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:background="@color/scrim"
+        android:clickable="true"
+        android:focusable="true"
         android:visibility="gone">
 
-        <app.claudepocket.BubblesView
-            android:id="@+id/profile_bubbles"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
-
-        <app.claudepocket.AvatarView
-            android:id="@+id/profile_avatar"
-            android:layout_width="300dp"
-            android:layout_height="300dp"
+        <FrameLayout
+            android:id="@+id/profile_card"
+            android:layout_width="320dp"
+            android:layout_height="320dp"
             android:layout_gravity="center"
-            android:contentDescription="Аватар" />
+            android:clickable="true">
+
+            <app.claudepocket.BubblesView
+                android:id="@+id/profile_bubbles"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <app.claudepocket.AvatarView
+                android:id="@+id/profile_avatar"
+                android:layout_width="200dp"
+                android:layout_height="200dp"
+                android:layout_gravity="center"
+                android:contentDescription="Аватар" />
+        </FrameLayout>
     </FrameLayout>
 
     <!-- Экран входа в аккаунт -->
